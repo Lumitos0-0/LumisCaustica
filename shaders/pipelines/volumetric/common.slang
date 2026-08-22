@@ -76,7 +76,8 @@ public struct VolumetricPush
     public float3   sunColor;         // 64, direct radiance scale, phase-ready (includes preExposure*E/pi)
     public float    heightFogDensity; // 76, sigma_t at Y=heightFogBase (1/blocks)
 
-    // Mixed scalars from here on (4-byte aligned; no more vec3s).
+    // Mixed scalars from here on (4-byte aligned; no more vec3s). Std430 packs them
+    // back-to-back, so ordering here directly controls final size.
     public float    heightFogFalloff; // 80
     public float    heightFogBase;    // 84, world Y at which density = heightFogDensity
     public float    globalDensity;    // 88
@@ -89,7 +90,9 @@ public struct VolumetricPush
     public uint     frameIndex;       // 116
     public uint     debugView;        // 120
     public uint     stochasticLight;  // 124
-    // sizeof(VolumetricPush) = 128. Add new fields to FroxelMatrices if needed.
+    // sizeof(VolumetricPush) = 128 (Vulkan's min-max-guaranteed push constant size).
+    // Do NOT add new fields here without re-verifying the offset math; if more data is
+    // needed, extend FroxelMatrices (BDA storage buffer) instead.
 };
 
 // [[vk::push_constant]] is declared in each .comp.slang file that consumes this,
