@@ -842,9 +842,11 @@ public final class CausticaConfig {
             // XY froxel grid is renderResolution / divisor. 8 is the recommended baseline.
             public static final IntSetting DIVISOR =
                     clampedInt("caustica.rt.fogDivisor", "fog.divisor", 8, 4, 16);
-            // Number of depth slices. 64 is the Naughty Dog baseline.
+            // Number of depth slices. 128 is the recommended baseline for Minecraft's sharp
+            // 1-block geometry; lower values reduce cost but produce visible slab artifacts
+            // if integration uses nearest-Z instead of trilinear reconstruction.
             public static final IntSetting DEPTH_SLICES =
-                    clampedInt("caustica.rt.fogDepthSlices", "fog.depth-slices", 64, 16, 128);
+                    clampedInt("caustica.rt.fogDepthSlices", "fog.depth-slices", 128, 16, 256);
             // Near/far plane of the froxel volume, in blocks (meters).
             public static final FloatSetting NEAR =
                     clampedFloat("caustica.rt.fogNear", "fog.near", 0.25f, 0.05f, 10f);
@@ -863,13 +865,14 @@ public final class CausticaConfig {
             public static final FloatSetting ANISOTROPY =
                     clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.45f, -0.95f, 0.95f);
             // Temporal history weight (0..1). Higher = more stable, slower convergence.
+            // 0.92 is a good sweet spot between temporal stability and shadow convergence speed.
             public static final FloatSetting HISTORY_WEIGHT =
-                    clampedFloat("caustica.rt.fogHistoryWeight", "fog.history-weight", 0.9f, 0f, 0.99f);
-            // Stochastic sun-disk sampling (1 = enabled, 0 = fixed ray). Default OFF for Phase 1-4
-            // baseline verification; enable once history + fixed-light are validated so noise
-            // convergence can be tested in isolation.
+                    clampedFloat("caustica.rt.fogHistoryWeight", "fog.history-weight", 0.92f, 0f, 0.99f);
+            // Stochastic sun-disk sampling. When enabled, each froxel jitters its shadow ray
+            // across the sun disk using a deterministic blue-noise-like hash; temporal
+            // accumulation integrates the binary visibility into a soft penumbra.
             public static final BooleanSetting STOCHASTIC_LIGHT =
-                    bool("caustica.rt.fogStochastic", "fog.stochastic-light", false);
+                    bool("caustica.rt.fogStochastic", "fog.stochastic-light", true);
 
             private Fog() {}
         }

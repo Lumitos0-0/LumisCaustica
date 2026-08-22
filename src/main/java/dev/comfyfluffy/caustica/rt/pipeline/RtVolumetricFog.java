@@ -436,7 +436,7 @@ public final class RtVolumetricFog {
                 gridH,
                 gridZ,
                 (int) RtComposite.frameCounter(),
-                0, // debugView (0 = composite; extended later)
+                0, // debugView (0 = final composite; 1-10 are diagnostics)
                 CausticaConfig.Rt.Fog.STOCHASTIC_LIGHT.value() ? 1 : 0
         );
 
