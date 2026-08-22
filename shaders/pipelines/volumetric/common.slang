@@ -37,9 +37,9 @@
 //                   that canonical center; stochastic sampling is applied ONLY to the light ray,
 //                   never to the froxel identity.
 //
-// The three camera matrices (invViewProj, curViewProj, prevViewProj) live in a small storage
-// buffer accessed via device address so that push constants stay under the 128-byte
-// minimum-max-guaranteed Vulkan limit.
+// The camera matrices plus per-frame medium parameters live in a small storage buffer accessed
+// via device address so that push constants stay under the 128-byte minimum-max-guaranteed
+// Vulkan limit.
 //
 // NOTE: this file must NOT import bindings.slang. The build system reflects every
 // pipeline's bindings by compiling its "source" shader in isolation; including
@@ -62,6 +62,31 @@ public struct FroxelMatrices
     // (jitter-free, for reprojection). The previous camera position relative to the current
     // rebase origin is VolumetricPush.prevCamOffset.
     public float4x4 prevViewProj;
+
+    // The following float4s are frame/medium state carried in the same BDA buffer as the matrices
+    // so VolumetricPush remains inside Vulkan's 128-byte guaranteed push-constant limit. Units:
+    //   density        ~= 1/block
+    //   sigma_s/a/t    = 1/block
+    //   radiance       = renderer scene-linear radiance units
+    //   distance       = blocks
+    // airParams: x = air single-scattering albedo scalar, y = ambient sky strength,
+    //            z = fixed sky-probe ray length in blocks, w = water absorption weight for surfaceT
+    //                (0 when the primary path already applied water absorption, 1 otherwise).
+    public float4 airParams;
+    // waterParams: x = water density scale, y = water scattering scale,
+    //              z = water absorption scale, w = water HG anisotropy.
+    public float4 waterParams;
+    // waterTintFlags: rgb = camera-biome water tint in the renderer's linear transport basis,
+    //                 a = 1 when the camera is inside water and the froxel volume should use water.
+    public float4 waterTintFlags;
+    // weatherParams: x = rain level, y = thunder level, z = density multiplier, w = direct-light multiplier.
+    public float4 weatherParams;
+    // ambientRadiance: rgb = stable sky/airglow ambient radiance scale,
+    //                  a = multiplier for TLAS-tested sky visibility probes.
+    public float4 ambientRadiance;
+    // worldOrigin: current terrain rebase origin in absolute block coordinates, used only to anchor
+    // procedural density noise in world space while all ray/query positions remain rebased-world.
+    public float4 worldOrigin;
 };
 
 // -----------------------------------------------------------------------------
@@ -69,21 +94,19 @@ public struct FroxelMatrices
 // -----------------------------------------------------------------------------
 //
 // debugView selects the visualization mode (all writes go through integrate.comp):
-//    0 = final composite (L + T * scene)
-//    1 = Z-slice index (color-coded)
-//    2 = world-position checker (verifies density is world-anchored; should not swim)
-//    3 = extinction / density only
-//    4 = raw binary RT visibility (0 or 1, before spatial filter)
-//    5 = fogCurrent content at integrate time (post-temporal accumulated radiance;
-//        temporal overwrites the pre-spatial injection in its place)
-//    6 = fogVolume tap at integrate time (post-temporal; the pre-temporal spatial
-//        output is overwritten by the fogCurrent -> fogVolume copy)
-//    7 = history confidence (black=0, white=1)
-//    8 = disocclusion / history-rejected mask (white=rejected)
-//    9 = integrated in-scattered radiance (pre-composite over scene)
-//   10 = final volumetric contribution (L + (T-1)*scene) over neutral gray
-//   11 = temporal reprojection probe: RGB = prevUvw (prev-frame froxel coordinate of the
-//        froxel under the pixel); magenta = reprojection outside the previous grid
+//    0 = final composite (volumeRadiance + volumeTransmittance * scene)
+//    1 = DEBUG_VOLUME_DENSITY
+//    2 = DEBUG_VOLUME_SCATTERING
+//    3 = DEBUG_VOLUME_ABSORPTION
+//    4 = DEBUG_VOLUME_TRANSMITTANCE
+//    5 = DEBUG_VOLUME_LIGHT_VISIBILITY
+//    6 = DEBUG_VOLUME_HISTORY (temporally reconstructed source radiance)
+//    7 = DEBUG_VOLUME_HISTORY_WEIGHT (history confidence)
+//    8 = DEBUG_VOLUME_FROXEL_SLICE
+//    9 = DEBUG_VOLUME_REPROJECTION_ERROR
+//   10 = world-position checker (verifies density is world-anchored; should not swim)
+//   11 = integrated in-scattered radiance over black
+//   12 = final volumetric contribution (L + (T-1)*scene) over neutral gray
 public struct VolumetricPush
 {
     public uint64_t matricesAddr;                              // offset  0, size  8
@@ -92,9 +115,9 @@ public struct VolumetricPush
     public float    nearPlane;        // 28, froxel near plane (blocks)
     public float3   prevCamOffset;    // 32, prev camera position in CURRENT rebased world
     public float    farPlane;         // 44, froxel far plane (blocks)
-    public float3   sunDir;           // 48, normalized, toward the sun (translation-invariant)
-    public float    sunAngularRadius; // 60, radians
-    public float3   sunColor;         // 64, phase-ready direct radiance (preExposure*E/pi)
+    public float3   sunDir;           // 48, normalized, toward dominant celestial light (field name kept ABI-stable)
+    public float    sunAngularRadius; // 60, light-disc half-angle in radians
+    public float3   sunColor;         // 64, phase-independent direct radiance (preExposure*E/pi)
     public float    heightFogDensity; // 76, sigma_t at Y=heightFogBase (1/blocks)
     public float    heightFogFalloff; // 80
     public float    heightFogBase;    // 84, Y at which density = heightFogDensity, shifted into the
@@ -198,10 +221,18 @@ public float LogRatio(float nearPlane, float farPlane)
     return log(max(farPlane / max(nearPlane, kEpsilon), 1.0001f));
 }
 
+// Authoritative exponential froxel Z distribution. Every pass must call this (or a wrapper
+// that calls this) rather than reconstructing the distribution independently. `w` is in [0,1],
+// with w=0 at the near edge and w=1 at the far edge.
+public float froxelSliceDistance(float w, float nearPlane, float farPlane)
+{
+    w = clamp(w, 0.0f, 1.0f);
+    return nearPlane * exp(w * LogRatio(nearPlane, farPlane));
+}
+
 public float ViewDepthFromFroxelCoord(float t, float nearPlane, float farPlane)
 {
-    t = clamp(t, 0.0f, 1.0f);
-    return nearPlane * exp(t * LogRatio(nearPlane, farPlane));
+    return froxelSliceDistance(t, nearPlane, farPlane);
 }
 
 // Canonical stable center depth for slice z (integer) -- center at t=(z+0.5)/D.
@@ -212,11 +243,17 @@ public float FroxelCenterViewDepth(VolumetricPush pc, uint zSlice)
 }
 
 // Continuous w-coordinate in [0,1] for a given linear view depth.
-public float SliceCoordFromViewDepth(float viewDepth, float nearPlane, float farPlane)
+// Authoritative inverse of froxelSliceDistance(). Returns a clamped coordinate in [0,1].
+public float froxelSliceCoord(float viewDepth, float nearPlane, float farPlane)
 {
     float ratio = max(viewDepth, nearPlane) / max(nearPlane, kEpsilon);
     float w = log(max(ratio, 1.0001f)) / LogRatio(nearPlane, farPlane);
     return clamp(w, 0.0f, 1.0f);
+}
+
+public float SliceCoordFromViewDepth(float viewDepth, float nearPlane, float farPlane)
+{
+    return froxelSliceCoord(viewDepth, nearPlane, farPlane);
 }
 
 // Continuous w-coordinate for a given linear view depth, NOT clamped to [0,1]: values below 0
@@ -424,31 +461,157 @@ public void FroxelDepthSampleLoc(uint2 froxelXy, uint2 froxelXySize, uint2 depth
 // -----------------------------------------------------------------------------
 public float HenyeyGreenstein(float cosTheta, float g)
 {
+    // g > 0 = forward scattering, g = 0 = isotropic, g < 0 = backward scattering.
+    // cosTheta is evaluated between directions with a single convention throughout this pipeline:
+    //   rayDirCameraToSample = camera -> sample
+    //   sampleToLightDir     = sample -> light/sky probe
+    // dot(rayDirCameraToSample, sampleToLightDir) equals dot(incoming photon direction,
+    // outgoing direction toward the camera), because both physical directions are negated.
+    g = clamp(g, -0.98f, 0.98f);
+    cosTheta = clamp(cosTheta, -1.0f, 1.0f);
     float g2 = g * g;
     float denom = 1.0f + g2 - 2.0f * g * cosTheta;
     return (1.0f - g2) / (4.0f * kPi * pow(max(denom, kEpsilon), 1.5f));
 }
 
 // -----------------------------------------------------------------------------
-// Density / extinction model.
-// Extinction is evaluated on rebased-world positions so it stays anchored to
-// terrain as the camera moves: the height falloff keys off worldPos.y, with
-// pc.heightFogBase pre-shifted into the same rebase frame by the host, so the
-// layer's absolute world altitude never moves with the camera.
+// Explicit participating-medium model.
 // -----------------------------------------------------------------------------
-public float ExtinctionAt(VolumetricPush pc, float3 worldPos)
+public struct FroxelMedium
 {
-    float height = worldPos.y - pc.heightFogBase;
-    float heightTerm = exp(-max(0.0f, height) * max(pc.heightFogFalloff, 0.0f));
-    return pc.heightFogDensity * heightTerm + pc.globalDensity;
+    public float  density;       // approximately 1/block, before RGB albedo/tint splitting
+    public float3 sigmaS;        // scattering coefficient, 1/block
+    public float3 sigmaA;        // absorption coefficient, 1/block
+    public float3 sigmaT;        // extinction coefficient = sigmaS + sigmaA, 1/block
+    public float  anisotropyG;   // HG g
+    public float  surfaceAbsorptionWeight; // 0 for water absorption already applied by the primary path
+    public float  water;         // 1 for water medium, 0 for air
+};
+
+public float Luminance(float3 v)
+{
+    return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-// Single-scattering albedo ~0.95-1.0 (conservative; fog is highly scattering).
-// Slight forward-blue tint gives sun shafts a subtle Rayleigh-like warmth forward/blue backward.
-public float3 ScatteringAlbedo()
+// Integer-cell hash and smooth value noise. Density modulation is intentionally world-space only:
+// the same static Minecraft position yields the same medium density regardless of camera motion,
+// dynamic resolution, DLSS jitter, or froxel-grid movement.
+public float HashCell(int3 p)
 {
-    return float3(0.9f, 0.95f, 1.0f);
+    uint h = uint(p.x) * 0x8da6b343u ^ uint(p.y) * 0xd8163841u ^ uint(p.z) * 0xcb1ab31fu;
+    return Hash1(h);
 }
+
+public float ValueNoise3D(float3 p)
+{
+    int3 i = int3(floor(p));
+    float3 f = frac(p);
+    f = f * f * (3.0f - 2.0f * f);
+
+    float n000 = HashCell(i + int3(0,0,0));
+    float n100 = HashCell(i + int3(1,0,0));
+    float n010 = HashCell(i + int3(0,1,0));
+    float n110 = HashCell(i + int3(1,1,0));
+    float n001 = HashCell(i + int3(0,0,1));
+    float n101 = HashCell(i + int3(1,0,1));
+    float n011 = HashCell(i + int3(0,1,1));
+    float n111 = HashCell(i + int3(1,1,1));
+
+    float n00 = lerp(n000, n100, f.x);
+    float n10 = lerp(n010, n110, f.x);
+    float n01 = lerp(n001, n101, f.x);
+    float n11 = lerp(n011, n111, f.x);
+    float n0 = lerp(n00, n10, f.y);
+    float n1 = lerp(n01, n11, f.y);
+    return lerp(n0, n1, f.z);
+}
+
+// Artistic Minecraft fog density -> renderer coefficients conversion. The only place that converts
+// height/global/weather density controls into sigma_t for air is here. Extinction is evaluated on
+// rebased-world positions so it stays anchored to terrain as the camera moves: pc.heightFogBase is
+// pre-shifted into this same rebase frame by the host.
+public float AirDensityAt(VolumetricPush pc, float3 worldPos)
+{
+    FroxelMatrices f = GetMatrices(pc);
+    float height = worldPos.y - pc.heightFogBase;
+    float heightTerm = exp(-max(0.0f, height) * max(pc.heightFogFalloff, 0.0f));
+    float baseDensity = pc.heightFogDensity * heightTerm + pc.globalDensity;
+
+    // Large-scale, world-anchored density variation: subtle enough not to become cloud rendering,
+    // strong enough to prevent perfectly flat slabs at long distances. The noise coordinate adds the
+    // current terrain rebase origin back to the rebased froxel position, so a static world point keeps
+    // the same density through camera motion and origin rebases.
+    float3 noisePos = worldPos + f.worldOrigin.xyz;
+    float n0 = ValueNoise3D(noisePos * 0.01875f);
+    float n1 = ValueNoise3D(noisePos * 0.05500f + float3(17.0f, 3.0f, 29.0f));
+    float modulation = 0.82f + 0.28f * n0 + 0.10f * n1;
+
+    return max(baseDensity * modulation * max(f.weatherParams.z, 0.0f), 0.0f);
+}
+
+// Back-compatible name used by older passes/debug. Returns scalar air sigma_t.
+public float ExtinctionAt(VolumetricPush pc, float3 worldPos)
+{
+    return AirDensityAt(pc, worldPos);
+}
+
+public float3 AirScatteringTint()
+{
+    // Slight blue tint in sigma_s keeps air shafts neutral/warm near the sun and faintly blue in skylight.
+    return float3(0.90f, 0.95f, 1.00f);
+}
+
+public FroxelMedium EvaluateMedium(VolumetricPush pc, float3 worldPos)
+{
+    FroxelMatrices f = GetMatrices(pc);
+    FroxelMedium m;
+
+    bool inWater = f.waterTintFlags.w > 0.5f;
+    if (inWater)
+    {
+        float3 tint = clamp(f.waterTintFlags.xyz, float3(0.02f, 0.02f, 0.02f), float3(1.0f, 1.0f, 1.0f));
+        float density = max(f.waterParams.x, 0.0f);
+
+        // Water absorption matches the surface path's Beer-Lambert convention: biome tint removes
+        // red/green faster than blue. Scattering is separate and does not change the surface refraction
+        // or caustic model.
+        float3 absorbFloor = float3(0.015f, 0.010f, 0.008f);
+        m.sigmaA = max(f.waterParams.z, 0.0f) * (absorbFloor + density * (float3(1.0f, 1.0f, 1.0f) - tint));
+        m.sigmaS = max(f.waterParams.y, 0.0f) * density * lerp(float3(0.45f, 0.45f, 0.45f), tint, 0.65f);
+        m.sigmaT = m.sigmaS + m.sigmaA;
+        m.density = max(Luminance(m.sigmaT), 0.0f);
+        m.anisotropyG = clamp(f.waterParams.w, -0.98f, 0.98f);
+        m.surfaceAbsorptionWeight = clamp(f.airParams.w, 0.0f, 1.0f);
+        m.water = 1.0f;
+        return m;
+    }
+
+    float sigma = AirDensityAt(pc, worldPos);
+    float airAlbedo = clamp(f.airParams.x, 0.0f, 0.999f);
+    m.sigmaS = sigma * airAlbedo * AirScatteringTint();
+    m.sigmaA = max(float3(sigma, sigma, sigma) - m.sigmaS, float3(0.0f, 0.0f, 0.0f));
+    m.sigmaT = m.sigmaS + m.sigmaA;
+    m.density = sigma;
+    m.anisotropyG = clamp(pc.anisotropyG, -0.98f, 0.98f);
+    m.surfaceAbsorptionWeight = 1.0f;
+    m.water = 0.0f;
+    return m;
+}
+
+public float FroxelMediumSigmaLuma(FroxelMedium m)
+{
+    return max(Luminance(m.sigmaT), 0.0f);
+}
+
+public float3 FroxelSkyProbeDirection(uint probeIndex)
+{
+    // Fixed world-space sky probes. They are not randomized per froxel/frame, so caves and forests
+    // converge without temporal flashing. Keep the count small because each probe is a TLAS ray query.
+    if (probeIndex == 0u) return float3(0.0f, 1.0f, 0.0f);
+    return normalize(float3(0.62f, 0.70f, 0.34f));
+}
+
+public static const uint kFroxelSkyProbeCount = 2u;
 
 // -----------------------------------------------------------------------------
 // Sun-disk sampling.

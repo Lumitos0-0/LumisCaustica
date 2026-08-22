@@ -57,7 +57,9 @@ abstract class GenerateRtBindings extends DefaultTask {
                     TLAS: "tlas", FOG_VOLUME: "fogVolume", FOG_CURRENT: "fogCurrent",
                     FOG_HISTORY: "fogHistory", FOG_HISTORY_CONF: "fogHistoryConfidence",
                     DEPTH_IMAGE: "depthImage", OUTPUT_IMAGE: "outputImage",
-                    FOG_CONF_CURRENT: "fogConfidenceCurrent"]],
+                    FOG_CONF_CURRENT: "fogConfidenceCurrent",
+                    FOG_MEDIUM_SCATTERING: "fogMediumScattering",
+                    FOG_MEDIUM_ABSORPTION: "fogMediumAbsorption"]],
             [prefix: "OVERLAY_IMAGE", source: "pipelines/overlay_composite/glow.frag.slang", resources: [VALUE: "sourceImage"]],
             [prefix: "OVERLAY_SAMPLER", source: "pipelines/name_tag/fragment.frag.slang", resources: [VALUE: "fontAtlas"]],
             [prefix: "OVERLAY_TLAS", source: "pipelines/block_outline/fragment.frag.slang", resources: [VALUE: "tlas"]]

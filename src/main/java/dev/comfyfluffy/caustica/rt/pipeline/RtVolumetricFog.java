@@ -30,6 +30,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.LongBuffer;
+import java.util.Objects;
 
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.rt.RtComposite;
@@ -46,6 +47,8 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_CONF_CU
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_CURRENT;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_HISTORY;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_HISTORY_CONF;
+import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_MEDIUM_ABSORPTION;
+import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_MEDIUM_SCATTERING;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_FOG_VOLUME;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_OUTPUT_IMAGE;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_TLAS;
@@ -57,7 +60,8 @@ import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_
  *
  * <p>Implements the four-pass architecture:
  * <ol>
- *   <li><b>inject</b> — per-froxel density + one shadow ray, writes {@code fogCurrent}.
+ *   <li><b>inject</b> — per-froxel medium coefficients, direct-light visibility, stable sky probes,
+ *       writes {@code fogCurrent}, {@code fogMediumScattering}, and {@code fogMediumAbsorption}.
  *   <li><b>spatial</b> — edge-aware 3x3 XY bilateral filter, writes {@code fogVolume}.
  *   <li><b>temporal</b> — stable-center reprojection into {@code fogHistory},
  *       neighborhood clamping, confidence accumulation; reads {@code fogHistory} and
@@ -69,13 +73,13 @@ import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_
  *       (so DLSS-RR denoises fog + surfaces together).
  * </ol>
  *
- * <p>Camera matrices live in a small host-visible storage buffer (BDA-addressed via a
- * pointer in push constants) so the scalar push block stays within the 128-byte guaranteed
- * minimum. The buffer ring rotates every frame; a slot is rewritten only after the RT
+ * <p>Camera matrices and frame medium parameters live in a small host-visible storage buffer
+ * (BDA-addressed via a pointer in push constants) so the scalar push block stays within the
+ * 128-byte guaranteed minimum. The buffer ring rotates every frame; a slot is rewritten only after the RT
  * graphics timeline proves every submitted command that can dereference that slot has
  * completed ({@link RtGpuExecutor.TrackedGraphicsUse} — the same lifetime discipline as the
- * world push ring). Host writes never interleave with in-flight GPU reads, so the three
- * matrices arrive at the shaders as one consistent, untorn frame snapshot. Ring depth sets
+ * world push ring). Host writes never interleave with in-flight GPU reads, so matrices and
+ * medium state arrive at the shaders as one consistent, untorn frame snapshot. Ring depth sets
  * worst-case host-stall frequency only; correctness comes from the waits, not the depth.
  *
  * <p>The froxel descriptor set is ringed the same way ({@link #SET_RING} slots): the TLAS
@@ -93,8 +97,8 @@ public final class RtVolumetricFog {
     private static final int FOG_FORMAT = VK10.VK_FORMAT_R16G16B16A16_SFLOAT;
     private static final int CONF_FORMAT = VK10.VK_FORMAT_R16_SFLOAT;
 
-    // FroxelMatrices: 3 float4x4 = 3 * 64 = 192 bytes.
-    private static final long MATRICES_BUF_SIZE = 192;
+    // FroxelMatrices: 3 float4x4 plus 6 float4 medium/state records = 288 bytes.
+    private static final long MATRICES_BUF_SIZE = 288;
     // Matrix-buffer ring depth, matching the world push ring: with TrackedGraphicsUse waits the
     // depth is a host-stall-avoidance choice, never a correctness one.
     private static final int MATRIX_RING = 6;
@@ -134,6 +138,9 @@ public final class RtVolumetricFog {
     private RtImage fogVolume;
     private RtImage fogHistory;
     private RtImage fogHistoryConfidence;
+    // Current deterministic medium coefficients: sigma_s/density and sigma_a/direct visibility.
+    private RtImage fogMediumScattering;
+    private RtImage fogMediumAbsorption;
     // Confidence ping-pong partner: temporal's write target, copied back into
     // fogHistoryConfidence for the next frame.
     private RtImage fogConfidenceCurrent;
@@ -149,6 +156,7 @@ public final class RtVolumetricFog {
     private float lastFar = -1f;
     private int lastGridZ = -1;
     private int lastDivisor = -1;
+    private int lastMediumStateHash;
 
     /** Matrix-buffer ring slot: the BDA buffer plus the token of the last frame that used it. */
     private static final class MatrixSlot {
@@ -158,6 +166,33 @@ public final class RtVolumetricFog {
         MatrixSlot(RtBuffer buffer) {
             this.buffer = buffer;
         }
+    }
+
+    private static int quantizeState(float value) {
+        return Math.round(value * 1024.0f);
+    }
+
+    private static int mediumStateHash(boolean cameraInWater, float rainLevel, float thunderLevel,
+                                       float waterTintR, float waterTintG, float waterTintB) {
+        return Objects.hash(
+                quantizeState(CausticaConfig.Rt.Fog.HEIGHT_DENSITY.value()),
+                quantizeState(CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value()),
+                quantizeState(CausticaConfig.Rt.Fog.HEIGHT_BASE.value()),
+                quantizeState(CausticaConfig.Rt.Fog.GLOBAL_DENSITY.value()),
+                quantizeState(CausticaConfig.Rt.Fog.AIR_ALBEDO.value()),
+                quantizeState(CausticaConfig.Rt.Fog.ANISOTROPY.value()),
+                quantizeState(CausticaConfig.Rt.Fog.SKY_AMBIENT.value()),
+                quantizeState(CausticaConfig.Rt.Fog.SKY_PROBE_DISTANCE.value()),
+                quantizeState(CausticaConfig.Rt.Fog.WATER_DENSITY.value()),
+                quantizeState(CausticaConfig.Rt.Fog.WATER_SCATTERING.value()),
+                quantizeState(CausticaConfig.Rt.Fog.WATER_ABSORPTION.value()),
+                quantizeState(CausticaConfig.Rt.Fog.WATER_ANISOTROPY.value()),
+                quantizeState(CausticaConfig.Rt.Fog.RAIN_DENSITY_SCALE.value()),
+                quantizeState(CausticaConfig.Rt.Fog.RAIN_LIGHT_SCALE.value()),
+                quantizeState(CausticaConfig.Rt.Fog.THUNDER_LIGHT_SCALE.value()),
+                cameraInWater ? 1 : 0,
+                quantizeState(rainLevel), quantizeState(thunderLevel),
+                quantizeState(waterTintR), quantizeState(waterTintG), quantizeState(waterTintB));
     }
 
     private RtVolumetricFog(RtContext ctx) {
@@ -173,8 +208,8 @@ public final class RtVolumetricFog {
     private void init() {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            // ---- Descriptor set layout: TLAS(AS) + 7 storage images.
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(8, stack);
+            // ---- Descriptor set layout: TLAS(AS) + 9 storage images.
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(10, stack);
             binds.get(VOLUME_TLAS).binding(VOLUME_TLAS)
                     .descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1)
@@ -182,7 +217,8 @@ public final class RtVolumetricFog {
             int[] storageBindings = {
                     VOLUME_FOG_VOLUME, VOLUME_FOG_CURRENT, VOLUME_FOG_HISTORY,
                     VOLUME_FOG_HISTORY_CONF, VOLUME_DEPTH_IMAGE, VOLUME_OUTPUT_IMAGE,
-                    VOLUME_FOG_CONF_CURRENT
+                    VOLUME_FOG_CONF_CURRENT, VOLUME_FOG_MEDIUM_SCATTERING,
+                    VOLUME_FOG_MEDIUM_ABSORPTION
             };
             for (int b : storageBindings) {
                 binds.get(b).binding(b)
@@ -202,7 +238,7 @@ public final class RtVolumetricFog {
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(SET_RING);
-            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(7 * SET_RING);
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(9 * SET_RING);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(SET_RING).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt volume fog)");
@@ -321,6 +357,10 @@ public final class RtVolumetricFog {
                 "volumetric fog history " + w + "x" + h + "x" + gridZ);
         fogHistoryConfidence = ctx.createStorageImage3D(w, h, gridZ, CONF_FORMAT,
                 "volumetric fog confidence " + w + "x" + h + "x" + gridZ);
+        fogMediumScattering = ctx.createStorageImage3D(w, h, gridZ, FOG_FORMAT,
+                "volumetric medium scattering " + w + "x" + h + "x" + gridZ);
+        fogMediumAbsorption = ctx.createStorageImage3D(w, h, gridZ, FOG_FORMAT,
+                "volumetric medium absorption " + w + "x" + h + "x" + gridZ);
         fogConfidenceCurrent = ctx.createStorageImage3D(w, h, gridZ, CONF_FORMAT,
                 "volumetric fog confidence output " + w + "x" + h + "x" + gridZ);
 
@@ -351,7 +391,7 @@ public final class RtVolumetricFog {
             black.float32(0, 0f).float32(1, 0f).float32(2, 0f).float32(3, 0f);
 
             RtImage[] toClear = { fogCurrent, fogVolume, fogHistory, fogHistoryConfidence,
-                    fogConfidenceCurrent };
+                    fogMediumScattering, fogMediumAbsorption, fogConfidenceCurrent };
             for (RtImage img : toClear) {
                 if (img == null) continue;
                 VK10.vkCmdClearColorImage(cmd, img.image, VK10.VK_IMAGE_LAYOUT_GENERAL, black, range);
@@ -371,6 +411,8 @@ public final class RtVolumetricFog {
         if (fogVolume != null) { fogVolume.destroy(); fogVolume = null; }
         if (fogHistory != null) { fogHistory.destroy(); fogHistory = null; }
         if (fogHistoryConfidence != null) { fogHistoryConfidence.destroy(); fogHistoryConfidence = null; }
+        if (fogMediumScattering != null) { fogMediumScattering.destroy(); fogMediumScattering = null; }
+        if (fogMediumAbsorption != null) { fogMediumAbsorption.destroy(); fogMediumAbsorption = null; }
         if (fogConfidenceCurrent != null) { fogConfidenceCurrent.destroy(); fogConfidenceCurrent = null; }
     }
 
@@ -395,8 +437,8 @@ public final class RtVolumetricFog {
         VkDevice vk = ctx.vk();
         long descriptorSet = descriptorSets[setCursor];
 
-        // 7 storage image descriptors + 1 AS descriptor.
-        VkDescriptorImageInfo.Buffer img = VkDescriptorImageInfo.calloc(7, stack);
+        // 9 storage image descriptors + 1 AS descriptor.
+        VkDescriptorImageInfo.Buffer img = VkDescriptorImageInfo.calloc(9, stack);
         img.get(0).imageView(fogVolume.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
         img.get(1).imageView(fogCurrent.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
         img.get(2).imageView(fogHistory.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
@@ -404,8 +446,10 @@ public final class RtVolumetricFog {
         img.get(4).imageView(depthView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
         img.get(5).imageView(outputView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
         img.get(6).imageView(fogConfidenceCurrent.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+        img.get(7).imageView(fogMediumScattering.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+        img.get(8).imageView(fogMediumAbsorption.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
-        VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(8, stack);
+        VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(10, stack);
         int w = 0;
         // TLAS
         VkWriteDescriptorSetAccelerationStructureKHR asWrite = VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
@@ -414,11 +458,11 @@ public final class RtVolumetricFog {
         writes.get(w).sType$Default().pNext(asWrite).dstSet(descriptorSet).dstBinding(VOLUME_TLAS)
                 .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
         w++;
-        // Storage images (FOG_VOLUME, FOG_CURRENT, FOG_HISTORY, FOG_HISTORY_CONF, DEPTH_IMAGE,
-        // OUTPUT_IMAGE, FOG_CONF_CURRENT) — same order as the img buffer above.
+        // Storage images — same order as the img buffer above.
         int[] storageSlots = { VOLUME_FOG_VOLUME, VOLUME_FOG_CURRENT, VOLUME_FOG_HISTORY,
                 VOLUME_FOG_HISTORY_CONF, VOLUME_DEPTH_IMAGE, VOLUME_OUTPUT_IMAGE,
-                VOLUME_FOG_CONF_CURRENT };
+                VOLUME_FOG_CONF_CURRENT, VOLUME_FOG_MEDIUM_SCATTERING,
+                VOLUME_FOG_MEDIUM_ABSORPTION };
         for (int i = 0; i < storageSlots.length; i++) {
             writes.get(w).sType$Default().dstSet(descriptorSet).dstBinding(storageSlots[i])
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -459,16 +503,27 @@ public final class RtVolumetricFog {
      * @param camDeltaX,camDeltaY,camDeltaZ camera-space translation from PREVIOUS camera position to
      *                        current camera position, in blocks (world units). Rebase-agnostic:
      *                        previous camera offset = (camX - camDeltaX, camY - camDeltaY, camZ - camDeltaZ).
+     * @param rebaseOriginX   absolute world X of the current terrain rebase origin (terrain.blockX)
      * @param rebaseOriginY   absolute world Y of the current terrain rebase origin (terrain.blockY).
      *                        Froxel positions are evaluated in the rebase-origin frame, while the
      *                        height-fog base is configured as an absolute world Y, so the push
      *                        constant carries {@code Fog.HEIGHT_BASE - rebaseOriginY}: the fog layer
      *                        stays anchored to the world instead of riding the camera's altitude.
-     * @param sunDirX,sunDirY,sunDirZ normalized sun direction (toward sun; direction is translation-invariant)
-     * @param sunAngularRadius sun disk half-angle in radians
-     * @param sunRadiance     directional in-scattered radiance scale for the sun (already in the
-     *                        pre-exposed scene-linear domain; includes HG-phase-independent
-     *                        factors like E_lux * preExposure / pi). Phase is applied per-froxel.
+     * @param rebaseOriginZ   absolute world Z of the current terrain rebase origin (terrain.blockZ)
+     * @param sunDirX,sunDirY,sunDirZ normalized dominant celestial direction (toward light; translation-invariant)
+     * @param sunAngularRadius dominant celestial light-disc half-angle in radians
+     * @param sunRadiance     directional in-scattered radiance scale for the dominant celestial light
+     *                        (already in the pre-exposed scene-linear domain; includes
+     *                        HG-phase-independent factors like E_lux * preExposure / pi).
+     *                        Phase is applied per-froxel.
+     * @param ambientRadiance stable sky/airglow ambient radiance scale in the same pre-exposed domain
+     * @param waterTintR     camera-biome water tint red in the renderer's linear basis
+     * @param waterTintG     camera-biome water tint green in the renderer's linear basis
+     * @param waterTintB     camera-biome water tint blue in the renderer's linear basis
+     * @param cameraInWater   true when the camera starts inside water; water absorption from the
+     *                        primary surface path is not applied a second time during fog composite
+     * @param rainLevel     rain state used to derive explicit medium/light multipliers
+     * @param thunderLevel  thunder state used to derive explicit medium/light multipliers
      * @param historyValid    host-side half of the temporal validity conjunction: true only when a
      *                        previous frame exists whose history volumes were produced under a
      *                        compatible projection and camera state (see RtComposite). It is ANDed
@@ -483,9 +538,12 @@ public final class RtVolumetricFog {
                          RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter,
                          Matrix4fc invViewProj, Matrix4fc curViewProj, Matrix4fc prevViewProj,
                          float camX, float camY, float camZ,
-                         float camDeltaX, float camDeltaY, float camDeltaZ, int rebaseOriginY,
+                         float camDeltaX, float camDeltaY, float camDeltaZ,
+                         int rebaseOriginX, int rebaseOriginY, int rebaseOriginZ,
                          float sunDirX, float sunDirY, float sunDirZ,
-                         float sunAngularRadius, float sunRadiance,
+                         float sunAngularRadius, float sunRadiance, float ambientRadiance,
+                         float waterTintR, float waterTintG, float waterTintB,
+                         boolean cameraInWater, float rainLevel, float thunderLevel,
                          boolean historyValid) {
         if (!CausticaConfig.Rt.Fog.ENABLED.value()) return;
 
@@ -495,10 +553,13 @@ public final class RtVolumetricFog {
         // Determine history validity: caller-supplied continuity AND grid stability. A rebuild
         // in ensureResources (resize, slice-count change) forces gridValid false for one frame
         // via the lastNear sentinel, so freshly-cleared volumes are never treated as history.
+        int mediumStateHash = mediumStateHash(cameraInWater, rainLevel, thunderLevel,
+                waterTintR, waterTintG, waterTintB);
         boolean gridValid = lastNear == CausticaConfig.Rt.Fog.NEAR.value()
                 && lastFar == CausticaConfig.Rt.Fog.FAR.value()
                 && lastGridZ == gridZ
-                && lastDivisor == divisor;
+                && lastDivisor == divisor
+                && lastMediumStateHash == mediumStateHash;
         boolean useHistory = historyValid && gridValid;
 
         // Previous-frame camera offset in THIS frame's rebased coords = current offset - camera delta.
@@ -509,6 +570,17 @@ public final class RtVolumetricFog {
         float pcPrevX = useHistory ? camX - camDeltaX : camX;
         float pcPrevY = useHistory ? camY - camDeltaY : camY;
         float pcPrevZ = useHistory ? camZ - camDeltaZ : camZ;
+
+        float rain = Math.clamp(rainLevel, 0.0f, 1.0f);
+        float thunder = Math.clamp(thunderLevel, 0.0f, 1.0f);
+        float weatherDensityScale = 1.0f + rain
+                * (CausticaConfig.Rt.Fog.RAIN_DENSITY_SCALE.value() - 1.0f);
+        float rainLightScale = 1.0f - rain
+                * (1.0f - CausticaConfig.Rt.Fog.RAIN_LIGHT_SCALE.value());
+        float thunderLightScale = 1.0f - thunder
+                * (1.0f - CausticaConfig.Rt.Fog.THUNDER_LIGHT_SCALE.value());
+        float weatherLightScale = Math.clamp(rainLightScale * thunderLightScale, 0.0f, 1.0f);
+        float surfaceWaterAbsorptionWeight = cameraInWater ? 0.0f : 1.0f;
 
         // Rotate to the next matrix slot and host-wait until every previously submitted command
         // that can dereference this slot's buffer has completed. All four fog passes read the
@@ -528,6 +600,21 @@ public final class RtVolumetricFog {
             invViewProj.get(fb); fb.position(16);
             curViewProj.get(fb); fb.position(32);
             prevViewProj.get(fb); fb.position(48);
+            fb.put(CausticaConfig.Rt.Fog.AIR_ALBEDO.value())
+                    .put(CausticaConfig.Rt.Fog.SKY_AMBIENT.value())
+                    .put(CausticaConfig.Rt.Fog.SKY_PROBE_DISTANCE.value())
+                    .put(surfaceWaterAbsorptionWeight);
+            fb.put(CausticaConfig.Rt.Fog.WATER_DENSITY.value())
+                    .put(CausticaConfig.Rt.Fog.WATER_SCATTERING.value())
+                    .put(CausticaConfig.Rt.Fog.WATER_ABSORPTION.value())
+                    .put(CausticaConfig.Rt.Fog.WATER_ANISOTROPY.value());
+            fb.put(waterTintR).put(waterTintG).put(waterTintB).put(cameraInWater ? 1.0f : 0.0f);
+            fb.put(rain).put(thunder).put(weatherDensityScale).put(weatherLightScale);
+            fb.put(ambientRadiance * weatherLightScale)
+                    .put(ambientRadiance * weatherLightScale)
+                    .put(ambientRadiance * weatherLightScale)
+                    .put(1.0f);
+            fb.put((float) rebaseOriginX).put((float) rebaseOriginY).put((float) rebaseOriginZ).put(0.0f);
             matBuf.flush(0L, MATRICES_BUF_SIZE);
         }
 
@@ -608,6 +695,9 @@ public final class RtVolumetricFog {
                         fogVolume.image, VK10.VK_IMAGE_LAYOUT_GENERAL, region);
             }
             transferBarrier(cmd, stack);
+            // Integrate normally reads fogVolume/fogMedium; debug history-weight mode also reads
+            // fogConfidenceCurrent written by temporal, so make those shader writes visible too.
+            computeBarrier(cmd, stack);
 
             try (RtDebugLabels.Scope s = RtDebugLabels.scope(ctx, cmd, "volumetric integrate")) {
                 VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, integratePipeline);
@@ -651,6 +741,7 @@ public final class RtVolumetricFog {
         lastFar = CausticaConfig.Rt.Fog.FAR.value();
         lastGridZ = gridZ;
         lastDivisor = divisor;
+        lastMediumStateHash = mediumStateHash;
     }
 
     private static void computeBarrier(VkCommandBuffer cmd, MemoryStack stack) {
@@ -681,9 +772,10 @@ public final class RtVolumetricFog {
         VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, stack);
         mb.get(0).sType$Default()
                 .srcAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
-                .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT);
+                .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_TRANSFER_READ_BIT);
         VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, mb, null, null);
+                VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, mb, null, null);
     }
 
     public void destroy() {

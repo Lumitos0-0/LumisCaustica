@@ -1,21 +1,23 @@
 // Volumetric fog descriptor layout. All volumetric passes share one descriptor set layout
 // so that a single VkDescriptorSet is reused across inject/spatial/temporal/integrate dispatches.
-// The three camera matrices (invViewProj, curViewProj, prevViewProj) are NOT bound here — they
-// live in a small persistently-mapped storage buffer accessed by raw device address pushed in
+// Camera matrices and per-frame medium parameters are NOT bound here — they live in a small
+// persistently-mapped storage buffer accessed by raw device address pushed in
 // VolumetricPush.matricesAddr, which keeps push constants under the 128-byte Vulkan minimum.
 
 [[vk::binding(0, 0)]] public RaytracingAccelerationStructure tlas;
 
-// Froxel data, current frame (RGBA16F):
-//   RGB = in-scattered source radiance (after spatial filter / temporal accumulation)
-//   A   = extinction coefficient sigma_t (1/blocks), scalar luminance
+// Froxel radiance data, current frame (RGBA16F):
+//   RGB = in-scattered source radiance S = sigma_s * incidentRadiance * phase
+//         in renderer radiance units per block. This is temporally reconstructed.
+//   A   = scalar extinction luminance sigma_t (1/blocks), used only for history validation
+//         and debug. The physically integrated per-channel extinction lives in fogMedium*.
 [[vk::binding(1, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogVolume;
 
-// Current-frame injected froxel data (RGBA16F) before filtering/history.
+// Current-frame injected radiance data (RGBA16F) before filtering/history.
 // Used as input for spatial filter, and for neighborhood clamping in temporal.
 [[vk::binding(2, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogCurrent;
 
-// History froxel volume (RGBA16F): same semantic layout as fogVolume, written by previous frame.
+// History froxel radiance volume (RGBA16F): same semantic layout as fogVolume, written by previous frame.
 [[vk::binding(3, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogHistory;
 
 // History confidence / age per froxel (R16F):
@@ -37,3 +39,12 @@
 // Current-frame confidence output (R16F), written by temporal.comp. Copied into
 // fogHistoryConfidence by Java after integrate so it becomes next frame's history confidence.
 [[vk::binding(7, 0)]] [format("r16f")] public RWTexture3D<float> fogConfidenceCurrent;
+
+// Explicit current-frame participating-medium coefficients (RGBA16F), stable/world-anchored:
+//   fogMediumScattering.rgb = sigma_s, scattering coefficient (1/blocks)
+//   fogMediumScattering.a   = density, approximately 1/block before albedo splitting
+//   fogMediumAbsorption.rgb = sigma_a, absorption coefficient (1/blocks)
+//   fogMediumAbsorption.a   = direct-light visibility in [0,1] for debug only
+// These are not temporally accumulated: medium coefficients are deterministic functions of world state.
+[[vk::binding(8, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogMediumScattering;
+[[vk::binding(9, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogMediumAbsorption;

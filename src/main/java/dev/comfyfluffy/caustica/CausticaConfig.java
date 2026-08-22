@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Fog.ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
 
@@ -861,9 +861,36 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 0.03f, 0f, 1f);
             public static final FloatSetting HEIGHT_BASE =
                     finiteFloat("caustica.rt.fogHeightBase", "fog.height-base", 62f);
-            // Henyey-Greenstein anisotropy.
+            // Air single-scattering albedo: converts Minecraft artistic fog density into
+            // sigma_s and sigma_a in the volumetric participating-medium model.
+            public static final FloatSetting AIR_ALBEDO =
+                    clampedFloat("caustica.rt.fogAirAlbedo", "fog.air-albedo", 0.96f, 0f, 0.999f);
+            // Henyey-Greenstein anisotropy for air.
             public static final FloatSetting ANISOTROPY =
                     clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.45f, -0.95f, 0.95f);
+            // Stable TLAS-tested sky ambient; radiance is derived from the active sky lighting and this scale.
+            public static final FloatSetting SKY_AMBIENT =
+                    clampedFloat("caustica.rt.fogSkyAmbient", "fog.sky-ambient", 0.06f, 0f, 4f);
+            public static final FloatSetting SKY_PROBE_DISTANCE =
+                    clampedFloat("caustica.rt.fogSkyProbeDistance", "fog.sky-probe-distance", 128f, 4f, 1024f);
+            // Underwater participating medium. Absorption is aligned with the surface path's water tint
+            // convention; scattering is separate so caustics/refraction remain surface-lighting terms.
+            public static final FloatSetting WATER_DENSITY =
+                    clampedFloat("caustica.rt.fogWaterDensity", "fog.water-density", 0.10f, 0f, 4f);
+            public static final FloatSetting WATER_SCATTERING =
+                    clampedFloat("caustica.rt.fogWaterScattering", "fog.water-scattering", 0.08f, 0f, 4f);
+            public static final FloatSetting WATER_ABSORPTION =
+                    clampedFloat("caustica.rt.fogWaterAbsorption", "fog.water-absorption", 1.0f, 0f, 8f);
+            public static final FloatSetting WATER_ANISOTROPY =
+                    clampedFloat("caustica.rt.fogWaterAnisotropy", "fog.water-anisotropy", 0.70f, -0.95f, 0.95f);
+            // Weather modifies world state before the medium is evaluated; the integration equation itself
+            // remains Beer-Lambert and does not special-case rain/thunder.
+            public static final FloatSetting RAIN_DENSITY_SCALE =
+                    clampedFloat("caustica.rt.fogRainDensityScale", "fog.rain-density-scale", 1.8f, 0.1f, 8f);
+            public static final FloatSetting RAIN_LIGHT_SCALE =
+                    clampedFloat("caustica.rt.fogRainLightScale", "fog.rain-light-scale", 0.70f, 0f, 1f);
+            public static final FloatSetting THUNDER_LIGHT_SCALE =
+                    clampedFloat("caustica.rt.fogThunderLightScale", "fog.thunder-light-scale", 0.35f, 0f, 1f);
             // Temporal history weight (0..1). Higher = more stable, slower convergence.
             // 0.92 is a good sweet spot between temporal stability and shadow convergence speed.
             public static final FloatSetting HISTORY_WEIGHT =
@@ -873,11 +900,11 @@ public final class CausticaConfig {
             // accumulation integrates the binary visibility into a soft penumbra.
             public static final BooleanSetting STOCHASTIC_LIGHT =
                     bool("caustica.rt.fogStochastic", "fog.stochastic-light", true);
-            // Volumetric debug view selector (integrate.comp). 0 = normal composite; 1-11 =
-            // diagnostic visualizations (see VolumetricPush.debugView). Internal/tooling only;
-            // intentionally absent from the video-options UI. 11 is the temporal reprojection
-            // probe: RGB = prevUvw of the froxel under the pixel, magenta where the reprojection
-            // falls outside the previous grid.
+            // Volumetric debug view selector (integrate.comp). 0 = normal composite; 1-12 =
+            // diagnostic visualizations (density, scattering, absorption, transmittance, light
+            // visibility, history, history confidence, slice, reprojection error, world checker,
+            // integrated radiance, final contribution). Internal/tooling only; intentionally absent
+            // from the video-options UI.
             public static final IntSetting DEBUG_VIEW =
                     intValue("caustica.rt.fogDebugView", "fog.debug-view", 0);
 

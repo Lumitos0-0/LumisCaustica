@@ -3,13 +3,13 @@
 // For each RENDER-RES pixel:
 //   * reconstructs camera ray direction through the pixel,
 //   * reads gDepth to find opaque scene distance,
-//   * walks the froxel volume front-to-back, sampling the temporally-
-//     accumulated fogVolume with TRILINEAR interpolation at each step,
-//   * applies the exact per-segment exponential integration
-//       T_slice = exp(-sigma_t * ds)
-//       integ   = S * (1 - T_slice) / sigma_t
+//   * walks the froxel volume front-to-back, sampling temporally accumulated source radiance
+//     and deterministic sigma_s/sigma_a coefficients with TRILINEAR interpolation,
+//   * applies the exact per-segment Beer-Lambert integration per RGB channel
+//       T_slice = exp(-(sigma_s + sigma_a) * ds)
+//       integ   = S * (1 - T_slice) / (sigma_s + sigma_a)
 //     with linear fallback as sigma_t -> 0,
-//   * composites accumL + accumT * scene over the existing RT output.
+//   * composites volumeRadiance + surfaceRadiance * volumeTransmittance over the existing RT output.
 //
 // This places fog at render resolution BEFORE DLSS-RR/upscale so RR
 // denoises fog + surfaces together.
@@ -23,9 +23,9 @@ import common;
 
 [[vk::push_constant]] VolumetricPush pc;
 
-// Trilinear read from fogVolume at a continuous froxel-space coordinate
+// Trilinear read from a froxel 3D image at a continuous froxel-space coordinate
 // (x,y in [0,froxelSize.xy), z in [0,froxelSize.z)).
-float4 SampleFogTrilinear(float3 coord)
+float4 SampleTextureTrilinear(RWTexture3D<float4> tex, float3 coord)
 {
     uint3 size = FroxelSize(pc);
     float3 c = coord - 0.5f;
@@ -36,14 +36,14 @@ float4 SampleFogTrilinear(float3 coord)
     int3 i0c = clamp(i0, int3(0,0,0), (int3)size - int3(1,1,1));
     int3 i1c = clamp(i1, int3(0,0,0), (int3)size - int3(1,1,1));
 
-    float4 s000 = fogVolume[uint3(i0c.x, i0c.y, i0c.z)];
-    float4 s100 = fogVolume[uint3(i1c.x, i0c.y, i0c.z)];
-    float4 s010 = fogVolume[uint3(i0c.x, i1c.y, i0c.z)];
-    float4 s110 = fogVolume[uint3(i1c.x, i1c.y, i0c.z)];
-    float4 s001 = fogVolume[uint3(i0c.x, i0c.y, i1c.z)];
-    float4 s101 = fogVolume[uint3(i1c.x, i0c.y, i1c.z)];
-    float4 s011 = fogVolume[uint3(i0c.x, i1c.y, i1c.z)];
-    float4 s111 = fogVolume[uint3(i1c.x, i1c.y, i1c.z)];
+    float4 s000 = tex[uint3(i0c.x, i0c.y, i0c.z)];
+    float4 s100 = tex[uint3(i1c.x, i0c.y, i0c.z)];
+    float4 s010 = tex[uint3(i0c.x, i1c.y, i0c.z)];
+    float4 s110 = tex[uint3(i1c.x, i1c.y, i0c.z)];
+    float4 s001 = tex[uint3(i0c.x, i0c.y, i1c.z)];
+    float4 s101 = tex[uint3(i1c.x, i0c.y, i1c.z)];
+    float4 s011 = tex[uint3(i0c.x, i1c.y, i1c.z)];
+    float4 s111 = tex[uint3(i1c.x, i1c.y, i1c.z)];
 
     float4 s00 = lerp(s000, s100, f.x);
     float4 s10 = lerp(s010, s110, f.x);
@@ -52,6 +52,31 @@ float4 SampleFogTrilinear(float3 coord)
     float4 s0  = lerp(s00,  s10,  f.y);
     float4 s1  = lerp(s01,  s11,  f.y);
     return lerp(s0, s1, f.z);
+}
+
+float4 SampleFogTrilinear(float3 coord)
+{
+    return SampleTextureTrilinear(fogVolume, coord);
+}
+
+float4 SampleMediumScatteringTrilinear(float3 coord)
+{
+    return SampleTextureTrilinear(fogMediumScattering, coord);
+}
+
+float4 SampleMediumAbsorptionTrilinear(float3 coord)
+{
+    return SampleTextureTrilinear(fogMediumAbsorption, coord);
+}
+
+float3 SegmentFactor(float3 sigmaT, float ds)
+{
+    float3 T = exp(-max(sigmaT, float3(0.0f, 0.0f, 0.0f)) * ds);
+    return float3(
+        sigmaT.x > 1.0e-6f ? (1.0f - T.x) / sigmaT.x : ds,
+        sigmaT.y > 1.0e-6f ? (1.0f - T.y) / sigmaT.y : ds,
+        sigmaT.z > 1.0e-6f ? (1.0f - T.z) / sigmaT.z : ds
+    );
 }
 
 float SampleConfidenceTrilinear(float3 coord)
@@ -63,14 +88,14 @@ float SampleConfidenceTrilinear(float3 coord)
     int3   i1 = i0 + 1;
     int3 i0c = clamp(i0, int3(0,0,0), (int3)size - int3(1,1,1));
     int3 i1c = clamp(i1, int3(0,0,0), (int3)size - int3(1,1,1));
-    float s000 = fogHistoryConfidence[uint3(i0c.x, i0c.y, i0c.z)];
-    float s100 = fogHistoryConfidence[uint3(i1c.x, i0c.y, i0c.z)];
-    float s010 = fogHistoryConfidence[uint3(i0c.x, i1c.y, i0c.z)];
-    float s110 = fogHistoryConfidence[uint3(i1c.x, i1c.y, i0c.z)];
-    float s001 = fogHistoryConfidence[uint3(i0c.x, i0c.y, i1c.z)];
-    float s101 = fogHistoryConfidence[uint3(i1c.x, i0c.y, i1c.z)];
-    float s011 = fogHistoryConfidence[uint3(i0c.x, i1c.y, i1c.z)];
-    float s111 = fogHistoryConfidence[uint3(i1c.x, i1c.y, i1c.z)];
+    float s000 = fogConfidenceCurrent[uint3(i0c.x, i0c.y, i0c.z)];
+    float s100 = fogConfidenceCurrent[uint3(i1c.x, i0c.y, i0c.z)];
+    float s010 = fogConfidenceCurrent[uint3(i0c.x, i1c.y, i0c.z)];
+    float s110 = fogConfidenceCurrent[uint3(i1c.x, i1c.y, i0c.z)];
+    float s001 = fogConfidenceCurrent[uint3(i0c.x, i0c.y, i1c.z)];
+    float s101 = fogConfidenceCurrent[uint3(i1c.x, i0c.y, i1c.z)];
+    float s011 = fogConfidenceCurrent[uint3(i0c.x, i1c.y, i1c.z)];
+    float s111 = fogConfidenceCurrent[uint3(i1c.x, i1c.y, i1c.z)];
     float s00 = lerp(s000, s100, f.x);
     float s10 = lerp(s010, s110, f.x);
     float s01 = lerp(s001, s101, f.x);
@@ -157,9 +182,16 @@ void main(uint2 id : SV_DispatchThreadID)
     int zEnd   = min((int)D - 1, (int)floor(wEnd - 0.5f) + 1);
 
     float3 accumL = float3(0.0f, 0.0f, 0.0f);
-    float  accumT = 1.0f;
+    // Transmittance used for in-scattered radiance between a sample and the camera.
+    float3 accumT = float3(1.0f, 1.0f, 1.0f);
+    // Transmittance applied to the already-rendered surface. When the camera is underwater, the primary
+    // path already applied water absorption to the surface ray; airParams.w gates that absorption out
+    // of surfaceT so water is not double-applied while water scattering still attenuates surfaces.
+    float3 surfaceT = float3(1.0f, 1.0f, 1.0f);
 
     float4 debugTap       = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float4 debugScattering = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float4 debugAbsorption = float4(0.0f, 0.0f, 0.0f, 0.0f);
     float  debugConfidence = 0.0f;
     int    debugSlice = -1;
     float  debugWorldChecker = 0.0f;
@@ -190,30 +222,42 @@ void main(uint2 id : SV_DispatchThreadID)
 
         float ds = tFar - tNear;
 
-        // Trilinear tap at the midpoint of the segment in (fxy, w) space.
+        // Trilinear taps at the midpoint of the segment in (fxy, w) space.
         float3 tapCoord = float3(fxy, wMid);
         float4 froxel = SampleFogTrilinear(tapCoord);
-        float3 S = froxel.xyz;
-        float  sigma = froxel.w;
+        float4 scatterTap = SampleMediumScatteringTrilinear(tapCoord);
+        float4 absorbTap  = SampleMediumAbsorptionTrilinear(tapCoord);
+        float3 S = max(froxel.xyz, float3(0.0f, 0.0f, 0.0f));
+        float3 sigmaS = max(scatterTap.xyz, float3(0.0f, 0.0f, 0.0f));
+        float3 sigmaA = max(absorbTap.xyz,  float3(0.0f, 0.0f, 0.0f));
+        float3 sigmaT = sigmaS + sigmaA;
 
-        // Scene-depth awareness for the sample: only contribute if this segment
-        // is not substantially behind opaque geometry (it won't be, because
-        // endT is clipped to sceneT, but extra clamp avoids leakage at grazing
-        // edges where off-axis rays might disagree with the pixel-center depth).
-        if (sigma < 1.0e-6f) { prevW = wFar; prevT = tFar; continue; }
+        // Skip truly empty segments. Source can be zero in shadow, but extinction still attenuates the
+        // surface behind the volume, so only skip if both extinction and source are negligible.
+        if (max(max(sigmaT.x, sigmaT.y), sigmaT.z) < 1.0e-7f
+            && max(max(S.x, S.y), S.z) < 1.0e-7f)
+        {
+            prevW = wFar; prevT = tFar; continue;
+        }
 
-        float  T_slice = exp(-sigma * ds);
-        // integ = S * (1 - T) / sigma  (scalar form; S already includes sigma_s).
-        float3 integ   = S * ((1.0f - T_slice) / max(sigma, kEpsilon));
+        float3 T_slice = exp(-sigmaT * ds);
+        float3 integ = S * SegmentFactor(sigmaT, ds);
         accumL += accumT * integ;
         accumT *= T_slice;
 
-        // Early-out: fully opaque transmittance.
-        if (accumT < 1.0e-3f) break;
+        FroxelMatrices frame = GetMatrices(pc);
+        float3 surfaceSigmaT = sigmaS + sigmaA * clamp(frame.airParams.w, 0.0f, 1.0f);
+        surfaceT *= exp(-surfaceSigmaT * ds);
+
+        // Early-out: fully opaque transmittance for both volume radiance and surface contribution.
+        if (max(max(accumT.x, accumT.y), accumT.z) < 1.0e-3f
+            && max(max(surfaceT.x, surfaceT.y), surfaceT.z) < 1.0e-3f) break;
 
         if (!marched)
         {
             debugTap = froxel;
+            debugScattering = scatterTap;
+            debugAbsorption = absorbTap;
             debugSlice = z;
             float3 midWorldPos = rayDir * ((tNear + tFar) * 0.5f) + pc.camOffset;
             debugWorldChecker = WorldChecker(midWorldPos, 0.25f);
@@ -228,8 +272,8 @@ void main(uint2 id : SV_DispatchThreadID)
 
     if (pc.debugView == 0)
     {
-        // Final composite: L + T * scene.
-        float3 finalColor = accumL + accumT * scene.xyz;
+        // Final composite: volumeRadiance + surfaceRadiance * volumeTransmittance.
+        float3 finalColor = accumL + surfaceT * scene.xyz;
         outputImage[id] = float4(finalColor, scene.a);
         return;
     }
@@ -238,75 +282,62 @@ void main(uint2 id : SV_DispatchThreadID)
     float3 color = float3(0.0f, 0.0f, 0.0f);
     switch (pc.debugView)
     {
-        case 1: { // Z-slice index, color-coded.
-            float t = float(debugSlice) / float(D);
-            color = float3(t, 0.5f + 0.5f * sin(t * 10.0f), 1.0f - t);
-            break;
-        }
-        case 2: { // World-anchored checker (should NOT swim when camera moves).
-            color = float3(debugWorldChecker.xxx) * 0.8f + 0.1f;
-            break;
-        }
-        case 3: { // Extinction/density (luma of alpha), color-mapped.
-            float d = saturate(debugTap.w * 20.0f);
+        case 1: { // DEBUG_VOLUME_DENSITY
+            float d = saturate(debugScattering.w * 20.0f);
             color = float3(d * 0.4f, d * 0.9f, d);
             break;
         }
-        case 4: { // Raw RT visibility: approximated by S / (sigma_s * phase * sunColor).
-                 // Since we don't store visibility separately, display S normalized.
-            float mag = length(debugTap.xyz) / max(length(pc.sunColor) + 1.0e-3f, 0.001f);
-            color = float3(mag.xxx);
+        case 2: { // DEBUG_VOLUME_SCATTERING
+            color = saturate(debugScattering.xyz * 30.0f);
             break;
         }
-        case 5: { // fogCurrent at integrate time: post-temporal accumulated grid (the
-                 // pre-spatial injection is overwritten in place by the temporal pass).
-            int3 ix = int3(clamp(int2(fxy), int2(0,0), (int2)FroxelSize(pc).xy - int2(1,1)),
-                           clamp((int)(wStart), 0, (int)D - 1));
-            float4 pre = fogCurrent[uint3(ix)];
-            color = pre.xyz * 3.0f;
+        case 3: { // DEBUG_VOLUME_ABSORPTION
+            color = saturate(debugAbsorption.xyz * 30.0f);
             break;
         }
-        case 6: { // fogVolume tap at integrate time: post-temporal grid (the fogCurrent copy
-                 // overwrote the pre-temporal spatial output before this pass ran).
+        case 4: { // DEBUG_VOLUME_TRANSMITTANCE
+            color = saturate(surfaceT);
+            break;
+        }
+        case 5: { // DEBUG_VOLUME_LIGHT_VISIBILITY
+            color = float3(saturate(debugAbsorption.w).xxx);
+            break;
+        }
+        case 6: { // DEBUG_VOLUME_HISTORY: temporally reconstructed source radiance.
             color = debugTap.xyz * 3.0f;
             break;
         }
-        case 7: { // History confidence.
-            bool inside;
-            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
-            if (inside)
-                debugConfidence = SampleConfidenceTrilinear(prevUvw * float3(FroxelSize(pc)));
+        case 7: { // DEBUG_VOLUME_HISTORY_WEIGHT: current confidence after temporal resolve.
+            debugConfidence = SampleConfidenceTrilinear(float3(fxy, clamp(wStart + 0.5f, 0.0f, float(D) - 1.0f)));
             color = float3(debugConfidence.xxx);
             break;
         }
-        case 8: { // Disocclusion mask: red where history was rejected (confidence near 0 with valid scene).
-            bool inside;
-            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
-            float conf = 0.0f;
-            if (inside)
-                conf = SampleConfidenceTrilinear(prevUvw * float3(FroxelSize(pc)));
-            float rejected = (pc.historyValid > 0.5f) ? (1.0f - conf) : 1.0f;
-            color = float3(rejected, 0.2f * rejected, 0.0f);
+        case 8: { // DEBUG_VOLUME_FROXEL_SLICE
+            float t = float(max(debugSlice, 0)) / max(float(D - 1u), 1.0f);
+            color = float3(t, 0.5f + 0.5f * sin(t * 10.0f), 1.0f - t);
             break;
         }
-        case 9: { // Integrated scattering (accumL over black).
+        case 9: { // DEBUG_VOLUME_REPROJECTION_ERROR
+            bool inside;
+            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
+            float3 curUvw = float3(fxy / float2(FroxelSize(pc).xy),
+                                    clamp(wStart / max(float(D), 1.0f), 0.0f, 1.0f));
+            float err = inside ? length(prevUvw - curUvw) : 1.0f;
+            color = inside ? float3(saturate(err * 8.0f), saturate(1.0f - err * 8.0f), 0.0f)
+                           : float3(1.0f, 0.0f, 1.0f);
+            break;
+        }
+        case 10: { // World-anchored checker (should NOT swim when camera moves).
+            color = float3(debugWorldChecker.xxx) * 0.8f + 0.1f;
+            break;
+        }
+        case 11: { // Integrated in-scattered radiance over black.
             color = accumL;
             break;
         }
-        case 10: { // Final volumetric contribution (L + (T-1)*scene) over neutral gray.
-            float3 contrib = accumL + (accumT - 1.0f) * scene.xyz;
+        case 12: { // Final volumetric contribution (L + (T-1)*scene) over neutral gray.
+            float3 contrib = accumL + (surfaceT - float3(1.0f, 1.0f, 1.0f)) * scene.xyz;
             color = float3(0.5f, 0.5f, 0.5f) + contrib;
-            break;
-        }
-        case 11: { // Temporal reprojection probe: RGB = prevUvw.xyz (previous-frame froxel
-                 // coordinate of the froxel under this pixel). With a static camera this must be
-                 // a smooth gradient tracking the screen position; magenta marks reprojections
-                 // outside the previous grid (no history coverage there at all). A screen-space
-                 // discontinuity or a magenta region that does not match actual frustum motion
-                 // means the reconstruction and reprojection matrices disagree.
-            bool inside;
-            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
-            color = inside ? saturate(prevUvw) : float3(1.0f, 0.0f, 1.0f);
             break;
         }
         default: {
@@ -314,6 +345,7 @@ void main(uint2 id : SV_DispatchThreadID)
             break;
         }
     }
+
 
     outputImage[id] = float4(color, scene.a);
 }

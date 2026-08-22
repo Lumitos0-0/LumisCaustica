@@ -33,6 +33,7 @@ import net.minecraft.world.level.MoonPhase;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import org.joml.Vector4f;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
@@ -116,6 +117,15 @@ public final class RtComposite {
 
     private static int maxBounces() {
         return CausticaConfig.Rt.Composite.MAX_BOUNCES.value();
+    }
+
+    private static float smoothstep(float edge0, float edge1, float x) {
+        float t = Math.clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    private static float moonLitFraction(float moonPhaseIndex) {
+        return Math.abs(moonPhaseIndex - 4.0f) / 4.0f;
     }
 
     private static boolean waterWaves() {
@@ -284,6 +294,9 @@ public final class RtComposite {
     private boolean fogDispatchedLastFrame;
     private float fogPrevProjM00;
     private float fogPrevProjM11;
+    private float fogPrevForwardX;
+    private float fogPrevForwardY;
+    private float fogPrevForwardZ;
     private boolean fogHadPrevProjection;
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
@@ -1251,28 +1264,59 @@ public final class RtComposite {
             // front-to-back integration -> composite onto output. Runs at render resolution
             // BEFORE DLSS-RR so RR denoises fog + surfaces together.
             if (CausticaConfig.Rt.Fog.ENABLED.value() && volumetricFog != null) {
-                // celestialDirection (from sky.slang):
-                //   return float3(-sin(a), cos(noonTilt)*cos(a), sin(noonTilt)*cos(a));
-                // sunDir in push is NORMALIZED, TOWARD the sun (world space; direction only,
-                // translation-invariant so camera-relative world space is identical).
-                float sunAngle = sky.celestial().x();
+                // Dominant celestial directional light. The volume never samples the rendered sun/moon
+                // sprite; it uses world-space directions and illuminance, so off-screen bodies still light
+                // the medium and off-screen TLAS geometry can still occlude it. Direction convention:
+                // sample -> light, matching sky.slang's celestialDirection().
                 float noonTilt = sky.look1().x();
-                float peak = (float) Math.cos(sunAngle);
-                float sinA = (float) Math.sin(sunAngle);
-                // celestialDirection in sky.slang:
-                //   return float3(-sin(a), cos(noonTilt)*cos(a), sin(noonTilt)*cos(a));
-                // sunDir in push is NORMALIZED, TOWARD the sun (world space).
-                float sdX = -sinA;
-                float sdY = (float) Math.cos(noonTilt) * peak;
-                float sdZ = (float) Math.sin(noonTilt) * peak;
-                float sunAngularRadius = sky.look1().y(); // NEE half-angle (radians)
-                // Sun radiance scale, already in the pre-exposed scene-linear domain:
-                // E_lux (top-of-atmosphere at viewer) * preExposure / pi converts illuminance
-                // to isotropic directional radiance. HG phase is applied per-froxel so the push
-                // constant carries the phase-independent multiplier only.
-                float preExp = exposure.preExposure();
+                float cosTilt = (float) Math.cos(noonTilt);
+                float sinTilt = (float) Math.sin(noonTilt);
+                float sunAngle = sky.celestial().x();
+                float sunPeak = (float) Math.cos(sunAngle);
+                float sunSin = (float) Math.sin(sunAngle);
+                float sdX = -sunSin;
+                float sdY = cosTilt * sunPeak;
+                float sdZ = sinTilt * sunPeak;
+                float moonAngle = sky.celestial().y();
+                float moonPeak = (float) Math.cos(moonAngle);
+                float moonSin = (float) Math.sin(moonAngle);
+                float mdX = -moonSin;
+                float mdY = cosTilt * moonPeak;
+                float mdZ = sinTilt * moonPeak;
+
+                float sunAngularRadius = sky.look1().y();
+                float moonAngularRadius = sky.look1().z();
+                float moonPhaseIndex = sky.look2().w();
+                float moonPhaseFixed = sky.look1().w();
                 float sunLux = sky.look0().x();
-                float sunRadiance = sunLux * preExp * (1.0f / (float) Math.PI);
+                float moonLux = sky.look0().y()
+                        * (moonPhaseFixed + (1.0f - moonPhaseFixed) * moonLitFraction(moonPhaseIndex));
+                float sunVisibility = smoothstep(-0.05f, 0.12f, sdY);
+                float moonVisibility = smoothstep(-0.05f, 0.12f, mdY);
+                float sunWeightedLux = sunLux * sunVisibility;
+                float moonWeightedLux = moonLux * moonVisibility;
+
+                boolean useMoon = moonWeightedLux > sunWeightedLux;
+                float ldX = useMoon ? mdX : sdX;
+                float ldY = useMoon ? mdY : sdY;
+                float ldZ = useMoon ? mdZ : sdZ;
+                float lightAngularRadius = useMoon ? moonAngularRadius : sunAngularRadius;
+                float lightLux = useMoon ? moonWeightedLux : sunWeightedLux;
+
+                float preExp = exposure.preExposure();
+                float lightRadiance = lightLux * preExp * (1.0f / (float) Math.PI);
+                float airglowRadiance = sky.look0().z() * preExp;
+                float starRadiance = sky.celestial().w() * sky.look0().w() * preExp;
+                float ambientRadiance = (0.02f * sunWeightedLux + 0.25f * moonWeightedLux)
+                        * preExp * (1.0f / (float) Math.PI) + airglowRadiance + starRadiance;
+
+                float rainLevel = 0.0f;
+                float thunderLevel = 0.0f;
+                if (level != null) {
+                    float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+                    rainLevel = level.getRainLevel(partial);
+                    thunderLevel = level.getThunderLevel(partial);
+                }
 
                 // prevViewProj for fog reprojection: jitter-free previous frame VP.
                 // mvPushMatrix was set by updateMotion() to mvPrevProjView BEFORE mvPrevProjView
@@ -1297,10 +1341,11 @@ public final class RtComposite {
                 //                             quadratically, so a 0.5% relative tolerance rejects
                 //                             FOV/aspect changes without tripping on bob.
                 //   cameraStateIsCompatible — the camera translated at most half the fog range
-                //                             since the previous frame, rejecting teleports.
+                //                             since the previous frame and did not rotate abruptly,
+                //                             rejecting teleports and large view jumps.
                 //                             (Dimension changes reset mvHasPrev via
                 //                             resetReprojectionHistory instead.)
-                // Remaining terms: grid stability is checked inside dispatch(), and
+                // Remaining terms: grid/medium/weather stability is checked inside dispatch(), and
                 // prevUvwInsideGrid is evaluated per-froxel by temporal.comp.
                 float projM00 = frameProjection.m00();
                 float projM11 = frameProjection.m11();
@@ -1310,11 +1355,33 @@ public final class RtComposite {
                 float camDeltaLen2 = mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY
                         + mvCamDeltaZ * mvCamDeltaZ;
                 float teleportSlack = 0.5f * CausticaConfig.Rt.Fog.FAR.value();
-                boolean cameraStateCompatible = camDeltaLen2 <= teleportSlack * teleportSlack;
+
+                Vector4f nearH = frameInvViewProj.transform(new Vector4f(0f, 0f, 1f, 1f), new Vector4f());
+                Vector4f farH = frameInvViewProj.transform(new Vector4f(0f, 0f, 0f, 1f), new Vector4f());
+                float nearX = nearH.x / nearH.w;
+                float nearY = nearH.y / nearH.w;
+                float nearZ = nearH.z / nearH.w;
+                float curForwardX = farH.x / farH.w - nearX;
+                float curForwardY = farH.y / farH.w - nearY;
+                float curForwardZ = farH.z / farH.w - nearZ;
+                float curForwardLen = Math.max((float) Math.sqrt(curForwardX * curForwardX
+                        + curForwardY * curForwardY + curForwardZ * curForwardZ), 1.0e-6f);
+                curForwardX /= curForwardLen;
+                curForwardY /= curForwardLen;
+                curForwardZ /= curForwardLen;
+                float forwardDot = curForwardX * fogPrevForwardX
+                        + curForwardY * fogPrevForwardY + curForwardZ * fogPrevForwardZ;
+                boolean rotationCompatible = fogHadPrevProjection && forwardDot >= 0.82f;
+
+                boolean cameraStateCompatible = camDeltaLen2 <= teleportSlack * teleportSlack
+                        && rotationCompatible;
                 boolean fogHistoryValid = mvHasPrev && fogDispatchedLastFrame
                         && projectionCompatible && cameraStateCompatible;
                 fogPrevProjM00 = projM00;
                 fogPrevProjM11 = projM11;
+                fogPrevForwardX = curForwardX;
+                fogPrevForwardY = curForwardY;
+                fogPrevForwardZ = curForwardZ;
                 fogHadPrevProjection = true;
                 fogDispatchedLastFrame = true;
 
@@ -1327,9 +1394,12 @@ public final class RtComposite {
                             graphicsUse, graphicsUseWaiter,
                             frameInvViewProj, mvCurProjView, prevVp,
                             camOffX, camOffY, camOffZ,
-                            mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ, terrain.blockY,
-                            sdX, sdY, sdZ,
-                            sunAngularRadius, sunRadiance,
+                            mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ,
+                            terrain.blockX, terrain.blockY, terrain.blockZ,
+                            ldX, ldY, ldZ,
+                            lightAngularRadius, lightRadiance, ambientRadiance,
+                            waterParams.x(), waterParams.y(), waterParams.z(),
+                            (flags & 0b01) != 0, rainLevel, thunderLevel,
                             fogHistoryValid);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog composite visible to DLSS
