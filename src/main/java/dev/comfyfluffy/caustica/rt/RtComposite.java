@@ -1327,7 +1327,7 @@ public final class RtComposite {
                             graphicsUse, graphicsUseWaiter,
                             frameInvViewProj, mvCurProjView, prevVp,
                             camOffX, camOffY, camOffZ,
-                            mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ,
+                            mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ, terrain.blockY,
                             sdX, sdY, sdZ,
                             sunAngularRadius, sunRadiance,
                             fogHistoryValid);

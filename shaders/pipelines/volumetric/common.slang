@@ -97,7 +97,9 @@ public struct VolumetricPush
     public float3   sunColor;         // 64, phase-ready direct radiance (preExposure*E/pi)
     public float    heightFogDensity; // 76, sigma_t at Y=heightFogBase (1/blocks)
     public float    heightFogFalloff; // 80
-    public float    heightFogBase;    // 84, world Y at which density = heightFogDensity
+    public float    heightFogBase;    // 84, Y at which density = heightFogDensity, shifted into the
+                                      // current rebase frame (absolute world base - rebase origin Y,
+                                      // matching the rebased worldPos fed to ExtinctionAt)
     public float    globalDensity;    // 88
     public float    anisotropyG;      // 92, Henyey-Greenstein g
     public float    historyBaseWeight;// 96, baseline history lerp weight (e.g. 0.92)
@@ -429,8 +431,10 @@ public float HenyeyGreenstein(float cosTheta, float g)
 
 // -----------------------------------------------------------------------------
 // Density / extinction model.
-// Extinction is evaluated in WORLD space (rebased) so it stays anchored to
-// terrain as the camera moves: height falloff uses worldPos.y, not view.y.
+// Extinction is evaluated on rebased-world positions so it stays anchored to
+// terrain as the camera moves: the height falloff keys off worldPos.y, with
+// pc.heightFogBase pre-shifted into the same rebase frame by the host, so the
+// layer's absolute world altitude never moves with the camera.
 // -----------------------------------------------------------------------------
 public float ExtinctionAt(VolumetricPush pc, float3 worldPos)
 {

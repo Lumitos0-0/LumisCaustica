@@ -459,6 +459,11 @@ public final class RtVolumetricFog {
      * @param camDeltaX,camDeltaY,camDeltaZ camera-space translation from PREVIOUS camera position to
      *                        current camera position, in blocks (world units). Rebase-agnostic:
      *                        previous camera offset = (camX - camDeltaX, camY - camDeltaY, camZ - camDeltaZ).
+     * @param rebaseOriginY   absolute world Y of the current terrain rebase origin (terrain.blockY).
+     *                        Froxel positions are evaluated in the rebase-origin frame, while the
+     *                        height-fog base is configured as an absolute world Y, so the push
+     *                        constant carries {@code Fog.HEIGHT_BASE - rebaseOriginY}: the fog layer
+     *                        stays anchored to the world instead of riding the camera's altitude.
      * @param sunDirX,sunDirY,sunDirZ normalized sun direction (toward sun; direction is translation-invariant)
      * @param sunAngularRadius sun disk half-angle in radians
      * @param sunRadiance     directional in-scattered radiance scale for the sun (already in the
@@ -478,7 +483,7 @@ public final class RtVolumetricFog {
                          RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter,
                          Matrix4fc invViewProj, Matrix4fc curViewProj, Matrix4fc prevViewProj,
                          float camX, float camY, float camZ,
-                         float camDeltaX, float camDeltaY, float camDeltaZ,
+                         float camDeltaX, float camDeltaY, float camDeltaZ, int rebaseOriginY,
                          float sunDirX, float sunDirY, float sunDirZ,
                          float sunAngularRadius, float sunRadiance,
                          boolean historyValid) {
@@ -540,7 +545,10 @@ public final class RtVolumetricFog {
                 new VolumetricPushData.Float3(sunRadiance, sunRadiance, sunRadiance),
                 CausticaConfig.Rt.Fog.HEIGHT_DENSITY.value(),
                 CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value(),
-                CausticaConfig.Rt.Fog.HEIGHT_BASE.value(),
+                // Configured against absolute world Y (sea level = 62); the shader compares it
+                // against rebased-world Y (world minus the terrain rebase origin), so the same
+                // origin shift must be applied here.
+                CausticaConfig.Rt.Fog.HEIGHT_BASE.value() - rebaseOriginY,
                 CausticaConfig.Rt.Fog.GLOBAL_DENSITY.value(),
                 CausticaConfig.Rt.Fog.ANISOTROPY.value(),
                 CausticaConfig.Rt.Fog.HISTORY_WEIGHT.value(),
