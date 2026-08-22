@@ -113,16 +113,25 @@ void main(uint2 id : SV_DispatchThreadID)
     float u, v;
     float3 rayDir = PixelViewRay(pc, id, dims, u, v);
 
-    float sceneT = (pc.farPlane * 2.0f) / max(-rayDir.z, kEpsilon);
+    // t <-> view-depth scale for this ray: view depth is measured along the CAMERA forward
+    // axis while rayDir is in rebased-world axes, so the factor is the angle cosine
+    // dot(rayDir, cameraForward). It is strictly positive for every in-frustum ray (the
+    // epsilon is a numerical tripwire only) and identical for the scene-depth clip, the
+    // slice march, and the w<->depth conversion below, so all three stay mutually consistent
+    // for any camera orientation.
+    float3 camFwd = CameraForwardWorld(GetMatrices(pc).invViewProj);
+    float viewScale = max(dot(rayDir, camFwd), kEpsilon);
+
+    float sceneT = (pc.farPlane * 2.0f) / viewScale;
     if (ndcZ > 0.0001f)
     {
         float3 p = UnprojectNdc(GetMatrices(pc).invViewProj, u, v, ndcZ);
-        float sceneDepth = max(-p.z, 0.0f);
-        sceneT = min(sceneT, sceneDepth / max(-rayDir.z, kEpsilon));
+        float sceneDepth = max(dot(p, camFwd), 0.0f);
+        sceneT = min(sceneT, sceneDepth / viewScale);
     }
 
-    float startT  = pc.nearPlane / max(-rayDir.z, kEpsilon);
-    float endT    = min(pc.farPlane / max(-rayDir.z, kEpsilon), sceneT);
+    float startT  = pc.nearPlane / viewScale;
+    float endT    = min(pc.farPlane / viewScale, sceneT);
     endT = max(endT, startT + kEpsilon);
     if (endT <= startT)
     {
@@ -138,8 +147,8 @@ void main(uint2 id : SV_DispatchThreadID)
     float2 fxy = (float2(id) + 0.5f) / float2(dims) * float2(FroxelSize(pc).xy);
 
     // Convert T range into continuous Z slice coordinate w in [0,1].
-    float startViewDepth = startT * (-rayDir.z);
-    float endViewDepth   = endT   * (-rayDir.z);
+    float startViewDepth = startT * viewScale;
+    float endViewDepth   = endT   * viewScale;
     uint D = FroxelSize(pc).z;
     float wStart = SliceCoordFromViewDepth(startViewDepth, pc.nearPlane, pc.farPlane) * float(D);
     float wEnd   = SliceCoordFromViewDepth(endViewDepth,   pc.nearPlane, pc.farPlane) * float(D);
@@ -173,8 +182,8 @@ void main(uint2 id : SV_DispatchThreadID)
 
         float dNear  = ViewDepthFromFroxelCoord(wNear / float(D), pc.nearPlane, pc.farPlane);
         float dFar   = ViewDepthFromFroxelCoord(wFar  / float(D), pc.nearPlane, pc.farPlane);
-        float tNear  = dNear / max(-rayDir.z, kEpsilon);
-        float tFar   = dFar  / max(-rayDir.z, kEpsilon);
+        float tNear  = dNear / viewScale;
+        float tFar   = dFar  / viewScale;
         tNear = max(tNear, startT);
         tFar  = min(tFar, endT);
         if (tFar <= tNear + kEpsilon) { prevW = wFar; prevT = tFar; continue; }

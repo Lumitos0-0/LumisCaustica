@@ -11,12 +11,22 @@
 //                   stays sufficient far from origin. Previous-frame camera offset is given
 //                   relative to the CURRENT rebase origin (prevCamOffset = camOffset - camDelta),
 //                   which means positions can be reprojected across origin rebases without drift.
-//   view          : camera-relative space looking down -Z (same orientation as rebased-world but
-//                   translated so the camera is at origin). view.z is negative for points in front;
-//                   "linear view depth" = -view.z (positive, in blocks).
-//   clip          : post-projection homogeneous coordinates (curViewProj * view). clip.w = -view.z
-//                   for a rotation-only view times perspective projection (true for both curVP and
-//                   prevVP because frameViewRotation is rotation-only).
+//   view          : this pipeline works with camera-relative rebased-world vectors (camera at
+//                   origin, axes NOT rotated into the camera frame): everything UnprojectNdc
+//                   returns is of that form. There is NO rotated view space anywhere below.
+//   view depth    : linear depth measured ALONG THE CAMERA'S FORWARD AXIS, positive in front
+//                   (blocks). For a camera-relative rebased-world point p or unit ray dir,
+//                     viewDepth = dot(p, camForward)  resp.  viewDepth = t * dot(dir, camForward)
+//                   with camForward = CameraForwardWorld(invViewProj). Taking the WORLD -z
+//                   component instead (as if world axes doubled as camera axes) is only correct
+//                   while the camera happens to face world -Z; for other yaw/pitch the error
+//                   grows slowly and flips sign across the vertical dir.z = 0 plane, which is
+//                   visible as a view-dependent vertical screen split.
+//   clip          : post-projection homogeneous coordinates (curViewProj * camera-relative
+//                   rebased-world point). clip.w equals the point's view depth (depth along the
+//                   camera forward axis, positive in front): the projection w-row is
+//                   (0,0,-1,0) in camera space and frameViewRotation is rotation-only, for both
+//                   curVP and prevVP. WorldToFroxelUvw's w mapping relies on exactly this.
 //   NDC           : clip.xyz / clip.w, x,y in [-1,1] with Y up; z is reversed-Z (1 at near, 0 at far).
 //   screen UV     : (u,v) with u in [0,1] left-to-right, v in [0,1] TOP-to-BOTTOM (matches image
 //                   Load/sample conventions). uv = (ndc*0.5 + 0.5, (1-ndc.y)*0.5).
@@ -228,19 +238,21 @@ public void FroxelSliceDepthRange(uint z, VolumetricPush pc, out float zNear, ou
     zFar  = ViewDepthFromFroxelCoord(tFar,  pc.nearPlane, pc.farPlane);
 }
 
-// Ray-parameter t (distance along a NORMALIZED ray starting at origin) that corresponds
-// to a given linear view depth. For a camera ray, viewDepth = -rayDir.z * t when the
-// ray starts at the camera. Used to map depth-slab ranges to ray segments.
-public float RayTFromViewDepth(float viewDepth, float3 rayDir)
+// Ray-parameter t (distance along a NORMALIZED ray starting at the camera, rebased-world axes)
+// that corresponds to a linear view depth. The t <-> depth factor per ray is the angle cosine
+// dot(rayDir, camForward): view depth is defined along the CAMERA forward axis while rayDir is
+// in world axes. For every in-frustum ray this cosine is strictly positive, so the epsilon
+// clamp is a numerical tripwire only, not a reachable path.
+public float RayTFromViewDepth(float viewDepth, float3 rayDir, float3 camForward)
 {
-    return viewDepth / max(-rayDir.z, kEpsilon);
+    return viewDepth / max(dot(rayDir, camForward), kEpsilon);
 }
 
 // -----------------------------------------------------------------------------
 // NDC / UV / unprojection helpers.
 // All unprojections are through the inverse VP, so off-axis perspective is exact.
 // -----------------------------------------------------------------------------
-// Unproject a clip-space point (u,v,ndcZ) -> camera-relative point.
+// Unproject a clip-space point (u,v,ndcZ) -> camera-relative rebased-world point.
 public float3 UnprojectNdc(float4x4 invViewProj, float u, float v, float ndcZ)
 {
     float4 clip = float4(u, v, ndcZ, 1.0f);
@@ -248,7 +260,18 @@ public float3 UnprojectNdc(float4x4 invViewProj, float u, float v, float ndcZ)
     return w.xyz / w.w;
 }
 
-// Given a pixel NDC and ndcZ, return linear view depth (-p.z, positive, blocks).
+// Camera forward direction in rebased-world axes, recovered from the same inverse VP the rays
+// use (principal-point probe with FroxelRayDir's exact ndcZ convention), so the view-depth
+// scale can never drift from the matrix actually shipped in this frame's matrix slot.
+public float3 CameraForwardWorld(float4x4 invViewProj)
+{
+    float3 nearSide = UnprojectNdc(invViewProj, 0.0f, 0.0f, 1.0f);
+    float3 farSide  = UnprojectNdc(invViewProj, 0.0f, 0.0f, 0.0f);
+    return normalize(farSide - nearSide);
+}
+
+// Given a pixel NDC and ndcZ, return the linear view depth (depth along the camera forward
+// axis, positive, blocks).
 // Reversed-Z: ndcZ=1 at near plane, ndcZ=0 at sky/far.
 // Returns a sentinel > farPlane for sky pixels.
 public float LinearizeSample(VolumetricPush pc, float ndcZ, float u, float v)
@@ -256,7 +279,7 @@ public float LinearizeSample(VolumetricPush pc, float ndcZ, float u, float v)
     if (ndcZ <= 0.0001f) return pc.farPlane * 2.0f;
     FroxelMatrices m = GetMatrices(pc);
     float3 p = UnprojectNdc(m.invViewProj, u, v, ndcZ);
-    return max(-p.z, 0.0f);
+    return max(dot(p, CameraForwardWorld(m.invViewProj)), 0.0f);
 }
 
 // NDC u,v (x in [-1,1], y in [-1,1] with y UP) for a froxel XY index.
@@ -287,7 +310,7 @@ public void PixelNdc(uint2 xy, uint2 dims, out float u, out float v)
     v = (1.0f - uv.y) * 2.0f - 1.0f;
 }
 
-// Reconstruct NORMALIZED view-space ray direction through a froxel center.
+// Reconstruct NORMALIZED ray direction (rebased-world axes) through a froxel center.
 // Also returns invViewProj for the caller's convenience.
 public float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invViewProj)
 {
@@ -300,13 +323,16 @@ public float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invView
     return normalize(wFar - wNear);
 }
 
-// Stable camera-relative (view-space) point at the froxel's canonical center.
+// Stable camera-relative (rebased-world axes) point at the froxel's canonical center.
+// Lies exactly on the slab plane of constant camera view depth for slice z, i.e. the same
+// depth metric WorldToFroxelUvw derives from clip.w, so current-frame placement and
+// previous-frame reprojection agree for every camera orientation.
 public float3 FroxelCenterViewSpace(VolumetricPush pc, uint3 froxel)
 {
     float4x4 invVP;
     float3 dir = FroxelRayDir(pc, froxel, invVP);
     float viewDepth = FroxelCenterViewDepth(pc, froxel.z);
-    float t = RayTFromViewDepth(viewDepth, dir);
+    float t = RayTFromViewDepth(viewDepth, dir, CameraForwardWorld(invVP));
     return dir * t;
 }
 
@@ -349,7 +375,7 @@ public float3 WorldToFroxelUvw(VolumetricPush pc, float3 worldPos, float3 camOff
     float4 clip = mul(viewProj, float4(rel, 1.0f));
     if (clip.w <= kEpsilon) return float3(-1.0f, -1.0f, -1.0f);
     float3 ndc = clip.xyz / clip.w;
-    float viewDepth = clip.w;  // = -rel.z (view space)
+    float viewDepth = clip.w;  // depth along the camera forward axis (see glossary: clip)
     float u = ndc.x * 0.5f + 0.5f;
     float v = (1.0f - ndc.y) * 0.5f;
     float w = SliceCoordFromViewDepthUnclamped(viewDepth, pc.nearPlane, pc.farPlane);
