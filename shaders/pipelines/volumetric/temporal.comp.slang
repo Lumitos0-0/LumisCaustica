@@ -56,8 +56,8 @@ void main(uint3 id : SV_DispatchThreadID)
     // Sample scene depth at this froxel's XY location (scale froxel XY -> render-res px).
     uint2 depthDims;
     depthImage.GetDimensions(depthDims.x, depthDims.y);
-    uint2 depthPx = (uint2)FroxelXyToDepthPx(id.xy, dims.xy, depthDims);
-    float curNdcZ = depthImage.Load(int3((int2)depthPx, 0)).x;
+    int2 depthPx = FroxelXyToDepthPx(id.xy, dims.xy, depthDims);
+    float curNdcZ = depthImage.Load(int3(depthPx, 0)).x;
     float curDu = ((float(depthPx.x) + 0.5f) / float(depthDims.x)) * 2.0f - 1.0f;
     float curDv = 1.0f - ((float(depthPx.y) + 0.5f) / float(depthDims.y)) * 2.0f;
     float curSceneDepth = LinearizeSample(pc, curNdcZ, curDu, curDv);

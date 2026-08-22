@@ -61,8 +61,8 @@ void main(uint2 id : SV_DispatchThreadID)
     depthImage.GetDimensions(depthDims.x, depthDims.y);
 
     // Read gDepth at this render-res pixel (depth buffer is at same render resolution).
-    uint2 depthPx = uint2(min(id.x, depthDims.x - 1u), min(id.y, depthDims.y - 1u));
-    float ndcZ = depthImage.Load(int3((int2)depthPx, 0)).x;
+    int2 depthPx = int2(min(id.x, depthDims.x - 1u), min(id.y, depthDims.y - 1u));
+    float ndcZ = depthImage.Load(int3(depthPx, 0)).x;
 
     // Reconstruct the camera-relative ray direction through this pixel AND
     // get the NDC (u,v) we need for depth linearization (avoids recomputing).
