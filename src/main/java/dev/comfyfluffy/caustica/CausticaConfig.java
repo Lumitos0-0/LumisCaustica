@@ -873,6 +873,13 @@ public final class CausticaConfig {
             // accumulation integrates the binary visibility into a soft penumbra.
             public static final BooleanSetting STOCHASTIC_LIGHT =
                     bool("caustica.rt.fogStochastic", "fog.stochastic-light", true);
+            // Volumetric debug view selector (integrate.comp). 0 = normal composite; 1-11 =
+            // diagnostic visualizations (see VolumetricPush.debugView). Internal/tooling only;
+            // intentionally absent from the video-options UI. 11 is the temporal reprojection
+            // probe: RGB = prevUvw of the froxel under the pixel, magenta where the reprojection
+            // falls outside the previous grid.
+            public static final IntSetting DEBUG_VIEW =
+                    intValue("caustica.rt.fogDebugView", "fog.debug-view", 0);
 
             private Fog() {}
         }

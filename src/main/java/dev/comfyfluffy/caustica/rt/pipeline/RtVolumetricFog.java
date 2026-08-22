@@ -35,6 +35,7 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.rt.RtComposite;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
+import dev.comfyfluffy.caustica.rt.RtGpuExecutor;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import dev.comfyfluffy.caustica.rt.gen.VolumetricPushData;
@@ -70,10 +71,20 @@ import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_
  *
  * <p>Camera matrices live in a small host-visible storage buffer (BDA-addressed via a
  * pointer in push constants) so the scalar push block stays within the 128-byte guaranteed
- * minimum. Triple-buffered (PUSH_RING slots) to avoid writing a buffer the GPU is still reading.
+ * minimum. The buffer ring rotates every frame; a slot is rewritten only after the RT
+ * graphics timeline proves every submitted command that can dereference that slot has
+ * completed ({@link RtGpuExecutor.TrackedGraphicsUse} — the same lifetime discipline as the
+ * world push ring). Host writes never interleave with in-flight GPU reads, so the three
+ * matrices arrive at the shaders as one consistent, untorn frame snapshot. Ring depth sets
+ * worst-case host-stall frequency only; correctness comes from the waits, not the depth.
  *
- * <p>All four passes share one descriptor set so a single VkDescriptorSet is re-bound across
- * dispatches. After integrate we copy {@code fogVolume} into {@code fogHistory} and
+ * <p>The froxel descriptor set is ringed the same way ({@link #SET_RING} slots): the TLAS
+ * handle changes on a per-frame cadence (TlasRing), so the set is re-written on most frames
+ * and must never be updated while a previous frame's dispatches still reference it. Each
+ * frame binds one slot after host-waiting that slot's prior use, and marks it with the new
+ * frame token after every consuming dispatch is recorded.
+ *
+ * <p>After integrate we copy {@code fogVolume} into {@code fogHistory} and
  * {@code fogConfidenceCurrent} into {@code fogHistoryConfidence} for the next frame.
  */
 public final class RtVolumetricFog {
@@ -84,13 +95,29 @@ public final class RtVolumetricFog {
 
     // FroxelMatrices: 3 float4x4 = 3 * 64 = 192 bytes.
     private static final long MATRICES_BUF_SIZE = 192;
-    private static final int PUSH_RING = 3;
+    // Matrix-buffer ring depth, matching the world push ring: with TrackedGraphicsUse waits the
+    // depth is a host-stall-avoidance choice, never a correctness one.
+    private static final int MATRIX_RING = 6;
+    // Descriptor-set ring depth, matching RtPipeline.RING.
+    private static final int SET_RING = 6;
 
     private final RtContext ctx;
 
     private long descriptorSetLayout;
     private long descriptorPool;
-    private long descriptorSet;
+    private long[] descriptorSets;
+    // Per-slot GPU-lifetime bookkeeping for the descriptor ring: the TrackedGraphicsUse records
+    // the last frame that bound the slot; the bound* values record which handles that slot
+    // currently references so unchanged handles skip the rewrite.
+    private RtGpuExecutor.TrackedGraphicsUse[] setUses;
+    private long[] boundTlas;
+    private long[] boundDepthView;
+    private long[] boundOutputView;
+    private long[] boundImageGeneration;
+    private int setCursor;
+    // Bumped whenever the fog-owned froxel images are recreated. Slots holding descriptors to the
+    // destroyed views get fully rewritten before their next bind; they are never bound stale.
+    private int imageGeneration;
     private long pipelineLayout;
 
     private long injectPipeline;
@@ -98,8 +125,10 @@ public final class RtVolumetricFog {
     private long temporalPipeline;
     private long integratePipeline;
 
-    private final RtBuffer[] matricesRing = new RtBuffer[PUSH_RING];
-    private int matricesSlot;
+    // One matrix buffer per slot with its own last-use token: rewritten CPU-side only after the
+    // graphics timeline proves all previous consumers of that slot completed.
+    private MatrixSlot[] matrixSlots;
+    private int matrixCursor;
 
     private RtImage fogCurrent;
     private RtImage fogVolume;
@@ -116,14 +145,20 @@ public final class RtVolumetricFog {
     private int renderH = -1;
     private boolean destroyed;
 
-    private long lastTlas;
-    private long lastDepthView;
-    private long lastOutputView;
-
     private float lastNear = -1f;
     private float lastFar = -1f;
     private int lastGridZ = -1;
     private int lastDivisor = -1;
+
+    /** Matrix-buffer ring slot: the BDA buffer plus the token of the last frame that used it. */
+    private static final class MatrixSlot {
+        final RtBuffer buffer;
+        final RtGpuExecutor.TrackedGraphicsUse lastUse = new RtGpuExecutor.TrackedGraphicsUse();
+
+        MatrixSlot(RtBuffer buffer) {
+            this.buffer = buffer;
+        }
+    }
 
     private RtVolumetricFog(RtContext ctx) {
         this.ctx = ctx;
@@ -166,22 +201,38 @@ public final class RtVolumetricFog {
                     descriptorSetLayout, "volume fog descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
-            poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(1);
-            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(7);
+            poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(SET_RING);
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(7 * SET_RING);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
-                    .maxSets(1).pPoolSizes(poolSizes);
+                    .maxSets(SET_RING).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt volume fog)");
             descriptorPool = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL,
                     descriptorPool, "volume fog descriptor pool");
 
+            // Ring of identical sets: each frame binds one slot, so a set referenced by in-flight
+            // work is never rewritten (the per-slot TrackedGraphicsUse wait guards the rewrite).
+            LongBuffer layouts = stack.mallocLong(SET_RING);
+            for (int i = 0; i < SET_RING; i++) {
+                layouts.put(descriptorSetLayout);
+            }
+            layouts.flip();
             VkDescriptorSetAllocateInfo dsai = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
-                    .descriptorPool(descriptorPool).pSetLayouts(stack.longs(descriptorSetLayout));
-            LongBuffer pSet = stack.mallocLong(1);
-            check(VK10.vkAllocateDescriptorSets(vk, dsai, pSet), "vkAllocateDescriptorSets(rt volume fog)");
-            descriptorSet = pSet.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                    descriptorSet, "volume fog descriptor set");
+                    .descriptorPool(descriptorPool).pSetLayouts(layouts);
+            LongBuffer pSets = stack.mallocLong(SET_RING);
+            check(VK10.vkAllocateDescriptorSets(vk, dsai, pSets), "vkAllocateDescriptorSets(rt volume fog)");
+            descriptorSets = new long[SET_RING];
+            setUses = new RtGpuExecutor.TrackedGraphicsUse[SET_RING];
+            boundTlas = new long[SET_RING];
+            boundDepthView = new long[SET_RING];
+            boundOutputView = new long[SET_RING];
+            boundImageGeneration = new long[SET_RING];
+            for (int i = 0; i < SET_RING; i++) {
+                descriptorSets[i] = pSets.get(i);
+                setUses[i] = new RtGpuExecutor.TrackedGraphicsUse();
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                        descriptorSets[i], "volume fog descriptor set " + i);
+            }
 
             VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack)
                     .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT)
@@ -236,12 +287,13 @@ public final class RtVolumetricFog {
         }
     }
 
-    private void ensureMatricesBuffer() {
-        if (matricesRing[0] != null) return;
-        for (int i = 0; i < PUSH_RING; i++) {
-            matricesRing[i] = ctx.createBuffer(MATRICES_BUF_SIZE,
+    private void ensureMatrixSlots() {
+        if (matrixSlots != null) return;
+        matrixSlots = new MatrixSlot[MATRIX_RING];
+        for (int i = 0; i < MATRIX_RING; i++) {
+            matrixSlots[i] = new MatrixSlot(ctx.createBuffer(MATRICES_BUF_SIZE,
                     VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                    true, "volumetric matrices " + i);
+                    true, "volumetric matrices " + i));
         }
     }
 
@@ -283,8 +335,10 @@ public final class RtVolumetricFog {
         // re-armed at the end of dispatch.)
         lastNear = -1f;
 
-        lastDepthView = 0;
-        lastOutputView = 0;
+        // The ringed descriptor sets still reference the destroyed image views; bumping the
+        // generation forces each slot to be fully rewritten before its next bind. Safe because
+        // the rebuild above ran under waitIdle: no in-flight dispatch references any slot.
+        imageGeneration++;
     }
 
     private void clearFroxelImages(VkCommandBuffer cmd) {
@@ -320,11 +374,26 @@ public final class RtVolumetricFog {
         if (fogConfidenceCurrent != null) { fogConfidenceCurrent.destroy(); fogConfidenceCurrent = null; }
     }
 
+    /**
+     * Rotate to the next descriptor-ring slot and host-wait until every previously submitted
+     * consumer of that slot's set has completed, then rewrite the set only if the handles it
+     * references changed (the TLAS handle rotates per frame via TlasRing, so this is the common
+     * path). After the call, {@link #descriptorSets}[{@link #setCursor}] is ready to bind; the
+     * caller marks the slot with this frame's token once all consuming dispatches are recorded.
+     */
+    private void selectDescriptorSet(RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter) {
+        setCursor = (setCursor + 1) % SET_RING;
+        graphicsUseWaiter.await(setUses[setCursor]);
+    }
+
     private void writeDescriptors(MemoryStack stack, long tlas, long depthView, long outputView) {
-        boolean needWrite = (tlas != lastTlas) || (depthView != lastDepthView) || (outputView != lastOutputView)
-                || lastDepthView == 0;
+        boolean needWrite = boundImageGeneration[setCursor] != imageGeneration
+                || boundTlas[setCursor] != tlas
+                || boundDepthView[setCursor] != depthView
+                || boundOutputView[setCursor] != outputView;
         if (!needWrite) return;
         VkDevice vk = ctx.vk();
+        long descriptorSet = descriptorSets[setCursor];
 
         // 7 storage image descriptors + 1 AS descriptor.
         VkDescriptorImageInfo.Buffer img = VkDescriptorImageInfo.calloc(7, stack);
@@ -358,9 +427,10 @@ public final class RtVolumetricFog {
         }
 
         VK10.vkUpdateDescriptorSets(vk, VkWriteDescriptorSet.create(writes.address(), w), null);
-        lastTlas = tlas;
-        lastDepthView = depthView;
-        lastOutputView = outputView;
+        boundTlas[setCursor] = tlas;
+        boundDepthView[setCursor] = depthView;
+        boundOutputView[setCursor] = outputView;
+        boundImageGeneration[setCursor] = imageGeneration;
     }
 
     /**
@@ -377,6 +447,11 @@ public final class RtVolumetricFog {
      * @param depthView       image view of the depth guide buffer (R32F, GENERAL)
      * @param outputView      image view of the render-res RT output (RGBA16F, GENERAL),
      *                        already populated with the pre-fog RT color; overwritten by integrate
+     * @param graphicsUse     this frame's RT graphics completion token, marked onto the matrix
+     *                        slot and descriptor-set slot after every consuming dispatch is
+     *                        recorded so their next reuse is known-safe
+     * @param graphicsUseWaiter this frame's shared waiter; host-waits the selected slots'
+     *                        previous consumers before they are rewritten
      * @param invViewProj     inverse view-projection (jitter-free), camera-relative rebased world
      * @param curViewProj     current view-projection (jitter-free)
      * @param prevViewProj    previous-frame jitter-free view-projection (for temporal reprojection)
@@ -399,6 +474,8 @@ public final class RtVolumetricFog {
      */
     public void dispatch(VkCommandBuffer cmd, int renderWidth, int renderHeight, int divisor,
                          long tlas, long depthView, long outputView,
+                         RtGpuExecutor.GraphicsUse graphicsUse,
+                         RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter,
                          Matrix4fc invViewProj, Matrix4fc curViewProj, Matrix4fc prevViewProj,
                          float camX, float camY, float camZ,
                          float camDeltaX, float camDeltaY, float camDeltaZ,
@@ -407,7 +484,7 @@ public final class RtVolumetricFog {
                          boolean historyValid) {
         if (!CausticaConfig.Rt.Fog.ENABLED.value()) return;
 
-        ensureMatricesBuffer();
+        ensureMatrixSlots();
         ensureResources(renderWidth, renderHeight, divisor);
 
         // Determine history validity: caller-supplied continuity AND grid stability. A rebuild
@@ -428,9 +505,17 @@ public final class RtVolumetricFog {
         float pcPrevY = useHistory ? camY - camDeltaY : camY;
         float pcPrevZ = useHistory ? camZ - camDeltaZ : camZ;
 
-        // Rotate matrices ring slot and write the three matrices (column-major; Slang's float4x4 matches).
-        matricesSlot = (matricesSlot + 1) % PUSH_RING;
-        RtBuffer matBuf = matricesRing[matricesSlot];
+        // Rotate to the next matrix slot and host-wait until every previously submitted command
+        // that can dereference this slot's buffer has completed. All four fog passes read the
+        // matrices through the raw BDA pointer in push constants, so without this wait the CPU
+        // could overwrite (or tear) the matrices of a frame whose inject/spatial/temporal/
+        // integrate dispatches are still running. The slot's buffer is created once and never
+        // re-created, so matBuf.deviceAddress stays stable and points at live, lifetime-gated
+        // storage for the whole span any submitted command can read it.
+        matrixCursor = (matrixCursor + 1) % MATRIX_RING;
+        MatrixSlot matrixSlot = matrixSlots[matrixCursor];
+        graphicsUseWaiter.await(matrixSlot.lastUse);
+        RtBuffer matBuf = matrixSlot.buffer;
         {
             ByteBuffer mapped = MemoryUtil.memByteBuffer(matBuf.mapped, (int) MATRICES_BUF_SIZE);
             FloatBuffer fb = mapped.asFloatBuffer();
@@ -464,15 +549,18 @@ public final class RtVolumetricFog {
                 gridH,
                 gridZ,
                 (int) RtComposite.frameCounter(),
-                0, // debugView (0 = final composite; 1-10 are diagnostics)
+                CausticaConfig.Rt.Fog.DEBUG_VIEW.value(), // 0 = final composite; 1-11 diagnostics
                 CausticaConfig.Rt.Fog.STOCHASTIC_LIGHT.value() ? 1 : 0
         );
 
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog")) {
+            // Rotate the descriptor ring and host-wait the slot's previous consumers before any
+            // rewrite/bind: the TLAS handle changes most frames, forcing frequent rewrites.
+            selectDescriptorSet(graphicsUseWaiter);
             writeDescriptors(stack, tlas, depthView, outputView);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipelineLayout, 0, stack.longs(descriptorSet), null);
+                    pipelineLayout, 0, stack.longs(descriptorSets[setCursor]), null);
 
             ByteBuffer pcBuf = stack.malloc(VolumetricPushData.BYTE_SIZE);
             push.write(pcBuf);
@@ -543,6 +631,13 @@ public final class RtVolumetricFog {
             transferBarrier(cmd, stack);
         }
 
+        // Associate both reused slots with this frame's completion token. The marks come after
+        // every command that can reference them (all four passes read the matrix BDA; the
+        // descriptor set is bound for the whole batch), so the next rotation's await covers
+        // exactly the work that could still observe the old contents.
+        matrixSlot.lastUse.mark(graphicsUse);
+        setUses[setCursor].mark(graphicsUse);
+
         // Persist grid state for next frame's validity check.
         lastNear = CausticaConfig.Rt.Fog.NEAR.value();
         lastFar = CausticaConfig.Rt.Fog.FAR.value();
@@ -585,9 +680,13 @@ public final class RtVolumetricFog {
 
     public void destroy() {
         if (destroyed) return;
+        // Runs after the device is idle (see RtComposite.destroy), so no slot is in flight.
         destroyImages();
-        for (int i = 0; i < PUSH_RING; i++) {
-            if (matricesRing[i] != null) { matricesRing[i].destroy(); matricesRing[i] = null; }
+        if (matrixSlots != null) {
+            for (MatrixSlot slot : matrixSlots) {
+                if (slot != null) { slot.buffer.destroy(); }
+            }
+            matrixSlots = null;
         }
         VkDevice vk = ctx.vk();
         if (injectPipeline != 0L) { VK10.vkDestroyPipeline(vk, injectPipeline, null); injectPipeline = 0L; }
@@ -595,6 +694,7 @@ public final class RtVolumetricFog {
         if (temporalPipeline != 0L) { VK10.vkDestroyPipeline(vk, temporalPipeline, null); temporalPipeline = 0L; }
         if (integratePipeline != 0L) { VK10.vkDestroyPipeline(vk, integratePipeline, null); integratePipeline = 0L; }
         if (pipelineLayout != 0L) { VK10.vkDestroyPipelineLayout(vk, pipelineLayout, null); pipelineLayout = 0L; }
+        // Destroying the pool frees every ringed set with it.
         if (descriptorPool != 0L) { VK10.vkDestroyDescriptorPool(vk, descriptorPool, null); descriptorPool = 0L; }
         if (descriptorSetLayout != 0L) { VK10.vkDestroyDescriptorSetLayout(vk, descriptorSetLayout, null); descriptorSetLayout = 0L; }
         destroyed = true;

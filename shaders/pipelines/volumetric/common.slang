@@ -72,6 +72,8 @@ public struct FroxelMatrices
 //    8 = disocclusion / history-rejected mask (white=rejected)
 //    9 = integrated in-scattered radiance (pre-composite over scene)
 //   10 = final volumetric contribution (L + (T-1)*scene) over neutral gray
+//   11 = temporal reprojection probe: RGB = prevUvw (prev-frame froxel coordinate of the
+//        froxel under the pixel); magenta = reprojection outside the previous grid
 public struct VolumetricPush
 {
     public uint64_t matricesAddr;                              // offset  0, size  8

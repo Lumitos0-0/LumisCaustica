@@ -80,6 +80,21 @@ float SampleConfidenceTrilinear(float3 coord)
     return lerp(s0, s1, f.z);
 }
 
+// Shared reprojection probe for the diagnostic views: the previous-frame froxel UVW of the
+// froxel under this pixel, going through the exact production mapping
+// (FroxelCenterWorldSpace -> WorldToFroxelPrevious) so the visualization reflects the
+// temporal pass's math. inside = the coordinate lies within the previous grid's [0,1]^3.
+float3 DebugPrevUvw(float2 fxy, float wStart, uint D, out bool inside)
+{
+    float3 worldPos = FroxelCenterWorldSpace(pc,
+        uint3(clamp((int)fxy.x, 0, (int)FroxelSize(pc).x - 1),
+              clamp((int)fxy.y, 0, (int)FroxelSize(pc).y - 1),
+              clamp((int)(wStart), 0, (int)D - 1)));
+    float3 prevUvw = WorldToFroxelPrevious(pc, worldPos);
+    inside = all(prevUvw >= float3(0,0,0)) && all(prevUvw <= float3(1,1,1));
+    return prevUvw;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint2 id : SV_DispatchThreadID)
@@ -248,24 +263,18 @@ void main(uint2 id : SV_DispatchThreadID)
             break;
         }
         case 7: { // History confidence.
-            float3 worldPos = FroxelCenterWorldSpace(pc,
-                uint3(clamp((int)fxy.x, 0, (int)FroxelSize(pc).x - 1),
-                      clamp((int)fxy.y, 0, (int)FroxelSize(pc).y - 1),
-                      clamp((int)(wStart), 0, (int)D - 1)));
-            float3 prevUvw = WorldToFroxelPrevious(pc, worldPos);
-            if (all(prevUvw >= float3(0,0,0)) && all(prevUvw <= float3(1,1,1)))
+            bool inside;
+            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
+            if (inside)
                 debugConfidence = SampleConfidenceTrilinear(prevUvw * float3(FroxelSize(pc)));
             color = float3(debugConfidence.xxx);
             break;
         }
         case 8: { // Disocclusion mask: red where history was rejected (confidence near 0 with valid scene).
-            float3 worldPos = FroxelCenterWorldSpace(pc,
-                uint3(clamp((int)fxy.x, 0, (int)FroxelSize(pc).x - 1),
-                      clamp((int)fxy.y, 0, (int)FroxelSize(pc).y - 1),
-                      clamp((int)(wStart), 0, (int)D - 1)));
-            float3 prevUvw = WorldToFroxelPrevious(pc, worldPos);
+            bool inside;
+            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
             float conf = 0.0f;
-            if (all(prevUvw >= float3(0,0,0)) && all(prevUvw <= float3(1,1,1)))
+            if (inside)
                 conf = SampleConfidenceTrilinear(prevUvw * float3(FroxelSize(pc)));
             float rejected = (pc.historyValid > 0.5f) ? (1.0f - conf) : 1.0f;
             color = float3(rejected, 0.2f * rejected, 0.0f);
@@ -278,6 +287,17 @@ void main(uint2 id : SV_DispatchThreadID)
         case 10: { // Final volumetric contribution (L + (T-1)*scene) over neutral gray.
             float3 contrib = accumL + (accumT - 1.0f) * scene.xyz;
             color = float3(0.5f, 0.5f, 0.5f) + contrib;
+            break;
+        }
+        case 11: { // Temporal reprojection probe: RGB = prevUvw.xyz (previous-frame froxel
+                 // coordinate of the froxel under this pixel). With a static camera this must be
+                 // a smooth gradient tracking the screen position; magenta marks reprojections
+                 // outside the previous grid (no history coverage there at all). A screen-space
+                 // discontinuity or a magenta region that does not match actual frustum motion
+                 // means the reconstruction and reprojection matrices disagree.
+            bool inside;
+            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
+            color = inside ? saturate(prevUvw) : float3(1.0f, 0.0f, 1.0f);
             break;
         }
         default: {

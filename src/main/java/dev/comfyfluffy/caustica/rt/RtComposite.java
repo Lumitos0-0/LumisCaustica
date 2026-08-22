@@ -1324,6 +1324,7 @@ public final class RtComposite {
                             frameTlas.accel.handle,
                             gDepth.view,
                             output.view,
+                            graphicsUse, graphicsUseWaiter,
                             frameInvViewProj, mvCurProjView, prevVp,
                             camOffX, camOffY, camOffZ,
                             mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ,
