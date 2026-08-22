@@ -1225,8 +1225,8 @@ public final class RtComposite {
                 //   return float3(-sin(a), cos(noonTilt)*cos(a), sin(noonTilt)*cos(a));
                 // sunDir in push is NORMALIZED, TOWARD the sun (world space; direction only,
                 // translation-invariant so camera-relative world space is identical).
-                float sunAngle = sky.celestial().x;
-                float noonTilt = sky.look1().x;
+                float sunAngle = sky.celestial().x();
+                float noonTilt = sky.look1().x();
                 float peak = (float) Math.cos(sunAngle);
                 float sinA = (float) Math.sin(sunAngle);
                 // celestialDirection in sky.slang:
@@ -1235,13 +1235,13 @@ public final class RtComposite {
                 float sdX = -sinA;
                 float sdY = (float) Math.cos(noonTilt) * peak;
                 float sdZ = (float) Math.sin(noonTilt) * peak;
-                float sunAngularRadius = sky.look1().y; // NEE half-angle (radians)
+                float sunAngularRadius = sky.look1().y(); // NEE half-angle (radians)
                 // Sun radiance scale, already in the pre-exposed scene-linear domain:
                 // E_lux (top-of-atmosphere at viewer) * preExposure / pi converts illuminance
                 // to isotropic directional radiance. HG phase is applied per-froxel so the push
                 // constant carries the phase-independent multiplier only.
                 float preExp = exposure.preExposure();
-                float sunLux = sky.look0().x;
+                float sunLux = sky.look0().x();
                 float sunRadiance = sunLux * preExp * (1.0f / (float) Math.PI);
 
                 // prevViewProj for fog reprojection: jitter-free previous frame VP.

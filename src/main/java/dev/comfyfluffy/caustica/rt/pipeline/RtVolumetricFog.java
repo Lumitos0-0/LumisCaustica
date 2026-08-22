@@ -4,6 +4,7 @@ import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
@@ -22,6 +23,7 @@ import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
+import org.lwjgl.vulkan.VkWriteDescriptorSetAccelerationStructureKHR;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,7 +49,6 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_OUTPUT_IMAG
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.VOLUME_TLAS;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-import static org.lwjgl.vulkan.KHRAccelerationStructure.VkWriteDescriptorSetAccelerationStructureKHR;
 
 /**
  * Volumetric fog (froxel) pipeline.
@@ -193,10 +194,10 @@ public final class RtVolumetricFog {
     private long createComputePipeline(VkDevice vk, MemoryStack stack, String name, String label) {
         long module = loadModule(vk, stack, name);
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, module, label + " module");
-        VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
-                .stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
-        VkComputePipelineCreateInfo cpci = VkComputePipelineCreateInfo.calloc(stack).sType$Default()
-                .stage(stage).layout(pipelineLayout);
+        VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack)
+                .sType$Default().stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
+        VkComputePipelineCreateInfo.Buffer cpci = VkComputePipelineCreateInfo.calloc(1, stack);
+        cpci.get(0).sType$Default().stage(stage).layout(pipelineLayout);
         LongBuffer p = stack.mallocLong(1);
         check(VK10.vkCreateComputePipelines(vk, VK10.VK_NULL_HANDLE, cpci, null, p),
                 "vkCreateComputePipelines(" + name + ")");
@@ -230,7 +231,7 @@ public final class RtVolumetricFog {
         if (matricesRing[0] != null) return;
         for (int i = 0; i < PUSH_RING; i++) {
             matricesRing[i] = ctx.createBuffer(MATRICES_BUF_SIZE,
-                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                     true, "volumetric matrices " + i);
         }
     }
@@ -330,7 +331,7 @@ public final class RtVolumetricFog {
         for (int i = 0; i < storageSlots.length; i++) {
             writes.get(w).sType$Default().dstSet(descriptorSet).dstBinding(storageSlots[i])
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .pImageInfo(VkDescriptorImageInfo.create(img.address() + i * VkDescriptorImageInfo.SIZEOF));
+                    .pImageInfo(VkDescriptorImageInfo.create(img.address(i), 1));
             w++;
         }
 
