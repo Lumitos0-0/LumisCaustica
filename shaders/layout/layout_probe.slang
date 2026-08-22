@@ -94,3 +94,24 @@ void probeBloomPush(uint3 id : SV_DispatchThreadID) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
     }
 }
+
+// Volumetric fog push constants live in pipelines/volumetric/common.slang -- import that module
+// so the probe can see the struct (common.slang declares `module volumetric_common;`).
+import volumetric_common;
+[[vk::push_constant]] VolumetricPush volumetricPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeVolumetricPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        // Touch at least one field per "class" of type in the struct so Slang's
+        // reflection never strips them. matricesAddr is uint64_t, froxelSizeX/Y/Z are
+        // three uints, everything else is float/float3.
+        float sink = float(volumetricPushProbe.frameIndex) + volumetricPushProbe.nearPlane
+                + volumetricPushProbe.sunDir.x + float(volumetricPushProbe.matricesAddr)
+                + float(volumetricPushProbe.froxelSizeX)
+                + float(volumetricPushProbe.debugView)
+                + float(volumetricPushProbe.stochasticLight)
+                + volumetricPushProbe.historyBaseWeight
+                + volumetricPushProbe.historyValid;
+    }
+}

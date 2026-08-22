@@ -53,6 +53,10 @@ abstract class GenerateRtBindings extends DefaultTask {
                     MULTISCATTER_SAMPLER: "multiScatterLut"]],
             [prefix: "PRESENT", source: "pipelines/hdr_composite/main.comp.slang", resources: [
                     OUTPUT: "outputImage", SOURCE: "sourceImage"]],
+            [prefix: "VOLUME", source: "pipelines/volumetric/inject.comp.slang", resources: [
+                    TLAS: "tlas", FOG_VOLUME: "fogVolume", FOG_CURRENT: "fogCurrent",
+                    FOG_HISTORY: "fogHistory", FOG_HISTORY_CONF: "fogHistoryConfidence",
+                    DEPTH_IMAGE: "depthImage", OUTPUT_IMAGE: "outputImage"]],
             [prefix: "OVERLAY_IMAGE", source: "pipelines/overlay_composite/glow.frag.slang", resources: [VALUE: "sourceImage"]],
             [prefix: "OVERLAY_SAMPLER", source: "pipelines/name_tag/fragment.frag.slang", resources: [VALUE: "fontAtlas"]],
             [prefix: "OVERLAY_TLAS", source: "pipelines/block_outline/fragment.frag.slang", resources: [VALUE: "tlas"]]

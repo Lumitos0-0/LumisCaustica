@@ -69,6 +69,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetricFog;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -182,6 +183,7 @@ public final class RtComposite {
     private RtToneLut hdrToneLut;
     private RtToneLut lookLut;
     private int loadedHdrLutNits = -1;
+    private RtVolumetricFog volumetricFog;
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
@@ -715,6 +717,9 @@ public final class RtComposite {
             if (skyLut == null) {
                 skyLut = RtSkyLut.create(ctx);
             }
+            if (volumetricFog == null) {
+                volumetricFog = RtVolumetricFog.create(ctx);
+            }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
@@ -1210,7 +1215,64 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to fog reads
+
+            // Volumetric fog: froxel injection -> spatial filter -> temporal accumulation ->
+            // front-to-back integration -> composite onto output. Runs at render resolution
+            // BEFORE DLSS-RR so RR denoises fog + surfaces together.
+            if (CausticaConfig.Rt.Fog.ENABLED.value() && volumetricFog != null) {
+                // celestialDirection (from sky.slang):
+                //   return float3(-sin(a), cos(noonTilt)*cos(a), sin(noonTilt)*cos(a));
+                // sunDir in push is NORMALIZED, TOWARD the sun (world space; direction only,
+                // translation-invariant so camera-relative world space is identical).
+                float sunAngle = sky.celestial().x;
+                float noonTilt = sky.look1().x;
+                float peak = (float) Math.cos(sunAngle);
+                float sinA = (float) Math.sin(sunAngle);
+                // celestialDirection in sky.slang:
+                //   return float3(-sin(a), cos(noonTilt)*cos(a), sin(noonTilt)*cos(a));
+                // sunDir in push is NORMALIZED, TOWARD the sun (world space).
+                float sdX = -sinA;
+                float sdY = (float) Math.cos(noonTilt) * peak;
+                float sdZ = (float) Math.sin(noonTilt) * peak;
+                float sunAngularRadius = sky.look1().y; // NEE half-angle (radians)
+                // Sun radiance scale, already in the pre-exposed scene-linear domain:
+                // E_lux (top-of-atmosphere at viewer) * preExposure / pi converts illuminance
+                // to isotropic directional radiance. HG phase is applied per-froxel so the push
+                // constant carries the phase-independent multiplier only.
+                float preExp = exposure.preExposure();
+                float sunLux = sky.look0().x;
+                float sunRadiance = sunLux * preExp * (1.0f / (float) Math.PI);
+
+                // prevViewProj for fog reprojection: jitter-free previous frame VP.
+                // mvPushMatrix was set by updateMotion() to mvPrevProjView BEFORE mvPrevProjView
+                // was overwritten with mvCurProjView, so it holds the jitter-free previous VP.
+                Matrix4f prevVp = new Matrix4f(mvPushMatrix);
+
+                float camOffX = (float) (camX - terrain.blockX);
+                float camOffY = (float) (camY - terrain.blockY);
+                float camOffZ = (float) (camZ - terrain.blockZ);
+
+                // mvHasPrev indicates real camera continuity (true after the first frame);
+                // grid validity is checked inside dispatch against lastNear/lastFar/etc.
+                boolean fogHistoryValid = mvHasPrev;
+
+                try (RtDebugLabels.Scope ignored2 = RtDebugLabels.scope(ctx, cmd, "volumetric fog")) {
+                    volumetricFog.dispatch(cmd, renderW, renderH,
+                            CausticaConfig.Rt.Fog.DIVISOR.value(),
+                            frameTlas.accel.handle,
+                            gDepth.view,
+                            output.view,
+                            frameInvViewProj, mvCurProjView, prevVp,
+                            camOffX, camOffY, camOffZ,
+                            mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ,
+                            sdX, sdY, sdZ,
+                            sunAngularRadius, sunRadiance,
+                            fogHistoryValid);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog composite visible to DLSS
+            }
+
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1506,6 +1568,10 @@ public final class RtComposite {
         if (skyLut != null) {
             skyLut.destroy();
             skyLut = null;
+        }
+        if (volumetricFog != null) {
+            volumetricFog.destroy();
+            volumetricFog = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();

@@ -835,6 +835,45 @@ public final class CausticaConfig {
             }
         }
 
+        /** Volumetric fog / sun shafts (froxel). */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.fog", "fog.enabled", true);
+            // XY froxel grid is renderResolution / divisor. 8 is the recommended baseline.
+            public static final IntSetting DIVISOR =
+                    clampedInt("caustica.rt.fogDivisor", "fog.divisor", 8, 4, 16);
+            // Number of depth slices. 64 is the Naughty Dog baseline.
+            public static final IntSetting DEPTH_SLICES =
+                    clampedInt("caustica.rt.fogDepthSlices", "fog.depth-slices", 64, 16, 128);
+            // Near/far plane of the froxel volume, in blocks (meters).
+            public static final FloatSetting NEAR =
+                    clampedFloat("caustica.rt.fogNear", "fog.near", 0.25f, 0.05f, 10f);
+            public static final FloatSetting FAR =
+                    clampedFloat("caustica.rt.fogFar", "fog.far", 256f, 16f, 1024f);
+            // Uniform + height-fog density. heightFogDensity is sigma_t at Y=heightBase (1/blocks).
+            public static final FloatSetting GLOBAL_DENSITY =
+                    clampedFloat("caustica.rt.fogGlobalDensity", "fog.global-density", 0.005f, 0f, 1f);
+            public static final FloatSetting HEIGHT_DENSITY =
+                    clampedFloat("caustica.rt.fogHeightDensity", "fog.height-density", 0.02f, 0f, 1f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 0.03f, 0f, 1f);
+            public static final FloatSetting HEIGHT_BASE =
+                    finiteFloat("caustica.rt.fogHeightBase", "fog.height-base", 62f);
+            // Henyey-Greenstein anisotropy.
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.45f, -0.95f, 0.95f);
+            // Temporal history weight (0..1). Higher = more stable, slower convergence.
+            public static final FloatSetting HISTORY_WEIGHT =
+                    clampedFloat("caustica.rt.fogHistoryWeight", "fog.history-weight", 0.9f, 0f, 0.99f);
+            // Stochastic sun-disk sampling (1 = enabled, 0 = fixed ray). Default OFF for Phase 1-4
+            // baseline verification; enable once history + fixed-light are validated so noise
+            // convergence can be tested in isolation.
+            public static final BooleanSetting STOCHASTIC_LIGHT =
+                    bool("caustica.rt.fogStochastic", "fog.stochastic-light", false);
+
+            private Fog() {}
+        }
+
         /** Startup Vulkan inventory + {@code VK_EXT_device_fault} reporting on device loss. See {@code VulkanDiagnostics}. */
         public static final class Diagnostics {
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug

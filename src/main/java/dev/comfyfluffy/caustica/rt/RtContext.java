@@ -393,6 +393,85 @@ public final class RtContext {
         return new RtImage(vma, vk, image, allocation, view, width, height);
     }
 
+    /**
+     * Create a 3D storage image (VK_IMAGE_TYPE_3D) of the given format, transitioned to GENERAL.
+     * Used by the volumetric fog froxel grid.
+     */
+    public RtImage createStorageImage3D(int width, int height, int depth, int format, String label) {
+        int usage = VK10.VK_IMAGE_USAGE_STORAGE_BIT | VK10.VK_IMAGE_USAGE_SAMPLED_BIT
+                | VK10.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        requireStorageImageSupport3D(width, height, depth, format, usage, label);
+        long image;
+        long allocation;
+        long view;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
+                    .imageType(VK10.VK_IMAGE_TYPE_3D).format(format)
+                    .mipLevels(1).arrayLayers(1).samples(VK10.VK_SAMPLE_COUNT_1_BIT).tiling(VK10.VK_IMAGE_TILING_OPTIMAL)
+                    .usage(usage)
+                    .sharingMode(VK10.VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED);
+            ici.extent().set(width, height, depth);
+            VmaAllocationCreateInfo iaci = VmaAllocationCreateInfo.calloc(stack).usage(Vma.VMA_MEMORY_USAGE_AUTO);
+            LongBuffer pImage = stack.mallocLong(1);
+            PointerBuffer pAlloc = stack.mallocPointer(1);
+            check(Vma.vmaCreateImage(vma, ici, iaci, pImage, pAlloc, null), "vmaCreateImage(3D)");
+            image = pImage.get(0);
+            allocation = pAlloc.get(0);
+            RtDebugLabels.nameImage(this, image, label);
+
+            VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
+                    .image(image).viewType(VK10.VK_IMAGE_VIEW_TYPE_3D).format(format);
+            vci.subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+            LongBuffer pView = stack.mallocLong(1);
+            check(VK10.vkCreateImageView(vk, vci, null, pView), "vkCreateImageView(3D)");
+            view = pView.get(0);
+            RtDebugLabels.nameImageView(this, view, label + " view");
+        }
+        long imageFinal = image;
+        submitSync(cmd -> {
+            try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(this, cmd, "init " + label)) {
+                VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, stack);
+                b.get(0).sType$Default().oldLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED).newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                        .srcAccessMask(0).dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT
+                                | VK10.VK_ACCESS_TRANSFER_READ_BIT | VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                        .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                        .image(imageFinal);
+                b.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+                VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        0, null, null, b);
+            }
+        });
+        return new RtImage(vma, vk, image, allocation, view, width, height, depth, VK10.VK_IMAGE_VIEW_TYPE_3D);
+    }
+
+    private void requireStorageImageSupport3D(int width, int height, int depth, int format, int usage, String label) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkFormatProperties formatProperties = VkFormatProperties.calloc(stack);
+            VK10.vkGetPhysicalDeviceFormatProperties(vk.getPhysicalDevice(), format, formatProperties);
+            int required = VK10.VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK10.VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            required |= VK11.VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK11.VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+            int supported = formatProperties.optimalTilingFeatures();
+            if ((supported & required) != required) {
+                throw new UnsupportedOperationException(label + " format " + format
+                        + " lacks optimal-tiling features 0x" + Integer.toHexString(required & ~supported));
+            }
+            VkImageFormatProperties imageProperties = VkImageFormatProperties.calloc(stack);
+            int result = VK10.vkGetPhysicalDeviceImageFormatProperties(vk.getPhysicalDevice(), format,
+                    VK10.VK_IMAGE_TYPE_3D, VK10.VK_IMAGE_TILING_OPTIMAL, usage, 0, imageProperties);
+            if (result == VK10.VK_ERROR_FORMAT_NOT_SUPPORTED) {
+                throw new UnsupportedOperationException(label + " format " + format
+                        + " does not support 3D image usage 0x" + Integer.toHexString(usage));
+            }
+            check(result, "vkGetPhysicalDeviceImageFormatProperties(3D)");
+            if (width > imageProperties.maxExtent().width() || height > imageProperties.maxExtent().height()
+                    || depth > imageProperties.maxExtent().depth()) {
+                throw new UnsupportedOperationException(label + " extent " + width + "x" + height + "x" + depth
+                        + " exceeds format maximum " + imageProperties.maxExtent().width() + "x"
+                        + imageProperties.maxExtent().height() + "x" + imageProperties.maxExtent().depth());
+            }
+        }
+    }
+
     private void requireStorageImageSupport(int width, int height, int format, int usage, String label) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkFormatProperties formatProperties = VkFormatProperties.calloc(stack);

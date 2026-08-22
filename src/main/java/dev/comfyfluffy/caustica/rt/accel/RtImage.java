@@ -14,12 +14,19 @@ public final class RtImage {
     public final long view;
     public final int width;
     public final int height;
+    public final int depth;
+    public final int viewType;
 
     private final long vma;
     private final VkDevice vk;
     private boolean destroyed;
 
     public RtImage(long vma, VkDevice vk, long image, long allocation, long view, int width, int height) {
+        this(vma, vk, image, allocation, view, width, height, 1, VK10.VK_IMAGE_VIEW_TYPE_2D);
+    }
+
+    public RtImage(long vma, VkDevice vk, long image, long allocation, long view,
+                   int width, int height, int depth, int viewType) {
         this.vma = vma;
         this.vk = vk;
         this.image = image;
@@ -27,6 +34,8 @@ public final class RtImage {
         this.view = view;
         this.width = width;
         this.height = height;
+        this.depth = depth;
+        this.viewType = viewType;
     }
 
     public void destroy() {
