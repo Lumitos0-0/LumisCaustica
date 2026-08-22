@@ -75,6 +75,9 @@ public final class CausticaClient implements ClientModInitializer {
 			RtTerrain.requestFullClear();
 			RtComposite.INSTANCE.resetExposureHistory();
 			RtComposite.INSTANCE.resetFailureLatch(); // F3+A doubles as manual RT recovery after a latched failure
+			// The previous frame belongs to a different world/frustum; fog history and camera
+			// reprojection would otherwise straddle the switch (coords alone aren't world-unique).
+			RtComposite.INSTANCE.resetReprojectionHistory();
 		});
 
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {

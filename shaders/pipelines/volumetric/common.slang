@@ -64,8 +64,10 @@ public struct FroxelMatrices
 //    2 = world-position checker (verifies density is world-anchored; should not swim)
 //    3 = extinction / density only
 //    4 = raw binary RT visibility (0 or 1, before spatial filter)
-//    5 = current injected in-scattered radiance (pre-spatial)
-//    6 = spatially filtered in-scattered radiance (post-spatial, pre-temporal)
+//    5 = fogCurrent content at integrate time (post-temporal accumulated radiance;
+//        temporal overwrites the pre-spatial injection in its place)
+//    6 = fogVolume tap at integrate time (post-temporal; the pre-temporal spatial
+//        output is overwritten by the fogCurrent -> fogVolume copy)
 //    7 = history confidence (black=0, white=1)
 //    8 = disocclusion / history-rejected mask (white=rejected)
 //    9 = integrated in-scattered radiance (pre-composite over scene)
@@ -203,6 +205,17 @@ public float SliceCoordFromViewDepth(float viewDepth, float nearPlane, float far
     return clamp(w, 0.0f, 1.0f);
 }
 
+// Continuous w-coordinate for a given linear view depth, NOT clamped to [0,1]: values below 0
+// or above 1 mean the depth lies outside the [near, far] range of the grid the coordinate
+// belongs to. World->froxel mapping uses this so bounds tests reject depths the target grid
+// never covered (nearer than its near plane, farther than its far plane) instead of sampling
+// the clamped boundary slice and treating it as history.
+public float SliceCoordFromViewDepthUnclamped(float viewDepth, float nearPlane, float farPlane)
+{
+    float ratio = max(viewDepth, nearPlane) / max(nearPlane, kEpsilon);
+    return log(max(ratio, 1.0001f)) / LogRatio(nearPlane, farPlane);
+}
+
 // Near and far edge view-depths of integer slice z (z in [0..D-1]).
 public void FroxelSliceDepthRange(uint z, VolumetricPush pc, out float zNear, out float zFar)
 {
@@ -321,10 +334,12 @@ public float3 PixelViewRay(VolumetricPush pc, uint2 xy, uint2 dims, out float ou
 // current (camOffset) and previous (prevCamOffset) frames; the caller chooses
 // the matching view-projection matrix.
 //
-// Returns float3(u_froxel_01, v_froxel_01, w_froxel_01) where (u,v) are in
+// Returns float3(u_froxel_01, v_froxel_01, w_froxel) where (u,v) are in
 // screen-UV convention (origin top-left, like the Load coordinate), and w is
-// the continuous slice coordinate in [0,1]. Values outside [0,1] mean the point
-// is off the froxel grid.
+// the continuous slice coordinate with w=0 at the near plane and w=1 at the far
+// plane. ALL three axes are UNCLAMPED: any component outside [0,1] means the
+// point is off the froxel grid, and callers must bounds-test before sampling.
+// (Behind/inside-near points return (-1,-1,-1) via the clip.w test above.)
 // -----------------------------------------------------------------------------
 public float3 WorldToFroxelUvw(VolumetricPush pc, float3 worldPos, float3 camOff, float4x4 viewProj)
 {
@@ -335,7 +350,7 @@ public float3 WorldToFroxelUvw(VolumetricPush pc, float3 worldPos, float3 camOff
     float viewDepth = clip.w;  // = -rel.z (view space)
     float u = ndc.x * 0.5f + 0.5f;
     float v = (1.0f - ndc.y) * 0.5f;
-    float w = SliceCoordFromViewDepth(viewDepth, pc.nearPlane, pc.farPlane);
+    float w = SliceCoordFromViewDepthUnclamped(viewDepth, pc.nearPlane, pc.farPlane);
     return float3(u, v, w);
 }
 

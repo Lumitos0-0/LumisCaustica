@@ -275,6 +275,16 @@ public final class RtComposite {
     private float mvCamDeltaY;
     private float mvCamDeltaZ;
     private boolean mvHasPrev;
+    // Fog temporal validity tracking. fogDispatchedLastFrame is armed by the fog dispatch each
+    // recordFrame and cleared every beginFrame: a frame without a fog dispatch (fog toggled off,
+    // early composite bail) breaks history continuity, because fogHistory would belong to a camera
+    // older than the one in the reprojection matrices. fogPrevProjM00/M11 hold the intrinsic
+    // projection scale slots of the frame projection last dispatched with, for the
+    // projectionIsCompatible gate.
+    private boolean fogDispatchedLastFrame;
+    private float fogPrevProjM00;
+    private float fogPrevProjM11;
+    private boolean fogHadPrevProjection;
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
     private long atlasSampler;
@@ -509,6 +519,17 @@ public final class RtComposite {
     }
 
     /**
+     * Drop reprojection continuity (motion vectors + volumetric fog history) on render-state
+     * invalidation (dimension change, render-distance change, F3+A): the previous frame's camera
+     * belongs to a different world or frustum, so nothing valid remains to reproject from. The
+     * next frame re-arms continuity from itself.
+     */
+    public void resetReprojectionHistory() {
+        mvHasPrev = false;
+        fogHadPrevProjection = false;
+    }
+
+    /**
      * The frame's forward camera-relative view-projection (jitter-free), exactly what {@code world.rgen}
      * traced with — overlay raster passes ({@code dev.comfyfluffy.caustica.rt.overlay}) reuse it so their content lands
      * pixel-exact on the RT image. Valid after {@code updateMotion} ran this frame; do not mutate.
@@ -532,6 +553,9 @@ public final class RtComposite {
         }
         RtFrameStats.FRAME.beginIfInactive();
         hdrWrittenThisFrame = false;
+        // Fog previous-frame latch: only a recordFrame that actually dispatched fog this frame
+        // re-arms it, so any gap in fog dispatch (toggle, bail-out) invalidates fog history once.
+        fogDispatchedLastFrame = false;
     }
 
     /** This frame's completion token, valid until {@link #finishGraphicsUse()} signals it. */
@@ -1064,7 +1088,13 @@ public final class RtComposite {
             selectedPushSlot.graphicsUse.mark(graphicsUse);
             RtBuffer pushBuf = selectedPushSlot.buffer;
             ByteBuffer push = MemoryUtil.memByteBuffer(pushBuf.mapped, WORLD_PUSH_SIZE);
-            frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
+            // The current view-projection is generated exactly once per frame (mvCurProjView in
+            // updateMotion, from frameProjection * frameViewRotation); the inverse is DERIVED from
+            // that same matrix rather than recomputing a second product and inverting it. This
+            // makes frameInvViewProj == inverse(mvCurProjView) an identity by construction —
+            // reconstruction (ray/unproject) and reprojection (fog history, motion vectors) can
+            // never drift into subtly different cameras of the same frame.
+            frameInvViewProj.set(mvCurProjView).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
             // submerged, fixing the air→water first-segment orientation) and animated water normals.
             // Bit 1 remains unused to avoid conflicting with stale external readers.
@@ -1246,16 +1276,47 @@ public final class RtComposite {
 
                 // prevViewProj for fog reprojection: jitter-free previous frame VP.
                 // mvPushMatrix was set by updateMotion() to mvPrevProjView BEFORE mvPrevProjView
-                // was overwritten with mvCurProjView, so it holds the jitter-free previous VP.
+                // was overwritten with mvCurProjView, so it holds the jitter-free previous VP —
+                // the previous entry of the SAME single matrix lineage that produced this frame's
+                // mvCurProjView and frameInvViewProj.
                 Matrix4f prevVp = new Matrix4f(mvPushMatrix);
 
                 float camOffX = (float) (camX - terrain.blockX);
                 float camOffY = (float) (camY - terrain.blockY);
                 float camOffZ = (float) (camZ - terrain.blockZ);
 
-                // mvHasPrev indicates real camera continuity (true after the first frame);
-                // grid validity is checked inside dispatch against lastNear/lastFar/etc.
-                boolean fogHistoryValid = mvHasPrev;
+                // Temporal history validity gate:
+                //   previousFrameExists     — a completed previous composite (mvHasPrev) AND a
+                //                             fog dispatch in the immediately preceding frame
+                //                             (fogDispatchedLastFrame), so fogHistory was written
+                //                             from the same camera lineage as prevVp.
+                //   projectionIsCompatible  — the intrinsic projection scale slots (m00/m11)
+                //                             match the frame projection last dispatched with.
+                //                             Pure view translations never move these slots and
+                //                             rotation perturbations (view bobbing) move them only
+                //                             quadratically, so a 0.5% relative tolerance rejects
+                //                             FOV/aspect changes without tripping on bob.
+                //   cameraStateIsCompatible — the camera translated at most half the fog range
+                //                             since the previous frame, rejecting teleports.
+                //                             (Dimension changes reset mvHasPrev via
+                //                             resetReprojectionHistory instead.)
+                // Remaining terms: grid stability is checked inside dispatch(), and
+                // prevUvwInsideGrid is evaluated per-froxel by temporal.comp.
+                float projM00 = frameProjection.m00();
+                float projM11 = frameProjection.m11();
+                boolean projectionCompatible = fogHadPrevProjection
+                        && Math.abs(projM00 - fogPrevProjM00) <= 5.0e-3f * Math.max(Math.abs(projM00), 1e-6f)
+                        && Math.abs(projM11 - fogPrevProjM11) <= 5.0e-3f * Math.max(Math.abs(projM11), 1e-6f);
+                float camDeltaLen2 = mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY
+                        + mvCamDeltaZ * mvCamDeltaZ;
+                float teleportSlack = 0.5f * CausticaConfig.Rt.Fog.FAR.value();
+                boolean cameraStateCompatible = camDeltaLen2 <= teleportSlack * teleportSlack;
+                boolean fogHistoryValid = mvHasPrev && fogDispatchedLastFrame
+                        && projectionCompatible && cameraStateCompatible;
+                fogPrevProjM00 = projM00;
+                fogPrevProjM11 = projM11;
+                fogHadPrevProjection = true;
+                fogDispatchedLastFrame = true;
 
                 try (RtDebugLabels.Scope ignored2 = RtDebugLabels.scope(ctx, cmd, "volumetric fog")) {
                     volumetricFog.dispatch(cmd, renderW, renderH,

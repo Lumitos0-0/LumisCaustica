@@ -4,8 +4,17 @@
 //   * Reproject P_world into the PREVIOUS froxel grid via WorldToFroxelPrevious.
 //   * Sample the history volume with TRILINEAR filtering at that continuous
 //     UVW coordinate (the reprojected location is not an integer cell).
-//   * Validate the history sample (in-bounds, depth compatibility, medium
-//     compatibility, motion magnitude, edge proximity).
+//   * Validate the history sample. History use requires the full conjunction
+//       historyValid = previousFrameExists        (host latch)
+//                    && projectionIsCompatible     (host latch)
+//                    && cameraStateIsCompatible    (host latch)
+//                    && gridIsStable               (host latch)
+//                    && prevUvwInsideGrid          (per-froxel, evaluated here)
+//     The host folds the first four into pc.historyValid (see RtVolumetricFog);
+//     prevUvw inside [0,1]^3 is tested below against an UNCLAMPED w so depths
+//     the previous grid never covered reject instead of sampling a clamped
+//     boundary slice. Within a valid sample, depth/medium/motion/edge
+//     confidence terms then modulate (never gate) the blend weight.
 //     History is NEVER rejected just because the binary shadow sample
 //     changed -- that noise is what temporal integration is meant to converge.
 //   * Compute a 3x3x3 neighborhood of CURRENT-frame (spatially-filtered) RGB
@@ -13,11 +22,14 @@
 //   * Blend with historyBaseWeight * effectiveWeight; update per-froxel
 //     confidence (grows toward 1 on valid frames, decays on invalid).
 //
-// Output goes to fogCurrent (out-of-place vs. fogVolume reads) so neighboring
-// invocations in the same workgroup never observe each other's partially-
-// written results. After this dispatch, Java copies fogCurrent -> fogVolume
-// so integrate.comp reads the temporally-stabilized grid. After integrate
-// reads fogVolume, Java copies fogVolume -> fogHistory for next frame.
+// Read/write discipline: fogHistory, fogHistoryConfidence and fogVolume are
+// READ-ONLY in this dispatch. Outputs go to fogCurrent (color/extinction) and
+// fogConfidenceCurrent (updated confidence), out-of-place vs. every read, so no
+// invocation ever observes another invocation's partially-written results.
+// After this dispatch, Java copies fogCurrent -> fogVolume so integrate.comp
+// reads the temporally-stabilized grid. After integrate reads fogVolume, Java
+// copies fogVolume -> fogHistory and fogConfidenceCurrent -> fogHistoryConfidence
+// for next frame.
 
 import bindings;
 import common;
@@ -122,14 +134,18 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 worldPos = FroxelCenterWorldSpace(pc, id);
 
-    // Continuous history froxel coordinate in UVW [0,1]^3, then in texel space.
+    // Continuous history froxel coordinate in UVW (all axes unclamped; the bounds
+    // test below decides whether the point was covered by the previous grid at all),
+    // plus the same coordinate in texel space for the trilinear taps.
     float3 prevUvw = WorldToFroxelPrevious(pc, worldPos);
     float3 prevCoord = prevUvw * float3(dims);   // [0, dims]
 
-    // History validity flags.
-    bool inBounds = all(prevUvw >= float3(0.0f, 0.0f, 0.0f))
-                 && all(prevUvw <= float3(1.0f, 1.0f, 1.0f));
-    bool histValid = (pc.historyValid > 0.5f) && inBounds;
+    // History validity: the host-side latches (previousFrameExists &&
+    // projectionIsCompatible && cameraStateIsCompatible && gridIsStable) arrive
+    // folded into pc.historyValid; prevUvwInsideGrid is the per-froxel half.
+    bool prevUvwInsideGrid = all(prevUvw >= float3(0.0f, 0.0f, 0.0f))
+                          && all(prevUvw <= float3(1.0f, 1.0f, 1.0f));
+    bool histValid = (pc.historyValid > 0.5f) && prevUvwInsideGrid;
 
     float4 history = float4(current.xyz, current.w);
     float  histConf = 0.0f;
@@ -202,11 +218,11 @@ void main(uint3 id : SV_DispatchThreadID)
             newConf = min(histConf + (1.0f - histConf) * 0.15f, 1.0f);
         else
             newConf = max(histConf - 0.35f, 0.0f);
-        fogHistoryConfidence[id] = newConf;
+        fogConfidenceCurrent[id] = newConf;
     }
     else
     {
         fogCurrent[id] = float4(current.xyz, current.w);
-        fogHistoryConfidence[id] = 0.0f;
+        fogConfidenceCurrent[id] = 0.0f;
     }
 }

@@ -234,14 +234,16 @@ void main(uint2 id : SV_DispatchThreadID)
             color = float3(mag.xxx);
             break;
         }
-        case 5: { // Pre-spatial injected lighting (fogCurrent -- sample at nearest froxel).
+        case 5: { // fogCurrent at integrate time: post-temporal accumulated grid (the
+                 // pre-spatial injection is overwritten in place by the temporal pass).
             int3 ix = int3(clamp(int2(fxy), int2(0,0), (int2)FroxelSize(pc).xy - int2(1,1)),
                            clamp((int)(wStart), 0, (int)D - 1));
             float4 pre = fogCurrent[uint3(ix)];
             color = pre.xyz * 3.0f;
             break;
         }
-        case 6: { // Post-spatial (pre-temporal) lighting == current fogVolume at the nearest froxel.
+        case 6: { // fogVolume tap at integrate time: post-temporal grid (the fogCurrent copy
+                 // overwrote the pre-temporal spatial output before this pass ran).
             color = debugTap.xyz * 3.0f;
             break;
         }

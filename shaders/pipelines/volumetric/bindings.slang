@@ -20,6 +20,9 @@
 
 // History confidence / age per froxel (R16F):
 //   0 = no history, 1 = fully converged.
+// READ-ONLY inside the temporal pass: updated confidence goes to fogConfidenceCurrent and Java
+// copies fogConfidenceCurrent -> fogHistoryConfidence at frame end, so the temporal dispatch
+// never reads and writes the same image (ping-pong, same discipline as fogCurrent vs. fogVolume).
 [[vk::binding(4, 0)]] [format("r16f")] public RWTexture3D<float> fogHistoryConfidence;
 
 // 2D scene depth (R32F, render-res): stores post-projection z/w, reversed-Z (1=near, 0=sky/far).
@@ -30,3 +33,7 @@
 // colour and writes the composited scene*T + L result (overwriting in place), so fog is blended
 // into the render target before DLSS-RR / upscale.
 [[vk::binding(6, 0)]] [format("rgba16f")] public RWTexture2D<float4> outputImage;
+
+// Current-frame confidence output (R16F), written by temporal.comp. Copied into
+// fogHistoryConfidence by Java after integrate so it becomes next frame's history confidence.
+[[vk::binding(7, 0)]] [format("r16f")] public RWTexture3D<float> fogConfidenceCurrent;
