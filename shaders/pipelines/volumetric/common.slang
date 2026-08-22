@@ -99,8 +99,8 @@ public struct VolumetricPush
 // because Slang allows only one push-constant block per compilation unit and the
 // layout probe imports this module separately.
 
-static const float kEpsilon = 1.0e-6f;
-static const float kPi = 3.14159265f;
+public static const float kEpsilon = 1.0e-6f;
+public static const float kPi = 3.14159265f;
 
 // Read-only device pointer matching the codebase convention in world_common.slang.
 public typealias ConstPtr<T> = Ptr<T, Access.Read, AddressSpace.Device, Std430DataLayout>;
@@ -124,7 +124,7 @@ public FroxelMatrices GetMatrices(VolumetricPush pc)
 // -----------------------------------------------------------------------------
 // Hash / blue-noise-like dither (deterministic for (froxel, frame))
 // -----------------------------------------------------------------------------
-float BlueNoise(uint3 froxel, uint frame)
+public float BlueNoise(uint3 froxel, uint frame)
 {
     uint x = froxel.x * 19349663u + froxel.y * 83492791u + froxel.z * 2654435761u + frame * 9742139u;
     x ^= x >> 13;
@@ -133,7 +133,7 @@ float BlueNoise(uint3 froxel, uint frame)
     return float(x & 0x00FFFFFFu) / float(0x01000000u);
 }
 
-float2 BlueNoise2(uint3 froxel, uint frame)
+public float2 BlueNoise2(uint3 froxel, uint frame)
 {
     return float2(
         BlueNoise(froxel, frame),
@@ -147,27 +147,27 @@ float2 BlueNoise2(uint3 froxel, uint frame)
 // Exponential depth distribution: viewDepth(z) = nearPlane * (farPlane/nearPlane)^(z/depthSlices)
 // This is camera-anchored in Z, not world-anchored, which is correct for a frustum-aligned froxel
 // grid. Z is measured in linear VIEW SPACE depth (positive, along camera -Z) in blocks.
-float ViewDepthFromFroxelSlice(float zSlice, float nearPlane, float farPlane, uint depthSlices)
+public float ViewDepthFromFroxelSlice(float zSlice, float nearPlane, float farPlane, uint depthSlices)
 {
     float t = clamp(zSlice, 0.0f, 1.0f);
     float ratio = max(farPlane / max(nearPlane, kEpsilon), 1.0001f);
     return nearPlane * pow(ratio, t);
 }
 
-float FroxelCenterViewDepth(VolumetricPush pc, uint zSlice)
+public float FroxelCenterViewDepth(VolumetricPush pc, uint zSlice)
 {
     float z = (float(zSlice) + 0.5f) / float(FroxelSize(pc).z);
     return ViewDepthFromFroxelSlice(z, pc.nearPlane, pc.farPlane, FroxelSize(pc).z);
 }
 
-float SliceCoordFromViewDepth(float viewDepth, float nearPlane, float farPlane, uint depthSlices)
+public float SliceCoordFromViewDepth(float viewDepth, float nearPlane, float farPlane, uint depthSlices)
 {
     float ratio = max(viewDepth, nearPlane) / max(nearPlane, kEpsilon);
     float z = log(max(ratio, 1.0001f)) / log(max(farPlane / max(nearPlane, kEpsilon), 1.0001f));
     return clamp(z, 0.0f, 1.0f);
 }
 
-void FroxelSliceDepthRange(uint z, float nearPlane, float farPlane, uint depthSlices,
+public void FroxelSliceDepthRange(uint z, float nearPlane, float farPlane, uint depthSlices,
                            out float zNear, out float zFar)
 {
     float tNear = (float(z) + 0.0f) / float(depthSlices);
@@ -183,7 +183,7 @@ void FroxelSliceDepthRange(uint z, float nearPlane, float farPlane, uint depthSl
 // Unproject a clip-space point (u,v,ndcZ) through the inverse view-projection into
 // camera-relative world. Handles reversed-Z and perspective W correctly.
 // u,v are in [-1,1] NDC X/Y; ndcZ is reversed-Z (1=near, 0=sky/far).
-float3 UnprojectNdc(float4x4 invViewProj, float u, float v, float ndcZ)
+public float3 UnprojectNdc(float4x4 invViewProj, float u, float v, float ndcZ)
 {
     float4 clip = float4(u, v, ndcZ, 1.0f);
     float4 w = mul(invViewProj, clip);
@@ -193,7 +193,7 @@ float3 UnprojectNdc(float4x4 invViewProj, float u, float v, float ndcZ)
 // Given a pixel's NDC (u,v) and an ndcZ value, return the linear VIEW-SPACE depth
 // (positive, measured from camera along the -Z axis in camera-relative space, in blocks).
 // Reversed-Z: ndcZ=1 at near, ndcZ=0 at far/sky.
-float LinearizeDepthNdc(float4x4 invViewProj, float u, float v, float ndcZ)
+public float LinearizeDepthNdc(float4x4 invViewProj, float u, float v, float ndcZ)
 {
     // ndcZ <= 0 means sky/far plane; return a sentinel larger than froxel far.
     if (ndcZ <= 0.0001f) return 1.0e9f;
@@ -204,7 +204,7 @@ float LinearizeDepthNdc(float4x4 invViewProj, float u, float v, float ndcZ)
 // Reconstruct NORMALIZED view-space direction for a froxel center (camera-relative).
 // Uses inverse-VP unprojection of clip-near and clip-far points so perspective is exact
 // off-axis (no central-axis approximation).
-float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invViewProj)
+public float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invViewProj)
 {
     FroxelMatrices m = GetMatrices(pc);
     invViewProj = m.invViewProj;
@@ -216,7 +216,7 @@ float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invViewProj)
 }
 
 // Camera-relative world point at the froxel's stable center.
-float3 FroxelCenterViewSpace(VolumetricPush pc, uint3 froxel)
+public float3 FroxelCenterViewSpace(VolumetricPush pc, uint3 froxel)
 {
     float4x4 invVP;
     float3 dir = FroxelRayDir(pc, froxel, invVP);
@@ -225,7 +225,7 @@ float3 FroxelCenterViewSpace(VolumetricPush pc, uint3 froxel)
     return dir * t;
 }
 
-float3 FroxelCenterWorldSpace(VolumetricPush pc, uint3 froxel)
+public float3 FroxelCenterWorldSpace(VolumetricPush pc, uint3 froxel)
 {
     return FroxelCenterViewSpace(pc, froxel) + pc.camOffset;
 }
@@ -233,7 +233,7 @@ float3 FroxelCenterWorldSpace(VolumetricPush pc, uint3 froxel)
 // Reconstruct view-ray direction AND origin for a RENDER-RES pixel.
 // xy = integer pixel id; dims = render resolution. Returns normalized direction;
 // also gives the NDC u,v for depth linearization.
-float3 PixelViewRay(VolumetricPush pc, uint2 xy, uint2 dims, out float outU, out float outV)
+public float3 PixelViewRay(VolumetricPush pc, uint2 xy, uint2 dims, out float outU, out float outV)
 {
     FroxelMatrices m = GetMatrices(pc);
     float u = ((float(xy.x) + 0.5f) / float(dims.x)) * 2.0f - 1.0f;
@@ -252,7 +252,7 @@ float3 PixelViewRay(VolumetricPush pc, uint2 xy, uint2 dims, out float outU, out
 // the player can look up/down freely: using -rel.z would give a view-space Z that changes
 // with rotation, producing sloshing depth slices when turning the camera.
 // -----------------------------------------------------------------------------
-float3 WorldToFroxel(VolumetricPush pc, float3 worldPos, float3 camOff, float4x4 viewProj)
+public float3 WorldToFroxel(VolumetricPush pc, float3 worldPos, float3 camOff, float4x4 viewProj)
 {
     float3 rel = worldPos - camOff;
     float4 clip = mul(viewProj, float4(rel, 1.0f));
@@ -269,13 +269,13 @@ float3 WorldToFroxel(VolumetricPush pc, float3 worldPos, float3 camOff, float4x4
     return float3(u, v, w);
 }
 
-float3 WorldToFroxelCurrent(VolumetricPush pc, float3 worldPos)
+public float3 WorldToFroxelCurrent(VolumetricPush pc, float3 worldPos)
 {
     FroxelMatrices m = GetMatrices(pc);
     return WorldToFroxel(pc, worldPos, pc.camOffset, m.curViewProj);
 }
 
-float3 WorldToFroxelPrevious(VolumetricPush pc, float3 worldPos)
+public float3 WorldToFroxelPrevious(VolumetricPush pc, float3 worldPos)
 {
     FroxelMatrices m = GetMatrices(pc);
     return WorldToFroxel(pc, worldPos, pc.prevCamOffset, m.prevViewProj);
@@ -284,7 +284,7 @@ float3 WorldToFroxelPrevious(VolumetricPush pc, float3 worldPos)
 // -----------------------------------------------------------------------------
 // Phase function
 // -----------------------------------------------------------------------------
-float HenyeyGreenstein(float cosTheta, float g)
+public float HenyeyGreenstein(float cosTheta, float g)
 {
     float g2 = g * g;
     float denom = 1.0f + g2 - 2.0f * g * cosTheta;
@@ -296,7 +296,7 @@ float HenyeyGreenstein(float cosTheta, float g)
 // -----------------------------------------------------------------------------
 // Scalar sigma_t at a world position. Coloured extinction is derived from it by
 // multiplying by a fixed Rayleigh-like (0.6, 0.8, 1.1) tint.
-float ExtinctionAt(VolumetricPush pc, float3 worldPos)
+public float ExtinctionAt(VolumetricPush pc, float3 worldPos)
 {
     float height = worldPos.y - pc.heightFogBase;
     float heightTerm = exp(-max(0.0f, height) * max(pc.heightFogFalloff, 0.0f));
@@ -304,12 +304,12 @@ float ExtinctionAt(VolumetricPush pc, float3 worldPos)
     return sigma;
 }
 
-float3 SigmaTFromLuma(float sigmaLuma)
+public float3 SigmaTFromLuma(float sigmaLuma)
 {
     return float3(0.6f, 0.8f, 1.1f) * sigmaLuma;
 }
 
-float3 ScatteringSigma(float3 sigma_t)
+public float3 ScatteringSigma(float3 sigma_t)
 {
     // Scattering albedo ~0.95-1.0; slight spectral variation keeps dense fog from
     // glowing pure white and gives a soft blue tint (Rayleigh-like).
@@ -319,7 +319,7 @@ float3 ScatteringSigma(float3 sigma_t)
 // -----------------------------------------------------------------------------
 // Sun-disk sampling
 // -----------------------------------------------------------------------------
-float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
+public float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
 {
     float theta = angularRadius * sqrt(xi.x);
     float phi   = 2.0f * kPi * xi.y;
@@ -336,7 +336,7 @@ float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
 
 // Map a froxel XY (in froxel-grid space) to the nearest render-res pixel coordinate
 // for sampling gDepth. Returns integer pixel coords (nearest center), already clamped.
-int2 FroxelXyToDepthPx(uint2 froxelXy, uint2 froxelXySize, uint2 depthDims)
+public int2 FroxelXyToDepthPx(uint2 froxelXy, uint2 froxelXySize, uint2 depthDims)
 {
     float2 uv = (float2(froxelXy) + 0.5f) / float2(froxelXySize);
     int2 px = int2(uv * float2(depthDims));
@@ -348,7 +348,7 @@ int2 FroxelXyToDepthPx(uint2 froxelXy, uint2 froxelXySize, uint2 depthDims)
 // pixel's NDC (u,v); this unprojects through invViewProj so view depth is correct
 // off-axis. Returns linear view-space depth in blocks, or a sentinel > farPlane
 // for sky pixels.
-float LinearizeSample(VolumetricPush pc, float ndcZ, float u, float v)
+public float LinearizeSample(VolumetricPush pc, float ndcZ, float u, float v)
 {
     if (ndcZ <= 0.0001f) return pc.farPlane * 2.0f;
     FroxelMatrices m = GetMatrices(pc);
@@ -359,7 +359,7 @@ float LinearizeSample(VolumetricPush pc, float ndcZ, float u, float v)
 // -----------------------------------------------------------------------------
 // Transmittance / exact volumetric integration helpers
 // -----------------------------------------------------------------------------
-float3 Transmittance(float3 sigma_t, float ds)
+public float3 Transmittance(float3 sigma_t, float ds)
 {
     return exp(-sigma_t * ds);
 }
@@ -367,7 +367,7 @@ float3 Transmittance(float3 sigma_t, float ds)
 // Analytic in-scattered source for a segment with constant S and sigma_t:
 //   integ = S * (1 - exp(-sigma_t * ds)) / sigma_t
 // with a linear fallback as sigma_t -> 0 (S * ds) to avoid division by zero.
-float3 IntegratedSource(float3 S, float3 sigma_t, float ds)
+public float3 IntegratedSource(float3 S, float3 sigma_t, float ds)
 {
     float3 T = Transmittance(sigma_t, ds);
     float3 safeSigma = max(sigma_t, float3(kEpsilon, kEpsilon, kEpsilon));
