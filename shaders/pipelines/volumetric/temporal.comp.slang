@@ -57,7 +57,10 @@ void main(uint3 id : SV_DispatchThreadID)
     uint2 depthDims;
     depthImage.GetDimensions(depthDims.x, depthDims.y);
     uint2 depthPx = (uint2)FroxelXyToDepthPx(id.xy, dims.xy, depthDims);
-    float curSceneDepth = SampleSceneDepthLinear(pc, depthPx, depthDims);
+    float curNdcZ = depthImage.Load(int3((int2)depthPx, 0)).x;
+    float curDu = ((float(depthPx.x) + 0.5f) / float(depthDims.x)) * 2.0f - 1.0f;
+    float curDv = 1.0f - ((float(depthPx.y) + 0.5f) / float(depthDims.y)) * 2.0f;
+    float curSceneDepth = LinearizeSample(pc, curNdcZ, curDu, curDv);
     float curFroxelDepth = FroxelCenterViewDepth(pc, id.z);
     bool  curFroxelInFront = (curSceneDepth <= pc.nearPlane) || (curFroxelDepth <= curSceneDepth * 1.05f + 0.5f);
 

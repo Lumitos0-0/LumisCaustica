@@ -9,6 +9,14 @@
 // No explicit `module` declaration: Slang uses the file stem ("common") as the
 // module name, so `import common;` from a volumetric pass resolves to this file
 // (the same-directory -I entry is searched first).
+//
+// NOTE: this file must NOT import bindings.slang. The build system reflects every
+// pipeline's bindings by compiling its "source" shader in isolation; including
+// bindings here would cause every other pipeline's `import common;` (or implicit
+// -I resolution) to pick up a bindings.slang from the wrong pipeline directory,
+// resulting in "undefined identifier" errors for resources like `tlas`/`depthImage`.
+// Functions that need descriptor-declared resources (tlas, depthImage, etc.) live
+// in the .comp that imports bindings, or take the resource as a parameter.
 
 // -----------------------------------------------------------------------------
 // Matrix buffer (BDA, std430)
@@ -319,53 +327,30 @@ float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
 }
 
 // -----------------------------------------------------------------------------
-// Shadow ray trace (requires bindings.slang with `tlas` in scope).
+// Depth helpers (NDC math only; gDepth is read per-pass via bindings so common.slang
+// doesn't need to import bindings.slang — see note at the top of this file).
 // -----------------------------------------------------------------------------
-// Trace a shadow ray from origin toward dir (normalized). Uses FORCE_OPAQUE so all
-// geometry is treated as opaque for shadow (water/translucent any-hits skipped),
-// and ACCEPT_FIRST_HIT_AND_END_SEARCH so traversal terminates on first hit.
-// NO backface culling: terrain meshes are single-sided from the viewer's perspective
-// but a shadow ray can hit a backfacing triangle from behind, and culling backfaces
-// would leak light through walls/leaves.
-float TraceShadow(VolumetricPush pc, float3 origin, float3 dir)
-{
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.TMin   = 0.05f;
-    ray.Direction = dir;
-    ray.TMax   = max(pc.farPlane - 0.1f, 0.1f);
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-    q.TraceRayInline(tlas, 0xFF, 0xFF, ray);
-    q.Proceed();
-    return q.CommittedStatus() == COMMITTED_NOTHING ? 1.0f : 0.0f;
-}
-
-// -----------------------------------------------------------------------------
-// Depth helpers (sample gDepth and linearize)
-// -----------------------------------------------------------------------------
-// gDepth stores HARDWARE clip-space z/w (reversed-Z: 1 at near, 0 at sky/far),
-// produced by guides.slang with the jitter-free curViewProj. Sampling by integer pixel
-// (px must be within [0,depthDims)) linearizes through the per-pixel inverse-VP unprojection
-// so view depth is correct off-axis (no central-axis approximation).
-float SampleSceneDepthLinear(VolumetricPush pc, uint2 px, uint2 depthDims)
-{
-    uint2 c = uint2(min(px.x, depthDims.x - 1u), min(px.y, depthDims.y - 1u));
-    float ndcZ = depthImage.Load(int3((int2)c, 0)).x;
-    if (ndcZ <= 0.0001f) return pc.farPlane * 2.0f;
-    FroxelMatrices m = GetMatrices(pc);
-    float u = ((float(px.x) + 0.5f) / float(depthDims.x)) * 2.0f - 1.0f;
-    float v = 1.0f - ((float(px.y) + 0.5f) / float(depthDims.y)) * 2.0f;
-    float3 p = UnprojectNdc(m.invViewProj, u, v, ndcZ);
-    return max(-p.z, 0.0f);
-}
 
 // Map a froxel XY (in froxel-grid space) to the nearest render-res pixel coordinate
-// for sampling gDepth. Returns integer pixel coords (nearest center).
+// for sampling gDepth. Returns integer pixel coords (nearest center), already clamped.
 int2 FroxelXyToDepthPx(uint2 froxelXy, uint2 froxelXySize, uint2 depthDims)
 {
     float2 uv = (float2(froxelXy) + 0.5f) / float2(froxelXySize);
     int2 px = int2(uv * float2(depthDims));
     return int2(clamp(px.x, 0, (int)depthDims.x - 1), clamp(px.y, 0, (int)depthDims.y - 1));
+}
+
+// Linearize a single gDepth sample (reversed-Z ndcZ = clip.z / clip.w, 1 at near,
+// 0 at sky/far) at the given integer pixel position. Caller provides ndcZ and the
+// pixel's NDC (u,v); this unprojects through invViewProj so view depth is correct
+// off-axis. Returns linear view-space depth in blocks, or a sentinel > farPlane
+// for sky pixels.
+float LinearizeSample(VolumetricPush pc, float ndcZ, float u, float v)
+{
+    if (ndcZ <= 0.0001f) return pc.farPlane * 2.0f;
+    FroxelMatrices m = GetMatrices(pc);
+    float3 p = UnprojectNdc(m.invViewProj, u, v, ndcZ);
+    return max(-p.z, 0.0f);
 }
 
 // -----------------------------------------------------------------------------

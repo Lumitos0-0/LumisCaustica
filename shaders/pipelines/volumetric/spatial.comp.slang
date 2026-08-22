@@ -25,7 +25,10 @@ void main(uint3 id : SV_DispatchThreadID)
 
     // gDepth is at render resolution; froxel XY is renderRes/divisor, so scale to depth UV.
     uint2 depthPx = (uint2)FroxelXyToDepthPx(id.xy, dims.xy, depthDims);
-    float sceneDepth = SampleSceneDepthLinear(pc, depthPx, depthDims);
+    float ndcZ = depthImage.Load(int3((int2)depthPx, 0)).x;
+    float du = ((float(depthPx.x) + 0.5f) / float(depthDims.x)) * 2.0f - 1.0f;
+    float dv = 1.0f - ((float(depthPx.y) + 0.5f) / float(depthDims.y)) * 2.0f;
+    float sceneDepth = LinearizeSample(pc, ndcZ, du, dv);
 
     float4 center = fogCurrent[id];
     float3 centerWorld = FroxelCenterWorldSpace(pc, id);

@@ -1,9 +1,9 @@
 // Volumetric fog descriptor layout. All volumetric passes share one descriptor set layout
 // so that a single VkDescriptorSet is reused across inject/spatial/temporal/integrate dispatches.
+// The three camera matrices (invViewProj, curViewProj, prevViewProj) are NOT bound here — they
+// live in a small persistently-mapped storage buffer accessed by raw device address pushed in
+// VolumetricPush.matricesAddr, which keeps push constants under the 128-byte Vulkan minimum.
 
-// Device pointer to a FroxelMatrices struct (invViewProj, curViewProj, prevViewProj).
-// Matrices live in a persistently-mapped storage buffer so push constants stay under the
-// 128-byte minimum-max-guarantee on every Vulkan device.
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure tlas;
 
 // Froxel data, current frame (RGBA16F):

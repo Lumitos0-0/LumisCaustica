@@ -14,6 +14,25 @@ import common;
 
 [[vk::push_constant]] VolumetricPush pc;
 
+// Trace a shadow ray from origin toward dir (normalized). Uses FORCE_OPAQUE so all
+// geometry is treated as opaque for shadow (water/translucent any-hits skipped),
+// and ACCEPT_FIRST_HIT_AND_END_SEARCH so traversal terminates on first hit.
+// No backface culling: terrain meshes are single-sided from the viewer's perspective
+// but a shadow ray can hit a backfacing triangle from behind, and culling backfaces
+// would leak light through walls/leaves.
+float TraceShadow(float3 origin, float3 dir)
+{
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.TMin   = 0.05f;
+    ray.Direction = dir;
+    ray.TMax   = max(pc.farPlane - 0.1f, 0.1f);
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(tlas, 0xFF, 0xFF, ray);
+    q.Proceed();
+    return q.CommittedStatus() == COMMITTED_NOTHING ? 1.0f : 0.0f;
+}
+
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -61,7 +80,7 @@ void main(uint3 id : SV_DispatchThreadID)
     else
         rayDir = sunDirNorm;
 
-    float visibility = TraceShadow(pc, worldPos, rayDir);
+    float visibility = TraceShadow(worldPos, rayDir);
 
     float3 S = ScatteringSigma(sigma_t) * phase * visibility * pc.sunColor;
 

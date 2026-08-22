@@ -95,20 +95,37 @@ void probeBloomPush(uint3 id : SV_DispatchThreadID) {
     }
 }
 
-// Volumetric fog push constants live in pipelines/volumetric/common.slang -- import that module
-// so the probe can see the struct (common.slang declares `module volumetric_common;`).
-import volumetric_common;
+// Volumetric fog push constants live in pipelines/volumetric/common.slang. The file has no
+// explicit `module` declaration so its implicit module name is the file stem "common";
+// because shaders/pipelines/volumetric/ is on -I (every .slang parent dir is added during
+// the build), `import common;` from this probe resolves to that file. No other .slang in
+// the tree is named common.slang, so there is no ambiguity.
+import common;
 [[vk::push_constant]] VolumetricPush volumetricPushProbe;
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void probeVolumetricPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
-        // Touch at least one field per "class" of type in the struct so Slang's
-        // reflection never strips them. matricesAddr is uint64_t, froxelSizeX/Y/Z are
-        // three uints, everything else is float/float3.
-        float sink = float(volumetricPushProbe.frameIndex) + volumetricPushProbe.nearPlane
-                + volumetricPushProbe.sunDir.x + float(volumetricPushProbe.matricesAddr)
+        // Touch EVERY field so Slang reflection preserves the full VolumetricPush type
+        // and all its offsets. GenerateShaderRecords derives the Java record + serializer
+        // directly from reflected fields, so stripping any field produces a wrong record.
+        float sink = float(volumetricPushProbe.matricesAddr)
+                + volumetricPushProbe.camOffset.x + volumetricPushProbe.camOffset.y + volumetricPushProbe.camOffset.z
+                + volumetricPushProbe.nearPlane
+                + volumetricPushProbe.prevCamOffset.x + volumetricPushProbe.prevCamOffset.y + volumetricPushProbe.prevCamOffset.z
+                + volumetricPushProbe.farPlane
                 + float(volumetricPushProbe.froxelSizeX)
+                + float(volumetricPushProbe.froxelSizeY)
+                + float(volumetricPushProbe.froxelSizeZ)
+                + float(volumetricPushProbe.frameIndex)
+                + volumetricPushProbe.sunDir.x + volumetricPushProbe.sunDir.y + volumetricPushProbe.sunDir.z
+                + volumetricPushProbe.sunAngularRadius
+                + volumetricPushProbe.sunColor.x + volumetricPushProbe.sunColor.y + volumetricPushProbe.sunColor.z
+                + volumetricPushProbe.heightFogDensity
+                + volumetricPushProbe.heightFogFalloff
+                + volumetricPushProbe.heightFogBase
+                + volumetricPushProbe.globalDensity
+                + volumetricPushProbe.anisotropyG
                 + float(volumetricPushProbe.debugView)
                 + float(volumetricPushProbe.stochasticLight)
                 + volumetricPushProbe.historyBaseWeight
