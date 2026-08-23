@@ -900,11 +900,11 @@ public final class CausticaConfig {
             // accumulation integrates the binary visibility into a soft penumbra.
             public static final BooleanSetting STOCHASTIC_LIGHT =
                     bool("caustica.rt.fogStochastic", "fog.stochastic-light", true);
-            // Volumetric debug view selector (integrate.comp). 0 = normal composite; 1-12 =
+            // Volumetric debug view selector (integrate.comp). 0 = normal composite; 1-13 =
             // diagnostic visualizations (density, scattering, absorption, transmittance, light
             // visibility, history, history confidence, slice, reprojection error, world checker,
-            // integrated radiance, final contribution). Internal/tooling only; intentionally absent
-            // from the video-options UI.
+            // integrated radiance, final contribution, current-frame-only composite). Internal/tooling
+            // only; intentionally absent from the video-options UI.
             public static final IntSetting DEBUG_VIEW =
                     intValue("caustica.rt.fogDebugView", "fog.debug-view", 0);
 

@@ -136,34 +136,34 @@ void main(uint2 id : SV_DispatchThreadID)
     float ndcZ = depthImage[px];
 
     float u, v;
-    float3 rayDir = PixelViewRay(pc, id, dims, u, v);
+    float3 rayOriginView;
+    float3 rayDir = PixelViewRayWithOrigin(pc, id, dims, rayOriginView, u, v);
 
     // t <-> view-depth scale for this ray: view depth is measured along the CAMERA forward
     // axis while rayDir is in rebased-world axes, so the factor is the angle cosine
-    // dot(rayDir, cameraForward). It is strictly positive for every in-frustum ray (the
-    // epsilon is a numerical tripwire only) and identical for the scene-depth clip, the
-    // slice march, and the w<->depth conversion below, so all three stay mutually consistent
-    // for any camera orientation.
+    // dot(rayDir, cameraForward). Ray parameter t starts at the actual unprojected near-plane
+    // point, matching the primary renderer and the froxel reconstruction helpers.
     float3 camFwd = CameraForwardWorld(GetMatrices(pc).invViewProj);
     float viewScale = max(dot(rayDir, camFwd), kEpsilon);
 
-    float sceneT = (pc.farPlane * 2.0f) / viewScale;
+    float sceneDepthLimit = pc.farPlane * 2.0f;
     if (ndcZ > 0.0001f)
     {
         float3 p = UnprojectNdc(GetMatrices(pc).invViewProj, u, v, ndcZ);
-        float sceneDepth = max(dot(p, camFwd), 0.0f);
-        sceneT = min(sceneT, sceneDepth / viewScale);
+        sceneDepthLimit = min(sceneDepthLimit, max(dot(p, camFwd), 0.0f));
     }
 
-    float startT  = pc.nearPlane / viewScale;
-    float endT    = min(pc.farPlane / viewScale, sceneT);
-    endT = max(endT, startT + kEpsilon);
-    if (endT <= startT)
+    float startViewDepth = pc.nearPlane;
+    float endViewDepth   = min(pc.farPlane, sceneDepthLimit);
+    float startT = RayTFromViewDepthOnRay(startViewDepth, rayOriginView, rayDir, camFwd);
+    float endT   = RayTFromViewDepthOnRay(endViewDepth,   rayOriginView, rayDir, camFwd);
+    if (endT <= startT + kEpsilon)
     {
         // No integration span. For debug modes, still produce a colored pixel.
         if (pc.debugView == 0)
             return;  // leave scene untouched
-        // fall through to produce debug color with zero contribution
+        endT = startT + kEpsilon;
+        endViewDepth = startViewDepth;
     }
 
     // Continuous froxel XY for this pixel. fxy is in [0, froxelSize.xy) so a
@@ -171,9 +171,7 @@ void main(uint2 id : SV_DispatchThreadID)
     // XY cells and 2 neighboring Z slices.
     float2 fxy = (float2(id) + 0.5f) / float2(dims) * float2(FroxelSize(pc).xy);
 
-    // Convert T range into continuous Z slice coordinate w in [0,1].
-    float startViewDepth = startT * viewScale;
-    float endViewDepth   = endT   * viewScale;
+    // Convert the view-depth range into continuous Z slice coordinate w in [0,1].
     uint D = FroxelSize(pc).z;
     float wStart = SliceCoordFromViewDepth(startViewDepth, pc.nearPlane, pc.farPlane) * float(D);
     float wEnd   = SliceCoordFromViewDepth(endViewDepth,   pc.nearPlane, pc.farPlane) * float(D);
@@ -199,7 +197,6 @@ void main(uint2 id : SV_DispatchThreadID)
     // Precompute w -> viewDepth -> t conversion at each integer slice boundary
     // to get segment [t0, t1] for each marching step.
     float prevW = max(wStart, 0.0f);
-    float prevT = startT;
     bool marched = false;
 
     for (int z = zStart; z <= zEnd; ++z)
@@ -214,11 +211,11 @@ void main(uint2 id : SV_DispatchThreadID)
 
         float dNear  = ViewDepthFromFroxelCoord(wNear / float(D), pc.nearPlane, pc.farPlane);
         float dFar   = ViewDepthFromFroxelCoord(wFar  / float(D), pc.nearPlane, pc.farPlane);
-        float tNear  = dNear / viewScale;
-        float tFar   = dFar  / viewScale;
+        float tNear  = RayTFromViewDepthOnRay(dNear, rayOriginView, rayDir, camFwd);
+        float tFar   = RayTFromViewDepthOnRay(dFar,  rayOriginView, rayDir, camFwd);
         tNear = max(tNear, startT);
         tFar  = min(tFar, endT);
-        if (tFar <= tNear + kEpsilon) { prevW = wFar; prevT = tFar; continue; }
+        if (tFar <= tNear + kEpsilon) { prevW = wFar; continue; }
 
         float ds = tFar - tNear;
 
@@ -237,7 +234,7 @@ void main(uint2 id : SV_DispatchThreadID)
         if (max(max(sigmaT.x, sigmaT.y), sigmaT.z) < 1.0e-7f
             && max(max(S.x, S.y), S.z) < 1.0e-7f)
         {
-            prevW = wFar; prevT = tFar; continue;
+            prevW = wFar; continue;
         }
 
         float3 T_slice = exp(-sigmaT * ds);
@@ -259,20 +256,20 @@ void main(uint2 id : SV_DispatchThreadID)
             debugScattering = scatterTap;
             debugAbsorption = absorbTap;
             debugSlice = z;
-            float3 midWorldPos = rayDir * ((tNear + tFar) * 0.5f) + pc.camOffset;
+            float3 midWorldPos = rayOriginView + rayDir * ((tNear + tFar) * 0.5f) + pc.camOffset;
             debugWorldChecker = WorldChecker(midWorldPos + GetMatrices(pc).noiseOrigin.xyz, 0.25f);
             marched = true;
         }
 
         prevW = wFar;
-        prevT = tFar;
     }
 
     float4 scene = outputImage[id];
 
-    if (pc.debugView == 0)
+    if (pc.debugView == 0 || pc.debugView == 13u)
     {
         // Final composite: volumeRadiance + surfaceRadiance * volumeTransmittance.
+        // Mode 13 reaches this same composite after temporal.comp intentionally bypassed history.
         float3 finalColor = accumL + surfaceT * scene.xyz;
         outputImage[id] = float4(finalColor, scene.a);
         return;

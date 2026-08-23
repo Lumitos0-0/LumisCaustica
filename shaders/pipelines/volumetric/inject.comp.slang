@@ -99,7 +99,7 @@ void main(uint3 id : SV_DispatchThreadID)
     float3 sampleToLightDir;
     if (pc.stochasticLight != 0u && pc.sunAngularRadius > 1.0e-5f)
     {
-        float2 xi = R2Offset2D(id, pc.frameIndex);
+        float2 xi = R2FrameOffset2D(pc.frameIndex);
         sampleToLightDir = SampleSunDisk(primaryDir, pc.sunAngularRadius, xi);
     }
     else

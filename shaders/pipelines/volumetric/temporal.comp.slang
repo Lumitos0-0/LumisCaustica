@@ -132,6 +132,15 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float4 current = fogVolume[id];
 
+    // Debug/current-frame isolation: lets ray origin + light direction + TLAS visibility be inspected
+    // without any temporal history contribution.
+    if (pc.debugView == 13u)
+    {
+        fogCurrent[id] = current;
+        fogConfidenceCurrent[id] = 0.0f;
+        return;
+    }
+
     float3 worldPos = FroxelCenterRebasedWorldSpace(pc, id);
 
     // Continuous history froxel coordinate in UVW (all axes unclamped; the bounds

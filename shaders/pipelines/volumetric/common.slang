@@ -114,6 +114,7 @@ public struct FroxelMatrices
 //   10 = world-position checker (verifies density is world-anchored; should not swim)
 //   11 = integrated in-scattered radiance over black
 //   12 = final volumetric contribution (L + (T-1)*scene) over neutral gray
+//   13 = current-frame-only final composite (temporal history bypassed)
 public struct VolumetricPush
 {
     public uint64_t matricesAddr;                              // offset  0, size  8
@@ -217,6 +218,19 @@ public float2 R2Offset2D(uint3 froxel, uint frame)
     );
 }
 
+public float2 R2FrameOffset2D(uint frame)
+{
+    // Frame-global light-disc sample: every froxel casts the same physical directional-light
+    // sample this frame. The sampled ray direction is therefore independent of camera orientation
+    // and froxel index; temporal accumulation integrates the extended disc over time without
+    // neighboring froxels disagreeing about which way the sun is.
+    const float g2 = 1.32471795724f;
+    float a1 = 1.0f / g2;
+    float a2 = 1.0f / (g2 * g2);
+    return float2(fract(0.5f + float(frame) * a1),
+                  fract(0.5f + float(frame) * a2));
+}
+
 // -----------------------------------------------------------------------------
 // Froxel <-> depth mapping (exponential).
 //   depth(t) = near * (far/near)^t for t in [0,1].
@@ -294,6 +308,12 @@ public float RayTFromViewDepth(float viewDepth, float3 rayDir, float3 camForward
     return viewDepth / max(dot(rayDir, camForward), kEpsilon);
 }
 
+public float RayTFromViewDepthOnRay(float viewDepth, float3 rayOriginView,
+                                    float3 rayDir, float3 camForward)
+{
+    return (viewDepth - dot(rayOriginView, camForward)) / max(dot(rayDir, camForward), kEpsilon);
+}
+
 // -----------------------------------------------------------------------------
 // NDC / UV / unprojection helpers.
 // All unprojections are through the inverse VP, so off-axis perspective is exact.
@@ -356,6 +376,19 @@ public void PixelNdc(uint2 xy, uint2 dims, out float u, out float v)
     v = (1.0f - uv.y) * 2.0f - 1.0f;
 }
 
+public void FroxelRayGeometry(VolumetricPush pc, uint3 froxel,
+                              out float3 rayOriginView, out float3 rayDir,
+                              out float3 camForward)
+{
+    FroxelMatrices m = GetMatrices(pc);
+    float u, v;
+    FroxelNdc(pc, froxel.x, froxel.y, u, v);
+    rayOriginView = UnprojectNdc(m.invViewProj, u, v, 1.0f);
+    float3 wFar = UnprojectNdc(m.invViewProj, u, v, 0.0f);
+    rayDir = normalize(wFar - rayOriginView);
+    camForward = CameraForwardWorld(m.invViewProj);
+}
+
 // Reconstruct NORMALIZED ray direction (rebased-world axes) through a froxel center.
 // Also returns invViewProj for the caller's convenience.
 public float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invViewProj)
@@ -370,16 +403,19 @@ public float3 FroxelRayDir(VolumetricPush pc, uint3 froxel, out float4x4 invView
 }
 
 // Stable camera-relative (rebased-world axes) point at the froxel's canonical center.
-// Lies exactly on the slab plane of constant camera view depth for slice z, i.e. the same
-// depth metric WorldToFroxelUvw derives from clip.w, so current-frame placement and
-// previous-frame reprojection agree for every camera orientation.
+// The ray origin is the actual unprojected near-plane point, matching world.rgen's primary-ray
+// construction. This matters when Minecraft's projection contains view-bob/off-axis terms: assuming
+// every ray starts at camera-relative zero makes froxel physical positions rotate/slide with the
+// camera even though the TLAS and light direction are in rebased-world space.
 public float3 FroxelCenterViewSpace(VolumetricPush pc, uint3 froxel)
 {
-    float4x4 invVP;
-    float3 dir = FroxelRayDir(pc, froxel, invVP);
+    float3 rayOriginView;
+    float3 dir;
+    float3 camForward;
+    FroxelRayGeometry(pc, froxel, rayOriginView, dir, camForward);
     float viewDepth = FroxelCenterViewDepth(pc, froxel.z);
-    float t = RayTFromViewDepth(viewDepth, dir, CameraForwardWorld(invVP));
-    return dir * t;
+    float t = RayTFromViewDepthOnRay(viewDepth, rayOriginView, dir, camForward);
+    return rayOriginView + dir * t;
 }
 
 // Stable rebased-world point at the froxel's canonical center in the CURRENT rebase frame.
@@ -403,12 +439,13 @@ public float3 FroxelUvwToViewSpace(VolumetricPush pc, float3 uvw, float4x4 invVi
 {
     float ndcX = uvw.x * 2.0f - 1.0f;
     float ndcY = 1.0f - uvw.y * 2.0f;
-    float3 wNear = UnprojectNdc(invViewProj, ndcX, ndcY, 1.0f);
+    float3 rayOriginView = UnprojectNdc(invViewProj, ndcX, ndcY, 1.0f);
     float3 wFar  = UnprojectNdc(invViewProj, ndcX, ndcY, 0.0f);
-    float3 dir = normalize(wFar - wNear);
+    float3 dir = normalize(wFar - rayOriginView);
+    float3 camForward = CameraForwardWorld(invViewProj);
     float viewDepth = froxelSliceDistance(uvw.z, pc.nearPlane, pc.farPlane);
-    float t = RayTFromViewDepth(viewDepth, dir, CameraForwardWorld(invViewProj));
-    return dir * t;
+    float t = RayTFromViewDepthOnRay(viewDepth, rayOriginView, dir, camForward);
+    return rayOriginView + dir * t;
 }
 
 public float3 FroxelUvwToRebasedWorldSpace(VolumetricPush pc, float3 uvw,
@@ -435,6 +472,17 @@ public float FroxelHistoryReprojectionError(VolumetricPush pc, float3 currentWor
     float3 prevWorldPos = FroxelUvwToRebasedWorldSpace(pc, centerUvw,
                                                        pc.prevCamOffset, m.prevInvViewProj);
     return distance(currentWorldPos, prevWorldPos);
+}
+
+public float3 PixelViewRayWithOrigin(VolumetricPush pc, uint2 xy, uint2 dims,
+                                      out float3 rayOriginView,
+                                      out float outU, out float outV)
+{
+    FroxelMatrices m = GetMatrices(pc);
+    PixelNdc(xy, dims, outU, outV);
+    rayOriginView = UnprojectNdc(m.invViewProj, outU, outV, 1.0f);
+    float3 wFar  = UnprojectNdc(m.invViewProj, outU, outV, 0.0f);
+    return normalize(wFar - rayOriginView);
 }
 
 // Render-res pixel ray direction (normalized), also returns NDC u,v.
