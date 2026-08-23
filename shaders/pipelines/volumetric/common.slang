@@ -753,22 +753,16 @@ public float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
     return normalize(T * diskX + B * diskY + sunDir * diskZ);
 }
 
-public float3 PlayerAnchoredShadowOrigin(VolumetricPush pc, float3 worldPos, float3 sampleToLightDir)
+public float3 PlayerAnchoredLightingSamplePosition(VolumetricPush pc, float3 worldPos)
 {
-    // The view froxel grid must rotate with the camera because XY is screen-space. The visibility
-    // estimator does not have to inherit that rotation. Quantize the shadow ray origin in the plane
-    // perpendicular to the light using a world-axis basis and an origin at the player/camera position.
-    // For a fixed player position and fixed sun direction, the sampled volumetric shadow field is stable
-    // under camera yaw/pitch; moving the player moves the lattice with them as requested.
-    float cell = 0.75f; // blocks; sub-block to avoid obvious Minecraft-sized shadow voxels.
-    float3 L = normalize(sampleToLightDir);
-    float3 T, B;
-    LightDirectionBasis(L, T, B);
+    // The view froxel grid must rotate with the camera because XY is screen-space, but the expensive
+    // binary visibility estimator should not form a camera-rotating shadow lattice. Snap the lighting
+    // sample to a small 3D lattice whose origin is the player/camera position in rebased-world space.
+    // This preserves the physical sample position (unlike collapsing it onto light-space planes) while
+    // making neighboring camera orientations query the same player-relative world cells.
+    float cell = 0.5f; // blocks; small enough to avoid visible Minecraft-sized voxels.
     float3 rel = worldPos - pc.camOffset;
-    float x = round(dot(rel, T) / cell) * cell;
-    float y = round(dot(rel, B) / cell) * cell;
-    float z = dot(rel, L);
-    return pc.camOffset + T * x + B * y + L * z;
+    return pc.camOffset + floor(rel / cell + float3(0.5f, 0.5f, 0.5f)) * cell;
 }
 
 // -----------------------------------------------------------------------------
