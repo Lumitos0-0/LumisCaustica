@@ -723,6 +723,7 @@ public final class RtComposite {
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
                             RtDeviceBringup.worldRaygenShader(),
+                            "volumetric_depth.rgen.spv",
                             "volumetric_inject.rgen.spv",
                             "volumetric_filter.rgen.spv",
                             "volumetric_integrate.rgen.spv"},

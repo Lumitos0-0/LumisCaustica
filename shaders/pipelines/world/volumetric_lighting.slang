@@ -196,14 +196,12 @@ public float4 injectFroxel(uint3 index) {
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
             history.rgb = min(max(history.rgb, float3(0.0)), current.rgb * 4.0 + float3(8.0));
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            // A depth-edge cell can switch background representatives during camera motion. Reject its
-            // history outright: even a small blend leaves a visible outline trail, while block-emitter
-            // sampling is now frame-stable and the spatial pass supplies edge denoising without history.
-            // Smooth cells retain history, but translation lowers confidence continuously instead of
-            // dragging the full stationary-camera weight through motion.
+            // Previous-frame depth metadata already rejected history hidden by geometry. The remaining
+            // sample represents the same visible world-space medium, so edge cells can accumulate noise
+            // without the silhouette trails caused by unconditional edge history. Translation still lowers
+            // confidence continuously instead of dragging the stationary-camera weight through motion.
             float cameraHistoryConfidence = exp(-length(worldPush.camDelta) * 2.0);
-            float historyWeight = depthEdge
-                    ? 0.0 : worldPush.fogShape.w * cameraHistoryConfidence;
+            float historyWeight = worldPush.fogShape.w * cameraHistoryConfidence;
             current = lerp(current, history, historyWeight);
         }
     }

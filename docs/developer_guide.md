@@ -94,8 +94,9 @@ The fog implementation is split by responsibility:
   and scene-radiance composition.
 - `world/volumetric_lighting.slang` injects sky and block-emitter lighting using
   the world pipeline's existing TLAS and power-weighted light hierarchy.
-- `world/volumetric_inject.rgen.slang`, `world/volumetric_filter.rgen.slang`,
-  and `world/volumetric_integrate.rgen.slang` are the GPU entry points.
+- `world/volumetric_depth.rgen.slang`, `world/volumetric_inject.rgen.slang`,
+  `world/volumetric_filter.rgen.slang`, and `world/volumetric_integrate.rgen.slang`
+  are the GPU entry points.
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
@@ -103,9 +104,9 @@ Balanced quality uses
 candidate floors are 2, 4, 6, and 8 respectively. Setting
 `local-light-candidates = 0` still explicitly disables emitter injection. The
 advanced `grid-pixel-size` and `depth-slices` values define the Balanced baseline
-and all presets scale from it. A depth-aware 5×5 binomial scattering filter removes
-local-light estimator variance and one-ray celestial shadow noise before integration,
-while higher-resolution presets recover sharper shadow and density boundaries.
+and all presets scale from it. A narrow depth-aware 3×3 scattering filter removes
+isolated local-light cells before integration while temporal accumulation handles
+low-frequency convergence without sacrificing shaft definition.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -124,12 +125,13 @@ native-resolution depth. Broad ground and walls have no far background probe, so
 underground slices remain clipped. The Gaussian pass remains bilateral against
 scene depth but does not hard-cut silhouette columns, preventing open cave lighting
 from spreading into ground without erasing the retained background layer. Cells
-whose nine probes span a depth edge reject temporal history entirely and use a
-stable Z midpoint. Smooth cells reduce history continuously with camera translation
-instead of carrying the full stationary-camera weight through motion. Block-emitter
-selection uses a frame-independent, world-quantized stream. Celestial visibility
-uses the sun/moon centre ray rather than a one-sample temporal angular jitter; the
-spatial kernel supplies its soft volumetric penumbra without reintroducing trails.
+A ping-ponged RGBA32F metadata image stores each cell's min/max depth and selected
+background coordinate. Temporal reprojection tests the current world sample against
+the previous frame's max depth and rejects only samples that were actually occluded.
+Depth edges can therefore accumulate enough history to converge without restoring
+silhouette trails. Translation still lowers confidence continuously. Block-emitter
+selection uses a frame-independent, world-quantized stream, and celestial visibility
+keeps the deterministic sun/moon centre ray.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light

@@ -69,8 +69,8 @@ public float froxelOpaqueDistance(float2 coordinate) {
  * pixels still stop at their exact per-pixel depth during composition. minDepth/maxDepth also identify a
  * wider guard band around depth discontinuities for temporal-history rejection.
  */
-public void froxelBackgroundDepth(int2 cell, out float2 sampleCoordinate,
-                                   out float minDepth, out float maxDepth) {
+public void buildFroxelBackgroundDepth(int2 cell, out float2 sampleCoordinate,
+                                        out float minDepth, out float maxDepth) {
     float2 base = float2(cell);
     sampleCoordinate = base + 0.5;
     minDepth = worldPush.fogDistance.x;
@@ -87,6 +87,14 @@ public void froxelBackgroundDepth(int2 cell, out float2 sampleCoordinate,
             }
         }
     }
+}
+
+public void froxelBackgroundDepth(int2 cell, out float2 sampleCoordinate,
+                                   out float minDepth, out float maxDepth) {
+    float4 metadata = froxelDepthCurrent[cell];
+    minDepth = metadata.x;
+    maxDepth = metadata.y;
+    sampleCoordinate = metadata.zw;
 }
 
 public float froxelHash(float3 p) {
@@ -209,7 +217,19 @@ public bool froxelReprojectHistory(float3 position, out float4 history) {
             || slice >= float(worldPush.froxelGrid.z)) {
         return false;
     }
-    float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 0.5);
+    float2 previousGridCoordinate = uv * float2(worldPush.froxelGrid.xy);
+    int2 previousCell = clamp(int2(previousGridCoordinate), int2(0), worldPush.froxelGrid.xy - 1);
+    float previousSceneDepth = froxelDepthHistory[previousCell].y;
+    float sliceBase = floor(slice);
+    float depthMargin = max(1.0,
+            froxelBoundaryDistance(sliceBase + 1.0) - froxelBoundaryDistance(sliceBase));
+    // History at this world position is invalid when the previous camera saw an opaque surface first.
+    // This is the disocclusion test that lets edge cells accumulate again without dragging fog through
+    // moving silhouettes or newly revealed terrain.
+    if (previousDistance > previousSceneDepth + depthMargin) {
+        return false;
+    }
+    float3 coordinate = float3(previousGridCoordinate - 0.5, slice - 0.5);
     history = froxelTrilinearHistory(coordinate);
     return true;
 }

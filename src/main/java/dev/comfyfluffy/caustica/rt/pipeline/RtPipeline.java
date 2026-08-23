@@ -158,7 +158,7 @@ public final class RtPipeline {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
-            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_FROXEL_INTEGRATED; binding++) {
+            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_FROXEL_DEPTH_HISTORY; binding++) {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
@@ -429,21 +429,27 @@ public final class RtPipeline {
 
     /** Bind all size-dependent volumetric images into every ring slot while the device is idle. */
     public void setVolumetricImages(long depthView, long scatteringView, long historyView,
-                                    long filteredView, long integratedView) {
+                                    long filteredView, long integratedView,
+                                    long froxelDepthView, long froxelDepthHistoryView) {
         writeStorageBindingAll(WORLD_VOLUME_DEPTH, depthView);
         writeStorageBindingAll(WORLD_FROXEL_SCATTERING, scatteringView);
         writeStorageBindingAll(WORLD_FROXEL_HISTORY, historyView);
         writeStorageBindingAll(WORLD_FROXEL_FILTERED, filteredView);
         writeStorageBindingAll(WORLD_FROXEL_INTEGRATED, integratedView);
+        writeStorageBindingAll(WORLD_FROXEL_DEPTH_CURRENT, froxelDepthView);
+        writeStorageBindingAll(WORLD_FROXEL_DEPTH_HISTORY, froxelDepthHistoryView);
     }
 
     /**
      * Select this frame's ping-pong scattering direction. {@link #setTlas} has already waited for the
      * current descriptor-ring slot, so only that safe slot is updated while older frames remain in flight.
      */
-    public void setCurrentVolumetricHistory(long scatteringView, long historyView) {
+    public void setCurrentVolumetricHistory(long scatteringView, long historyView,
+                                            long froxelDepthView, long froxelDepthHistoryView) {
         writeStorageBindingCurrent(WORLD_FROXEL_SCATTERING, scatteringView);
         writeStorageBindingCurrent(WORLD_FROXEL_HISTORY, historyView);
+        writeStorageBindingCurrent(WORLD_FROXEL_DEPTH_CURRENT, froxelDepthView);
+        writeStorageBindingCurrent(WORLD_FROXEL_DEPTH_HISTORY, froxelDepthHistoryView);
     }
 
     private void writeStorageBindingAll(int binding, long imageView) {
