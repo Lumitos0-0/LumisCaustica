@@ -41,12 +41,18 @@ float TraceVisibility(float3 origin, float3 dir, float tMax)
     {
         if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
         {
+            uint instanceId = q.CandidateInstanceID();
+            uint instanceKind = instanceId & (0x800000u | 0x400000u); // matches world_common ENTITY/PARTICLE bits
             uint geometryIndex = q.CandidateGeometryIndex();
-            // Terrain geometry indices are fixed by RtAccel: 2=translucent, 3=water.
-            // Without material any-hit in inline queries, pass these through rather than making
-            // glass/water fully opaque to volumetric light.
-            if (geometryIndex == 2u || geometryIndex == 3u)
+
+            // Inline ray queries do not run the renderer's terrain any-hit shader, so they cannot
+            // alpha-test foliage/cutout quads or tint glass/water. Treat non-solid TERRAIN buckets as
+            // transmissive for volumetric visibility instead of turning every leaf/glass/water triangle
+            // into a solid black volumetric blocker. Entity any-hit geometry is still allowed to block
+            // so the player's ordinary shadow remains present.
+            if (instanceKind == 0u && geometryIndex != 0u)
                 continue;
+
             q.CommitNonOpaqueTriangleHit();
         }
     }
