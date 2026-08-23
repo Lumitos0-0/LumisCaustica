@@ -116,22 +116,23 @@ constant-medium segment with Beer-Lambert transmittance and writes cumulative
 that result at the primary ray's first interface before pre-exposure. Keeping a
 separate first-interface depth prevents clear glass or water's behind-surface
 DLSS guide depth from making atmospheric fog leak through the medium. Pass A runs
-before injection, so a Z slice that intersects terrain samples only its visible
-camera-side interval. Each XY cell checks a fixed 3×3 pattern of full-resolution
-depths and represents the farthest one. A cell crossing a silhouette therefore
-retains the background fog instead of terminating the whole low-resolution column
-at a leaf or block edge; foreground pixels still compose only to their exact
-native-resolution depth. Broad ground and walls have no far background probe, so
-underground slices remain clipped. The Gaussian pass remains bilateral against
-scene depth but does not hard-cut silhouette columns, preventing open cave lighting
-from spreading into ground without erasing the retained background layer. Cells
-A ping-ponged RGBA32F metadata image stores each cell's min/max depth and selected
-background coordinate. Temporal reprojection tests the current world sample against
-the previous frame's max depth and rejects only samples that were actually occluded.
-Depth edges can therefore accumulate enough history to converge without restoring
-silhouette trails. Translation still lowers confidence continuously. Block-emitter
-selection uses a frame-independent, world-quantized stream, and celestial visibility
-keeps the deterministic sun/moon centre ray.
+before injection, so a Z slice that intersects terrain samples only the visible
+interval of its stable cell-centre ray. This keeps underground lava out without
+borrowing lighting from a different far/background ray.
+
+A ping-ponged RGBA32F metadata image stores each cell's representative depth and
+sample coordinate. During final composition, smooth regions use quadrilinear
+filtering. At a full-resolution depth discontinuity, a depth-weighted 3×3 search
+combines only neighboring columns that represent the same foreground or background
+surface as that exact pixel. Geometry outlines are therefore reconstructed at native
+depth without changing where the low-resolution volume was lit.
+
+Temporal reprojection tests the current world sample against the previous frame's
+depth and rejects only samples that were actually occluded. Depth edges can retain
+enough valid history to converge without restoring silhouette trails. Translation
+still lowers confidence continuously. Block-emitter selection uses a
+frame-independent, world-quantized stream, and celestial visibility keeps the
+deterministic sun/moon centre ray.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light

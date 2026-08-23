@@ -29,9 +29,9 @@ import world_common;
 [[vk::binding(14, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelHistory;
 [[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFiltered;
 [[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
-// Per-XY-cell {minDepth, maxDepth, farSampleX, farSampleY}. Ping-ponged with scattering so temporal
-// reprojection can reject history that was occluded in the previous frame instead of disabling all
-// history near geometry.
+// Per-XY-cell {depth, depth, sampleX, sampleY}. Ping-ponged with scattering so temporal reprojection
+// rejects history that was occluded in the previous frame. The duplicated depth keeps this ABI ready for
+// a true range without making injection choose a different foreground/background lighting ray.
 [[vk::binding(17, 0)]] [format("rgba32f")] public RWTexture2D<float4> froxelDepthCurrent;
 [[vk::binding(18, 0)]] [format("rgba32f")] public RWTexture2D<float4> froxelDepthHistory;
 

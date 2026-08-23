@@ -1,5 +1,5 @@
-// Downsample Pass A's full-resolution first-interface depth into stable per-froxel metadata. This runs
-// once per XY cell (not once per Z slice), and ping-pongs with scattering history for disocclusion tests.
+// Capture Pass A's first-interface depth at each stable froxel centre. This runs once per XY cell (not
+// once per Z slice) and ping-pongs with scattering history for temporal disocclusion tests.
 
 import world_common;
 import world_core;

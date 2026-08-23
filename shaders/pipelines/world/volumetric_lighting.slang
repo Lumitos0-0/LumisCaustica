@@ -138,22 +138,18 @@ public float4 injectFroxel(uint3 index) {
     float minColumnDepth;
     float maxColumnDepth;
     froxelBackgroundDepth(int2(index.xy), cellCoordinate, minColumnDepth, maxColumnDepth);
-    float depthEdgeThreshold = max(1.0, minColumnDepth * 0.08);
-    bool depthEdge = maxColumnDepth - minColumnDepth > depthEdgeThreshold;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
     // A large nonlinear slice can straddle the first opaque surface. Sampling its unconstrained midpoint
     // may land underground, cache a lava emitter there, and then apply that sample to the visible part of
-    // the slice in front of the ground. The farthest of five stable tile probes preserves background fog
-    // at silhouettes while broad opaque ground still clips every underground slice.
-    float visibleFarDistance = min(farDistance, maxColumnDepth);
+    // the slice in front of the ground. Clip the stable centre ray here; full-resolution silhouette
+    // reconstruction is deliberately deferred until composition so lighting never comes from another ray.
+    float representativeDepth = max(minColumnDepth, maxColumnDepth);
+    float visibleFarDistance = min(farDistance, representativeDepth);
     if (visibleFarDistance <= nearDistance) {
         return float4(0.0);
     }
-    // Edge cells have no temporal history by design, so a frame-varying Z sample would remain visible as
-    // raw noise. Use their segment midpoint; smooth cells keep jitter and temporal supersampling.
-    float distanceFraction = depthEdge ? 0.5 : rndf(seed);
-    float distance = lerp(nearDistance, visibleFarDistance, distanceFraction);
+    float distance = lerp(nearDistance, visibleFarDistance, rndf(seed));
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
