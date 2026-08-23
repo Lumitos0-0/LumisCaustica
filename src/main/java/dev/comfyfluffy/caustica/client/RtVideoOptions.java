@@ -51,6 +51,7 @@ public final class RtVideoOptions {
             waterWaves(),
             volumetricFog(),
             fogDensity(),
+            lightShaftStrength(),
             fogQuality(),
             dlssQuality()
         ));
@@ -152,6 +153,19 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round(setting.value() * 10_000.0f), 0, 100),
             value -> setting.set(value / 10_000.0f));
+    }
+
+    private static OptionInstance<Integer> lightShaftStrength() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_STRENGTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.lightShaftStrength",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.lightShaftStrength.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption,
+                    Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 400),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
+            percent -> setting.set(percent / 100.0f));
     }
 
     private static OptionInstance<Integer> fogQuality() {

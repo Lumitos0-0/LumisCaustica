@@ -1176,7 +1176,8 @@ public final class RtComposite {
                     fogFrame.distanceParams(),
                     fogFrame.optics(),
                     fogFrame.shape(),
-                    fogFrame.worldOffsetAndTime()
+                    fogFrame.worldOffsetAndTime(),
+                    fogFrame.lighting()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

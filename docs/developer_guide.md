@@ -99,11 +99,12 @@ The fog implementation is split by responsibility:
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; the advanced
-`grid-pixel-size` and `depth-slices` values define the Balanced baseline and
-all presets scale from it. The 3×3 Gaussian scattering filter removes isolated
-Monte Carlo cells before integration, while higher-resolution presets recover
-sharper shadow and density boundaries.
+`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their minimum local
+emitter proposal counts are 2, 4, 6, and 8. The finalized reservoir still traces
+one visibility ray. The advanced `grid-pixel-size` and `depth-slices` values define
+the Balanced baseline and all presets scale from it. Deterministic celestial
+visibility, temporal accumulation, and the 3×3 Gaussian filter denoise the field
+without changing its continuous quadrilinear reconstruction.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -128,10 +129,12 @@ records as surface path tracing. Temporal reprojection ping-pongs the injection
 volumes; camera cuts, skipped frames, medium changes, and optical-setting
 changes invalidate history.
 
-Runtime controls expose enable/disable, extinction, and the four quality presets. The complete
-`[volumetrics]` TOML surface also includes the Balanced grid baseline, depth distribution,
-maximum distance, single-scattering albedo, Henyey-Greenstein anisotropy,
-height falloff, noise, temporal weight, and local-light candidate count.
+Runtime controls expose enable/disable, extinction, directional light-shaft strength,
+and the four quality presets. Shaft strength multiplies only sun/moon in-scattering;
+it does not change extinction, ambient fog, emissive blocks, or surface lighting. The
+complete `[volumetrics]` TOML surface also includes the Balanced grid baseline, depth
+distribution, maximum distance, single-scattering albedo, Henyey-Greenstein
+anisotropy, height falloff, noise, temporal weight, and local-light candidate count.
 
 The design follows these references:
 

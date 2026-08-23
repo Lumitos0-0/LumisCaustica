@@ -63,6 +63,27 @@ final class RtFroxelGridTest {
     }
 
     @Test
+    void qualityPresetsIncreaseEmitterProposalsButPreserveExplicitDisable() {
+        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
+        CausticaConfig.IntSetting candidates = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES;
+        int oldQuality = quality.value();
+        int oldCandidates = candidates.value();
+        try {
+            candidates.set(2);
+            int[] expected = {2, 4, 6, 8};
+            for (int preset = 0; preset < expected.length; preset++) {
+                quality.set(preset);
+                assertEquals(expected[preset], RtVolumetrics.effectiveLocalLightCandidates());
+            }
+            candidates.set(0);
+            assertEquals(0, RtVolumetrics.effectiveLocalLightCandidates());
+        } finally {
+            quality.set(oldQuality);
+            candidates.set(oldCandidates);
+        }
+    }
+
+    @Test
     void rejectsInvalidGridAndDepthParameters() {
         assertThrows(IllegalArgumentException.class,
                 () -> RtFroxelGrid.forRenderSize(0, 720, 16, 48));

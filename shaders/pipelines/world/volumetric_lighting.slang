@@ -105,16 +105,16 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
 }
 
 public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
-                                         inout uint sampleSeed, out float3 skyVisibility) {
+                                         out float3 skyVisibility) {
     skyVisibility = float3(0.0);
     if (max(celestialLight.illuminance.r,
             max(celestialLight.illuminance.g, celestialLight.illuminance.b)) <= 1.0e-6) {
         return float3(0.0);
     }
+    // A single randomized angular visibility ray turns foliage edges into temporal salt-and-pepper noise.
+    // The deterministic body-centre ray is coherent; the existing Gaussian/temporal passes soften it at
+    // the volume's intended frequency without changing surface-light penumbrae.
     float3 lightDirection = celestialLight.dir;
-    if (celestialLight.halfAngle > 0.0) {
-        lightDirection = sampleSquare(lightDirection, celestialLight.halfAngle, sampleSeed);
-    }
     skyVisibility = visibility(samplePosition, lightDirection, 10000.0).transmittance;
     float3 visibleIlluminance = celestialLight.illuminance * skyVisibility;
     return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogOptics.w);
@@ -160,7 +160,8 @@ public float4 injectFroxel(uint3 index) {
     float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
     float3 skyVisibility;
-    float3 directional = froxelDirectionalLighting(samplePosition, viewRay, seed, skyVisibility);
+    float3 directional = worldPush.fogLighting.x
+            * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
