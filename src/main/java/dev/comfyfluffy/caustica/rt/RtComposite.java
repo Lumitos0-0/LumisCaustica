@@ -285,13 +285,14 @@ public final class RtComposite {
     private float mvCamDeltaY;
     private float mvCamDeltaZ;
     private boolean mvHasPrev;
-    // Fog temporal validity tracking. fogDispatchedLastFrame is armed by the fog dispatch each
-    // recordFrame and cleared every beginFrame: a frame without a fog dispatch (fog toggled off,
-    // early composite bail) breaks history continuity, because fogHistory would belong to a camera
-    // older than the one in the reprojection matrices. fogPrevProjM00/M11 hold the intrinsic
-    // projection scale slots of the frame projection last dispatched with, for the
+    // Fog temporal validity tracking. fogDispatchedLastFrame describes the immediately completed
+    // frame, while fogDispatchedThisFrame is reset at frame start and latched at frame end. A frame
+    // without a fog dispatch (fog toggled off, menu/early composite bail) breaks history continuity,
+    // because fogHistory would belong to a camera older than the reprojection matrices. fogPrevProjM00/M11
+    // hold the intrinsic projection scale slots of the frame projection last dispatched with, for the
     // projectionIsCompatible gate.
     private boolean fogDispatchedLastFrame;
+    private boolean fogDispatchedThisFrame;
     private float fogPrevProjM00;
     private float fogPrevProjM11;
     private float fogPrevForwardX;
@@ -540,6 +541,8 @@ public final class RtComposite {
     public void resetReprojectionHistory() {
         mvHasPrev = false;
         fogHadPrevProjection = false;
+        fogDispatchedLastFrame = false;
+        fogDispatchedThisFrame = false;
     }
 
     /**
@@ -566,9 +569,10 @@ public final class RtComposite {
         }
         RtFrameStats.FRAME.beginIfInactive();
         hdrWrittenThisFrame = false;
-        // Fog previous-frame latch: only a recordFrame that actually dispatched fog this frame
-        // re-arms it, so any gap in fog dispatch (toggle, bail-out) invalidates fog history once.
-        fogDispatchedLastFrame = false;
+        // This frame re-arms the previous-frame fog latch only if recordFrame actually dispatches fog.
+        // Do not clear fogDispatchedLastFrame here: recordFrame still needs it to decide whether the
+        // history images written by the immediately completed frame are valid inputs for this frame.
+        fogDispatchedThisFrame = false;
     }
 
     /** This frame's completion token, valid until {@link #finishGraphicsUse()} signals it. */
@@ -594,6 +598,7 @@ public final class RtComposite {
     }
 
     public void endFrame() {
+        fogDispatchedLastFrame = fogDispatchedThisFrame;
         RtFrameStats.FRAME.end();
     }
 
@@ -1383,7 +1388,6 @@ public final class RtComposite {
                 fogPrevForwardY = curForwardY;
                 fogPrevForwardZ = curForwardZ;
                 fogHadPrevProjection = true;
-                fogDispatchedLastFrame = true;
 
                 try (RtDebugLabels.Scope ignored2 = RtDebugLabels.scope(ctx, cmd, "volumetric fog")) {
                     volumetricFog.dispatch(cmd, renderW, renderH,
@@ -1402,6 +1406,7 @@ public final class RtComposite {
                             (flags & 0b01) != 0, rainLevel, thunderLevel,
                             fogHistoryValid);
                 }
+                fogDispatchedThisFrame = true;
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog composite visible to DLSS
             }
 
