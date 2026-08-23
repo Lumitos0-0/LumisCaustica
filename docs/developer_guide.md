@@ -103,9 +103,9 @@ Balanced quality uses
 candidate floors are 2, 4, 6, and 8 respectively. Setting
 `local-light-candidates = 0` still explicitly disables emitter injection. The
 advanced `grid-pixel-size` and `depth-slices` values define the Balanced baseline
-and all presets scale from it. The 3×3 Gaussian scattering filter removes isolated
-Monte Carlo cells before integration, while higher-resolution presets recover
-sharper shadow and density boundaries.
+and all presets scale from it. A depth-aware 5×5 binomial scattering filter removes
+local-light estimator variance and one-ray celestial shadow noise before integration,
+while higher-resolution presets recover sharper shadow and density boundaries.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -124,11 +124,12 @@ native-resolution depth. Broad ground and walls have no far background probe, so
 underground slices remain clipped. The Gaussian pass remains bilateral against
 scene depth but does not hard-cut silhouette columns, preventing open cave lighting
 from spreading into ground without erasing the retained background layer. Cells
-whose nine probes span a depth edge reject temporal history entirely. Smooth cells
-reduce history continuously with camera translation instead of carrying the full
-stationary-camera weight through motion. Block-emitter selection uses a
-frame-independent, world-quantized stream, so lighting remains stable without the
-history that previously caused reprojection trails.
+whose nine probes span a depth edge reject temporal history entirely and use a
+stable Z midpoint. Smooth cells reduce history continuously with camera translation
+instead of carrying the full stationary-camera weight through motion. Block-emitter
+selection uses a frame-independent, world-quantized stream. Celestial visibility
+uses the sun/moon centre ray rather than a one-sample temporal angular jitter; the
+spatial kernel supplies its soft volumetric penumbra without reintroducing trails.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light

@@ -105,16 +105,16 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
 }
 
 public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
-                                         inout uint sampleSeed, out float3 skyVisibility) {
+                                         out float3 skyVisibility) {
     skyVisibility = float3(0.0);
     if (max(celestialLight.illuminance.r,
             max(celestialLight.illuminance.g, celestialLight.illuminance.b)) <= 1.0e-6) {
         return float3(0.0);
     }
+    // Surface paths sample the finite sun/moon square stochastically. A one-ray froxel cannot do that
+    // without turning every visibility boundary into a bright/dark Monte Carlo cell. Trace the body centre
+    // here and let the depth-aware spatial kernel provide the low-frequency volumetric penumbra.
     float3 lightDirection = celestialLight.dir;
-    if (celestialLight.halfAngle > 0.0) {
-        lightDirection = sampleSquare(lightDirection, celestialLight.halfAngle, sampleSeed);
-    }
     skyVisibility = visibility(samplePosition, lightDirection, 10000.0).transmittance;
     float3 visibleIlluminance = celestialLight.illuminance * skyVisibility;
     return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogOptics.w);
@@ -138,6 +138,8 @@ public float4 injectFroxel(uint3 index) {
     float minColumnDepth;
     float maxColumnDepth;
     froxelBackgroundDepth(int2(index.xy), cellCoordinate, minColumnDepth, maxColumnDepth);
+    float depthEdgeThreshold = max(1.0, minColumnDepth * 0.08);
+    bool depthEdge = maxColumnDepth - minColumnDepth > depthEdgeThreshold;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
     // A large nonlinear slice can straddle the first opaque surface. Sampling its unconstrained midpoint
@@ -148,7 +150,10 @@ public float4 injectFroxel(uint3 index) {
     if (visibleFarDistance <= nearDistance) {
         return float4(0.0);
     }
-    float distance = lerp(nearDistance, visibleFarDistance, rndf(seed));
+    // Edge cells have no temporal history by design, so a frame-varying Z sample would remain visible as
+    // raw noise. Use their segment midpoint; smooth cells keep jitter and temporal supersampling.
+    float distanceFraction = depthEdge ? 0.5 : rndf(seed);
+    float distance = lerp(nearDistance, visibleFarDistance, distanceFraction);
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
@@ -177,7 +182,7 @@ public float4 injectFroxel(uint3 index) {
     float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
     float3 skyVisibility;
-    float3 directional = froxelDirectionalLighting(samplePosition, viewRay, seed, skyVisibility);
+    float3 directional = froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
     float3 incident = ambient * skyVisibility
             + directional
             + froxelEmitterLighting(emitterPosition, viewRay, emitterSeed, emitterProposalSeed);
@@ -191,8 +196,6 @@ public float4 injectFroxel(uint3 index) {
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
             history.rgb = min(max(history.rgb, float3(0.0)), current.rgb * 4.0 + float3(8.0));
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            float depthEdgeThreshold = max(1.0, minColumnDepth * 0.08);
-            bool depthEdge = maxColumnDepth - minColumnDepth > depthEdgeThreshold;
             // A depth-edge cell can switch background representatives during camera motion. Reject its
             // history outright: even a small blend leaves a visible outline trail, while block-emitter
             // sampling is now frame-stable and the spatial pass supplies edge denoising without history.

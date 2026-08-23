@@ -1,11 +1,17 @@
-// Low-pass the temporally accumulated scattering field in screen-froxel space before Z integration.
-// A compact depth-aware 3x3 Gaussian removes single-cell Monte Carlo fireflies and sub-cell shadow noise
-// without carrying lighting across opaque silhouettes or from an open/deep column into a blocked one.
+// Low-pass the current scattering field in screen-froxel space before Z integration. This pass carries
+// the denoising burden at depth edges, where temporal history is intentionally rejected to avoid trails.
+// A depth-aware 5x5 binomial kernel removes one-ray celestial shadows and local-light RIS variation
+// without carrying lighting from an open/deep column into a blocked one.
 
 import world_common;
 import world_core;
 import bindings;
 import froxel;
+
+public float froxelSpatialWeight(int offset) {
+    int distance = abs(offset);
+    return distance == 0 ? 6.0 : (distance == 1 ? 4.0 : 1.0);
+}
 
 [shader("raygeneration")]
 void main() {
@@ -24,16 +30,14 @@ void main() {
     float depthSigma = max((sliceFar - sliceNear) * 2.0, 1.0);
     float4 filtered = float4(0.0);
     float weightSum = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        float wy = y == 0 ? 2.0 : 1.0;
-        for (int x = -1; x <= 1; ++x) {
-            float wx = x == 0 ? 2.0 : 1.0;
+    for (int y = -2; y <= 2; ++y) {
+        float wy = froxelSpatialWeight(y);
+        for (int x = -2; x <= 2; ++x) {
+            float wx = froxelSpatialWeight(x);
             int3 samplePosition = clamp(center + int3(x, y, 0), int3(0), dimensions - 1);
             float sampleDepth = froxelOpaqueDistance(float2(samplePosition.xy) + 0.5);
-            // Bilateral depth weighting prevents a nearby wall/ground column from borrowing a lit froxel
-            // from an adjacent hole whose first surface is many blocks farther away. Occupancy itself is
-            // carried by the injected sample; do not hard-cut the filtered column at this point depth,
-            // because silhouette cells intentionally retain their far/background layer.
+            // Occupancy is carried by injection; depth only controls cross-column filtering. Do not
+            // hard-cut here because silhouette cells intentionally retain their far/background layer.
             float depthWeight = exp(-abs(sampleDepth - centerDepth) / depthSigma);
             float weight = wx * wy * depthWeight;
             filtered += froxelScattering[samplePosition] * weight;
