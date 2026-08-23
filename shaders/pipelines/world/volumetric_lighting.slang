@@ -105,16 +105,16 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
 }
 
 public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
-                                         out float3 skyVisibility) {
+                                         inout uint sampleSeed, out float3 skyVisibility) {
     skyVisibility = float3(0.0);
     if (max(celestialLight.illuminance.r,
             max(celestialLight.illuminance.g, celestialLight.illuminance.b)) <= 1.0e-6) {
         return float3(0.0);
     }
-    // Surface paths sample the finite sun/moon square stochastically. A one-ray froxel cannot do that
-    // without turning every visibility boundary into a bright/dark Monte Carlo cell. Trace the body centre
-    // here and let the depth-aware spatial kernel provide the low-frequency volumetric penumbra.
     float3 lightDirection = celestialLight.dir;
+    if (celestialLight.halfAngle > 0.0) {
+        lightDirection = sampleSquare(lightDirection, celestialLight.halfAngle, sampleSeed);
+    }
     skyVisibility = visibility(samplePosition, lightDirection, 10000.0).transmittance;
     float3 visibleIlluminance = celestialLight.illuminance * skyVisibility;
     return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogOptics.w);
@@ -133,19 +133,18 @@ public float4 injectFroxel(uint3 index) {
     uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u
             ^ worldPush.frameIndex * 26699u;
     seed = pcg(seed);
+    uint proposalSeed = pcg(seed);
 
-    float2 cellCoordinate;
-    float minColumnDepth;
-    float maxColumnDepth;
-    froxelBackgroundDepth(int2(index.xy), cellCoordinate, minColumnDepth, maxColumnDepth);
+    // Keep XY at the cell centre so this column has a stable first-surface identity. Random XY samples
+    // alternated between leaves/terrain and the sky at silhouettes, contaminating temporal history and
+    // producing a clear halo. Z, area-light, and celestial samples remain temporally jittered.
+    float2 cellCoordinate = float2(index.xy) + 0.5;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
     // A large nonlinear slice can straddle the first opaque surface. Sampling its unconstrained midpoint
     // may land underground, cache a lava emitter there, and then apply that sample to the visible part of
-    // the slice in front of the ground. Clip the stable centre ray here; full-resolution silhouette
-    // reconstruction is deliberately deferred until composition so lighting never comes from another ray.
-    float representativeDepth = max(minColumnDepth, maxColumnDepth);
-    float visibleFarDistance = min(farDistance, representativeDepth);
+    // the slice in front of the ground. Clamp the sample interval to Pass A's current first-interface depth.
+    float visibleFarDistance = min(farDistance, froxelOpaqueDistance(cellCoordinate));
     if (visibleFarDistance <= nearDistance) {
         return float4(0.0);
     }
@@ -154,18 +153,6 @@ public float4 injectFroxel(uint3 index) {
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
     float3 samplePosition = rayOrigin + viewRay * distance;
-
-    // Block emitters use a world-quantized, frame-independent stream. Their selected light and rectangle
-    // point therefore do not reshuffle every frame; the spatial filter handles the remaining estimator
-    // variation without requiring long history that would trail during camera motion.
-    float stableDistance = 0.5 * (nearDistance + visibleFarDistance);
-    float3 emitterPosition = rayOrigin + viewRay * stableDistance;
-    int3 emitterCell = int3(floor(emitterPosition + worldPush.fogWorld.xyz));
-    uint emitterSeed = uint(emitterCell.x) * 73856093u
-            ^ uint(emitterCell.y) * 19349663u ^ uint(emitterCell.z) * 83492791u;
-    uint emitterProposalSeed = emitterSeed ^ 0x9e3779b9u;
-    emitterSeed = pcg(emitterSeed);
-    emitterProposalSeed = pcg(emitterProposalSeed);
 
     float extinction = froxelExtinction(samplePosition);
     if (extinction <= 1.0e-7) {
@@ -178,10 +165,10 @@ public float4 injectFroxel(uint3 index) {
     float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
     float3 skyVisibility;
-    float3 directional = froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
+    float3 directional = froxelDirectionalLighting(samplePosition, viewRay, seed, skyVisibility);
     float3 incident = ambient * skyVisibility
             + directional
-            + froxelEmitterLighting(emitterPosition, viewRay, emitterSeed, emitterProposalSeed);
+            + froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed);
     float3 source = clampFroxelSource(extinction * worldPush.fogOptics.rgb * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
 
@@ -192,13 +179,7 @@ public float4 injectFroxel(uint3 index) {
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
             history.rgb = min(max(history.rgb, float3(0.0)), current.rgb * 4.0 + float3(8.0));
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            // Previous-frame depth metadata already rejected history hidden by geometry. The remaining
-            // sample represents the same visible world-space medium, so edge cells can accumulate noise
-            // without the silhouette trails caused by unconditional edge history. Translation still lowers
-            // confidence continuously instead of dragging the stationary-camera weight through motion.
-            float cameraHistoryConfidence = exp(-length(worldPush.camDelta) * 2.0);
-            float historyWeight = worldPush.fogShape.w * cameraHistoryConfidence;
-            current = lerp(current, history, historyWeight);
+            current = lerp(current, history, worldPush.fogShape.w);
         }
     }
     return min(current, float4(HALF_MAX));

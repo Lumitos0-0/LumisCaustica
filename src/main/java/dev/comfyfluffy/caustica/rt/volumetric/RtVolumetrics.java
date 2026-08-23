@@ -16,22 +16,20 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 
 /**
- * Owns the frustum-froxel resources and the four ray-generation passes that update them. Depth metadata
- * is classified first; lighting and extinction are injected into one of two history volumes, spatially
- * filtered, then integrated camera-outward into cumulative in-scattering and transmittance. The path
- * tracer samples that integrated volume before pre-exposure, so volumetrics remain scene-linear and work
- * unchanged with DLSS-RR, SDR, and HDR output.
+ * Owns the frustum-froxel resources and the three ray-generation passes that update them. Lighting and
+ * extinction are injected into one of two history volumes, spatially filtered, then integrated
+ * camera-outward into a volume of cumulative in-scattering and transmittance. The path tracer samples
+ * that integrated volume before pre-exposure, so volumetrics remain scene-linear and work unchanged
+ * with DLSS-RR, SDR, and HDR output.
  */
 public final class RtVolumetrics {
-    public static final int DEPTH_RAYGEN = 2;
-    public static final int INJECT_RAYGEN = 3;
-    public static final int FILTER_RAYGEN = 4;
-    public static final int INTEGRATE_RAYGEN = 5;
+    public static final int INJECT_RAYGEN = 2;
+    public static final int FILTER_RAYGEN = 3;
+    public static final int INTEGRATE_RAYGEN = 4;
 
     private RtFroxelGrid grid;
     private RtImage volumeDepth;
     private final RtImage[] scattering = new RtImage[2];
-    private final RtImage[] froxelDepth = new RtImage[2];
     private RtImage filtered;
     private RtImage integrated;
     private long lastRecordedFrame = Long.MIN_VALUE;
@@ -45,7 +43,6 @@ public final class RtVolumetrics {
 
     public boolean matches(int renderWidth, int renderHeight) {
         if (grid == null || volumeDepth == null || scattering[0] == null || scattering[1] == null
-                || froxelDepth[0] == null || froxelDepth[1] == null
                 || filtered == null || integrated == null) {
             return false;
         }
@@ -68,10 +65,6 @@ public final class RtVolumetrics {
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering A " + extent);
         scattering[1] = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering B " + extent);
-        froxelDepth[0] = ctx.createStorageImage(wanted.width(), wanted.height(),
-                VK10.VK_FORMAT_R32G32B32A32_SFLOAT, "froxel depth metadata A " + extent);
-        froxelDepth[1] = ctx.createStorageImage(wanted.width(), wanted.height(),
-                VK10.VK_FORMAT_R32G32B32A32_SFLOAT, "froxel depth metadata B " + extent);
         filtered = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel spatially filtered lighting " + extent);
         integrated = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
@@ -83,7 +76,7 @@ public final class RtVolumetrics {
     public void bindAll(RtPipeline pipeline) {
         requireReady();
         pipeline.setVolumetricImages(volumeDepth.view, scattering[0].view, scattering[1].view,
-                filtered.view, integrated.view, froxelDepth[0].view, froxelDepth[1].view);
+                filtered.view, integrated.view);
     }
 
     /**
@@ -142,14 +135,9 @@ public final class RtVolumetrics {
         }
         RtImage current = scattering[frame.writeIndex()];
         RtImage history = scattering[1 - frame.writeIndex()];
-        RtImage currentDepth = froxelDepth[frame.writeIndex()];
-        RtImage historyDepth = froxelDepth[1 - frame.writeIndex()];
-        pipeline.setCurrentVolumetricHistory(current.view, history.view,
-                currentDepth.view, historyDepth.view);
+        pipeline.setCurrentVolumetricHistory(current.view, history.view);
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel volumetrics");
              RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
-            pipeline.trace(cmd, grid.width(), grid.height(), 1, pushConstants, DEPTH_RAYGEN);
-            barrier(cmd);
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, INJECT_RAYGEN);
             barrier(cmd);
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, FILTER_RAYGEN);
@@ -201,16 +189,13 @@ public final class RtVolumetrics {
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
     }
 
-    static int effectiveLocalLightCandidates() {
+    private static int effectiveLocalLightCandidates() {
         int configured = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES.value();
-        if (configured == 0) {
-            return 0;
-        }
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0 -> Math.max(configured, 2);
-            case 2 -> Math.max(configured, 6);
-            case 3 -> Math.max(configured, 8);
-            default -> Math.max(configured, 4);
+            case 0 -> Math.min(configured, 1);
+            case 2 -> Math.max(configured, 3);
+            case 3 -> Math.max(configured, 4);
+            default -> configured;
         };
     }
 
@@ -239,7 +224,6 @@ public final class RtVolumetrics {
 
     private void requireReady() {
         if (grid == null || volumeDepth == null || scattering[0] == null || scattering[1] == null
-                || froxelDepth[0] == null || froxelDepth[1] == null
                 || filtered == null || integrated == null) {
             throw new IllegalStateException("Froxel resources have not been created");
         }
@@ -254,10 +238,6 @@ public final class RtVolumetrics {
             if (scattering[i] != null) {
                 scattering[i].destroy();
                 scattering[i] = null;
-            }
-            if (froxelDepth[i] != null) {
-                froxelDepth[i].destroy();
-                froxelDepth[i] = null;
             }
         }
         if (filtered != null) {

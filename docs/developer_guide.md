@@ -94,19 +94,16 @@ The fog implementation is split by responsibility:
   and scene-radiance composition.
 - `world/volumetric_lighting.slang` injects sky and block-emitter lighting using
   the world pipeline's existing TLAS and power-weighted light hierarchy.
-- `world/volumetric_depth.rgen.slang`, `world/volumetric_inject.rgen.slang`,
-  `world/volumetric_filter.rgen.slang`, and `world/volumetric_integrate.rgen.slang`
-  are the GPU entry points.
+- `world/volumetric_inject.rgen.slang`, `world/volumetric_filter.rgen.slang`,
+  and `world/volumetric_integrate.rgen.slang` are the GPU entry points.
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their local-emitter
-candidate floors are 2, 4, 6, and 8 respectively. Setting
-`local-light-candidates = 0` still explicitly disables emitter injection. The
-advanced `grid-pixel-size` and `depth-slices` values define the Balanced baseline
-and all presets scale from it. A narrow depth-aware 3×3 scattering filter removes
-isolated local-light cells before integration while temporal accumulation handles
-low-frequency convergence without sacrificing shaft definition.
+`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; the advanced
+`grid-pixel-size` and `depth-slices` values define the Balanced baseline and
+all presets scale from it. The 3×3 Gaussian scattering filter removes isolated
+Monte Carlo cells before integration, while higher-resolution presets recover
+sharper shadow and density boundaries.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -116,23 +113,15 @@ constant-medium segment with Beer-Lambert transmittance and writes cumulative
 that result at the primary ray's first interface before pre-exposure. Keeping a
 separate first-interface depth prevents clear glass or water's behind-surface
 DLSS guide depth from making atmospheric fog leak through the medium. Pass A runs
-before injection, so a Z slice that intersects terrain samples only the visible
-interval of its stable cell-centre ray. This keeps underground lava out without
-borrowing lighting from a different far/background ray.
-
-A ping-ponged RGBA32F metadata image stores each cell's representative depth and
-sample coordinate. During final composition, smooth regions use quadrilinear
-filtering. At a full-resolution depth discontinuity, a depth-weighted 3×3 search
-combines only neighboring columns that represent the same foreground or background
-surface as that exact pixel. Geometry outlines are therefore reconstructed at native
-depth without changing where the low-resolution volume was lit.
-
-Temporal reprojection tests the current world sample against the previous frame's
-depth and rejects only samples that were actually occluded. Depth edges can retain
-enough valid history to converge without restoring silhouette trails. Translation
-still lowers confidence continuously. Block-emitter selection uses a
-frame-independent, world-quantized stream, and celestial visibility keeps the
-deterministic sun/moon centre ray.
+before injection, so a Z slice that intersects terrain samples only its visible
+camera-side interval. The Gaussian pass is bilateral against the same depth,
+preventing an open cave/hole column from lending underground emitter radiance to
+an adjacent ground or wall column. XY injection stays at the cell centre so each
+column keeps a stable foreground/background identity under temporal accumulation.
+At final reconstruction, smooth regions use quadrilinear filtering; a depth
+silhouette instead selects the one of four neighboring columns whose low-resolution
+first depth is closest to the exact full-resolution pixel depth. This nearest-depth
+edge path removes clear/dark geometry halos without reopening underground leaks.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
