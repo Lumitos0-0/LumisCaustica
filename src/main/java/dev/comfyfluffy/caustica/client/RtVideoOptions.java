@@ -51,6 +51,7 @@ public final class RtVideoOptions {
             waterWaves(),
             volumetricFog(),
             fogDensity(),
+            fogQuality(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -151,6 +152,18 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round(setting.value() * 10_000.0f), 0, 100),
             value -> setting.set(value / 10_000.0f));
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.fogQuality." + value)),
+            new OptionInstance.IntRange(0, 3),
+            Math.clamp(setting.value(), 0, 3),
+            setting::set);
     }
 
     private static OptionInstance<Integer> dlssQuality() {

@@ -21,7 +21,7 @@ void main() {
     for (int z = 0; z < worldPush.froxelGrid.z; ++z) {
         float farDistance = froxelBoundaryDistance(float(z + 1));
         float segmentLength = max(farDistance - previousDistance, 0.0);
-        float4 cell = froxelScattering[int3(int2(column), z)];
+        float4 cell = froxelFiltered[int3(int2(column), z)];
         float extinction = max(cell.a, 0.0);
         float segmentTransmittance = exp(-extinction * segmentLength);
         float sourceIntegral = extinction > 1.0e-7

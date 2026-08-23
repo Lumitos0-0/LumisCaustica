@@ -16,18 +16,21 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 
 /**
- * Owns the frustum-froxel resources and the two ray-generation passes that update them. Lighting and
- * extinction are injected into one of two history volumes, then integrated camera-outward into a volume
- * of cumulative in-scattering and transmittance. The path tracer samples that integrated volume before
- * pre-exposure, so volumetrics remain scene-linear and work unchanged with DLSS-RR, SDR, and HDR output.
+ * Owns the frustum-froxel resources and the three ray-generation passes that update them. Lighting and
+ * extinction are injected into one of two history volumes, spatially filtered, then integrated
+ * camera-outward into a volume of cumulative in-scattering and transmittance. The path tracer samples
+ * that integrated volume before pre-exposure, so volumetrics remain scene-linear and work unchanged
+ * with DLSS-RR, SDR, and HDR output.
  */
 public final class RtVolumetrics {
     public static final int INJECT_RAYGEN = 2;
-    public static final int INTEGRATE_RAYGEN = 3;
+    public static final int FILTER_RAYGEN = 3;
+    public static final int INTEGRATE_RAYGEN = 4;
 
     private RtFroxelGrid grid;
     private RtImage volumeDepth;
     private final RtImage[] scattering = new RtImage[2];
+    private RtImage filtered;
     private RtImage integrated;
     private long lastRecordedFrame = Long.MIN_VALUE;
     private long lastOpticalSignature = Long.MIN_VALUE;
@@ -40,7 +43,7 @@ public final class RtVolumetrics {
 
     public boolean matches(int renderWidth, int renderHeight) {
         if (grid == null || volumeDepth == null || scattering[0] == null || scattering[1] == null
-                || integrated == null) {
+                || filtered == null || integrated == null) {
             return false;
         }
         return grid.equals(wantedGrid(renderWidth, renderHeight))
@@ -62,6 +65,8 @@ public final class RtVolumetrics {
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering A " + extent);
         scattering[1] = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering B " + extent);
+        filtered = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel spatially filtered lighting " + extent);
         integrated = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel integrated lighting " + extent);
         invalidateHistory();
@@ -71,7 +76,7 @@ public final class RtVolumetrics {
     public void bindAll(RtPipeline pipeline) {
         requireReady();
         pipeline.setVolumetricImages(volumeDepth.view, scattering[0].view, scattering[1].view,
-                integrated.view);
+                filtered.view, integrated.view);
     }
 
     /**
@@ -91,7 +96,7 @@ public final class RtVolumetrics {
         float noiseAmount = CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT.value();
         float noiseScale = CausticaConfig.Rt.Volumetrics.NOISE_SCALE.value();
         float temporalWeight = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value();
-        int localCandidates = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES.value();
+        int localCandidates = effectiveLocalLightCandidates();
 
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value() && !submerged;
         long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
@@ -135,6 +140,8 @@ public final class RtVolumetrics {
              RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, INJECT_RAYGEN);
             barrier(cmd);
+            pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, FILTER_RAYGEN);
+            barrier(cmd);
             pipeline.trace(cmd, grid.width(), grid.height(), 1, pushConstants, INTEGRATE_RAYGEN);
             barrier(cmd);
         }
@@ -163,10 +170,33 @@ public final class RtVolumetrics {
         }
     }
 
-    private static RtFroxelGrid wantedGrid(int renderWidth, int renderHeight) {
-        return RtFroxelGrid.forRenderSize(renderWidth, renderHeight,
-                CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE.value(),
-                CausticaConfig.Rt.Volumetrics.DEPTH_SLICES.value());
+    static RtFroxelGrid wantedGrid(int renderWidth, int renderHeight) {
+        int quality = CausticaConfig.Rt.Volumetrics.QUALITY.value();
+        int basePixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE.value();
+        int baseDepthSlices = CausticaConfig.Rt.Volumetrics.DEPTH_SLICES.value();
+        int pixelSize = switch (quality) {
+            case 0 -> Math.max(4, Math.round(basePixelSize * 1.25f));
+            case 2 -> Math.max(4, Math.round(basePixelSize * 0.75f));
+            case 3 -> Math.max(4, Math.round(basePixelSize * 0.5f));
+            default -> basePixelSize;
+        };
+        int depthSlices = switch (quality) {
+            case 0 -> Math.max(8, Math.round(baseDepthSlices * (5.0f / 6.0f)));
+            case 2 -> Math.min(128, Math.round(baseDepthSlices * (4.0f / 3.0f)));
+            case 3 -> Math.min(128, Math.round(baseDepthSlices * (5.0f / 3.0f)));
+            default -> baseDepthSlices;
+        };
+        return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
+    }
+
+    private static int effectiveLocalLightCandidates() {
+        int configured = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES.value();
+        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
+            case 0 -> Math.min(configured, 1);
+            case 2 -> Math.max(configured, 3);
+            case 3 -> Math.max(configured, 4);
+            default -> configured;
+        };
     }
 
     private static float wrappedWorldCoordinate(int coordinate) {
@@ -194,7 +224,7 @@ public final class RtVolumetrics {
 
     private void requireReady() {
         if (grid == null || volumeDepth == null || scattering[0] == null || scattering[1] == null
-                || integrated == null) {
+                || filtered == null || integrated == null) {
             throw new IllegalStateException("Froxel resources have not been created");
         }
     }
@@ -209,6 +239,10 @@ public final class RtVolumetrics {
                 scattering[i].destroy();
                 scattering[i] = null;
             }
+        }
+        if (filtered != null) {
+            filtered.destroy();
+            filtered = null;
         }
         if (integrated != null) {
             integrated.destroy();

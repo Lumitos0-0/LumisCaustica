@@ -97,9 +97,9 @@ public final class CausticaConfig {
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
         FILE.setComment("volumetrics",
-                " Camera-frustum froxel fog. XY resolution is render size / grid-pixel-size; depth-slices controls Z.\n"
-                        + " extinction is Beer-Lambert attenuation per block; max-distance and height values are blocks.\n"
-                        + " Structural grid settings take effect when render resources are next recreated.");
+                " Camera-frustum froxel fog. quality: 0 performance, 1 balanced, 2 high, 3 ultra.\n"
+                        + " grid-pixel-size and depth-slices define Balanced; other quality levels scale that baseline.\n"
+                        + " extinction is Beer-Lambert attenuation per block; max-distance and height values are blocks.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -557,6 +557,10 @@ public final class CausticaConfig {
         public static final class Volumetrics {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
+            // 0 performance, 1 balanced, 2 high, 3 ultra. GRID_PIXEL_SIZE and DEPTH_SLICES define the
+            // balanced baseline; the quality preset scales both, preserving advanced TOML tuning.
+            public static final IntSetting QUALITY =
+                    clampedInt("caustica.rt.froxelQuality", "volumetrics.quality", 1, 0, 3);
             public static final IntSetting GRID_PIXEL_SIZE =
                     clampedInt("caustica.rt.froxelGridPixelSize", "volumetrics.grid-pixel-size", 16, 4, 64);
             public static final IntSetting DEPTH_SLICES =
@@ -580,7 +584,7 @@ public final class CausticaConfig {
             public static final FloatSetting NOISE_SCALE =
                     clampedFloat("caustica.rt.fogNoiseScale", "volumetrics.noise-scale", 0.035f, 0.0001f, 2.0f);
             public static final FloatSetting TEMPORAL_WEIGHT =
-                    clampedFloat("caustica.rt.fogTemporalWeight", "volumetrics.temporal-weight", 0.9f, 0.0f, 0.99f);
+                    clampedFloat("caustica.rt.fogTemporalWeight", "volumetrics.temporal-weight", 0.95f, 0.0f, 0.99f);
             public static final IntSetting LOCAL_LIGHT_CANDIDATES =
                     clampedInt("caustica.rt.fogLocalLightCandidates", "volumetrics.local-light-candidates", 2, 0, 8);
 

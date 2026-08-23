@@ -94,10 +94,17 @@ The fog implementation is split by responsibility:
   and scene-radiance composition.
 - `world/volumetric_lighting.slang` injects sky and block-emitter lighting using
   the world pipeline's existing TLAS and power-weighted light hierarchy.
-- `world/volumetric_inject.rgen.slang` and
-  `world/volumetric_integrate.rgen.slang` are the GPU entry points.
+- `world/volumetric_inject.rgen.slang`, `world/volumetric_filter.rgen.slang`,
+  and `world/volumetric_integrate.rgen.slang` are the GPU entry points.
 
-The default grid is `ceil(render width / 16) × ceil(render height / 16) × 48`.
+Balanced quality uses
+`ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
+`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; the advanced
+`grid-pixel-size` and `depth-slices` values define the Balanced baseline and
+all presets scale from it. The 3×3 Gaussian scattering filter removes isolated
+Monte Carlo cells before integration, while higher-resolution presets recover
+sharper shadow and density boundaries.
+
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
 `{scattering.rgb, extinction}`. A second pass analytically integrates each
@@ -113,8 +120,8 @@ records as surface path tracing. Temporal reprojection ping-pongs the injection
 volumes; camera cuts, skipped frames, medium changes, and optical-setting
 changes invalidate history.
 
-Runtime controls expose enable/disable and extinction. The complete
-`[volumetrics]` TOML surface also includes grid size, depth distribution,
+Runtime controls expose enable/disable, extinction, and the four quality presets. The complete
+`[volumetrics]` TOML surface also includes the Balanced grid baseline, depth distribution,
 maximum distance, single-scattering albedo, Henyey-Greenstein anisotropy,
 height falloff, noise, temporal weight, and local-light candidate count.
 

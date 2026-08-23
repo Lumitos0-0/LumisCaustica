@@ -724,6 +724,7 @@ public final class RtComposite {
                             RtDeviceBringup.worldPrimaryRaygenShader(),
                             RtDeviceBringup.worldRaygenShader(),
                             "volumetric_inject.rgen.spv",
+                            "volumetric_filter.rgen.spv",
                             "volumetric_integrate.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",

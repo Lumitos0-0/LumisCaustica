@@ -429,10 +429,11 @@ public final class RtPipeline {
 
     /** Bind all size-dependent volumetric images into every ring slot while the device is idle. */
     public void setVolumetricImages(long depthView, long scatteringView, long historyView,
-                                    long integratedView) {
+                                    long filteredView, long integratedView) {
         writeStorageBindingAll(WORLD_VOLUME_DEPTH, depthView);
         writeStorageBindingAll(WORLD_FROXEL_SCATTERING, scatteringView);
         writeStorageBindingAll(WORLD_FROXEL_HISTORY, historyView);
+        writeStorageBindingAll(WORLD_FROXEL_FILTERED, filteredView);
         writeStorageBindingAll(WORLD_FROXEL_INTEGRATED, integratedView);
     }
 

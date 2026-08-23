@@ -1,5 +1,6 @@
 package dev.comfyfluffy.caustica.rt.volumetric;
 
+import dev.comfyfluffy.caustica.CausticaConfig;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,6 +29,37 @@ final class RtFroxelGridTest {
             previous = distance;
         }
         assertEquals(192.0f, previous, 1.0e-5f);
+    }
+
+    @Test
+    void qualityPresetsScaleTheBalancedGrid() {
+        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
+        CausticaConfig.IntSetting pixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE;
+        CausticaConfig.IntSetting slices = CausticaConfig.Rt.Volumetrics.DEPTH_SLICES;
+        int oldQuality = quality.value();
+        int oldPixelSize = pixelSize.value();
+        int oldSlices = slices.value();
+        try {
+            pixelSize.set(16);
+            slices.set(48);
+            int[][] expected = {
+                    {96, 54, 40},
+                    {120, 68, 48},
+                    {160, 90, 64},
+                    {240, 135, 80}
+            };
+            for (int preset = 0; preset < expected.length; preset++) {
+                quality.set(preset);
+                RtFroxelGrid grid = RtVolumetrics.wantedGrid(1920, 1080);
+                assertEquals(expected[preset][0], grid.width());
+                assertEquals(expected[preset][1], grid.height());
+                assertEquals(expected[preset][2], grid.depth());
+            }
+        } finally {
+            quality.set(oldQuality);
+            pixelSize.set(oldPixelSize);
+            slices.set(oldSlices);
+        }
     }
 
     @Test

@@ -43,32 +43,31 @@ public float3 evaluateVolumeLight(float3 samplePosition, float3 lightPosition, f
     return emission * (emitterCosine * area * phase / distance2);
 }
 
-/** RIS estimate of all block-emitter radiance scattered toward the camera, with one visibility ray. */
+/**
+ * RIS estimate of nearby block-emitter radiance scattered toward the camera, with one visibility ray.
+ * Volumetric emitters deliberately use only the light-grid neighborhood: a distant global proposal has
+ * vanishing contribution but a very large inverse-PDF weight, which appears as isolated outdoor fireflies
+ * at one sample per froxel. The five-section local span covers every emitter that can visibly illuminate
+ * Minecraft-scale fog while giving the estimator a bounded, stable domain.
+ */
 public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
                                     inout uint sampleSeed, inout uint proposalSeed) {
     uint candidateCount = min(froxelLocalLightCandidates(), worldPush.lightCount);
-    if (candidateCount == 0u || pc.lightBufAddr == 0) {
+    if (candidateCount == 0u || pc.lightBufAddr == 0 || pc.lightLocalAliasAddr == 0) {
         return float3(0.0);
     }
 
     LightGridCell gridCell;
-    gridCell.spanOffset = 0u;
-    gridCell.spanCount = 0u;
-    gridCell.invWeightSum = 0.0;
-    int3 gridCellCoord = int3(0);
-    bool hasGridCell = pc.lightLocalAliasAddr != 0
-            && findLightGridCell(samplePosition, gridCell, gridCellCoord);
-    uint globalCandidates = hasGridCell ? max(1u, (candidateCount + 2u) / 4u) : candidateCount;
-    uint localCandidates = candidateCount - globalCandidates;
-    float localProbability = float(localCandidates) / float(candidateCount);
+    int3 gridCellCoord;
+    if (!findLightGridCell(samplePosition, gridCell, gridCellCoord)
+            || gridCell.invWeightSum <= 0.0) {
+        return float3(0.0);
+    }
     VolumeReservoir reservoir = emptyVolumeReservoir();
 
     for (uint candidate = 0u; candidate < candidateCount; ++candidate) {
-        uint globalsBefore = (candidate * globalCandidates) / candidateCount;
-        uint globalsAfter = ((candidate + 1u) * globalCandidates) / candidateCount;
-        bool useLocal = hasGridCell && globalsAfter == globalsBefore;
         uint lightIndex;
-        selectLightGridLight(gridCell, useLocal, proposalSeed, lightIndex);
+        selectLightGridSpanLight(gridCell, proposalSeed, lightIndex);
         Light light = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
         float3 emission = lightRadiance(light);
         float area = lightArea(light);
@@ -81,7 +80,8 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
         if (target <= 0.0) {
             continue;
         }
-        float sourcePdf = proposalPdf(light, emission, gridCell, gridCellCoord, localProbability);
+        // localProbability=1 reconstructs the exact weighted neighborhood proposal PDF.
+        float sourcePdf = proposalPdf(light, emission, gridCell, gridCellCoord, 1.0);
         float candidateWeight = target / max(sourcePdf, 1.0e-20);
         reservoir.weightSum += candidateWeight;
         if (rndf(sampleSeed) * reservoir.weightSum < candidateWeight) {
@@ -121,7 +121,9 @@ public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
 }
 
 public float3 clampFroxelSource(float3 source) {
-    static const float MAX_SOURCE_LUMINANCE = 1000.0;
+    // Keeps an isolated emitter sample below the range that becomes a visible dot after temporal reuse;
+    // direct forward-scattered noon sunlight remains well below this ceiling.
+    static const float MAX_SOURCE_LUMINANCE = 250.0;
     float sourceLuminance = luminance(source);
     return sourceLuminance > MAX_SOURCE_LUMINANCE
             ? source * (MAX_SOURCE_LUMINANCE / sourceLuminance) : source;
@@ -167,7 +169,7 @@ public float4 injectFroxel(uint3 index) {
         if (froxelReprojectHistory(samplePosition, history)) {
             // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
-            history.rgb = min(max(history.rgb, float3(0.0)), current.rgb * 4.0 + float3(0.25));
+            history.rgb = min(max(history.rgb, float3(0.0)), current.rgb * 4.0 + float3(8.0));
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
             current = lerp(current, history, worldPush.fogShape.w);
         }

@@ -33,7 +33,8 @@ abstract class GenerateRtBindings extends DefaultTask {
                     G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
                     CELESTIALS: "celestialsAtlas", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut",
                     VOLUME_DEPTH: "volumeDepth", FROXEL_SCATTERING: "froxelScattering",
-                    FROXEL_HISTORY: "froxelHistory", FROXEL_INTEGRATED: "froxelIntegrated",
+                    FROXEL_HISTORY: "froxelHistory", FROXEL_FILTERED: "froxelFiltered",
+                    FROXEL_INTEGRATED: "froxelIntegrated",
                     ENTITY_ALBEDO: "entityAlbedoTex", MATERIAL_SURFACE0: "materialSurface0Tex",
                     MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],
             [prefix: "DISPLAY", source: "pipelines/display/main.comp.slang", resources: [
