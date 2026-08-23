@@ -196,7 +196,11 @@ public float4 injectFroxel(uint3 index) {
             // A depth-edge cell can switch background representatives during camera motion. Reject its
             // history outright: even a small blend leaves a visible outline trail, while block-emitter
             // sampling is now frame-stable and the spatial pass supplies edge denoising without history.
-            float historyWeight = depthEdge ? 0.0 : worldPush.fogShape.w;
+            // Smooth cells retain history, but translation lowers confidence continuously instead of
+            // dragging the full stationary-camera weight through motion.
+            float cameraHistoryConfidence = exp(-length(worldPush.camDelta) * 2.0);
+            float historyWeight = depthEdge
+                    ? 0.0 : worldPush.fogShape.w * cameraHistoryConfidence;
             current = lerp(current, history, historyWeight);
         }
     }

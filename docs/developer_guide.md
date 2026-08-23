@@ -124,9 +124,11 @@ native-resolution depth. Broad ground and walls have no far background probe, so
 underground slices remain clipped. The Gaussian pass remains bilateral against
 scene depth but does not hard-cut silhouette columns, preventing open cave lighting
 from spreading into ground without erasing the retained background layer. Cells
-whose nine probes span a depth edge reject temporal history entirely. Block-emitter
-selection uses a frame-independent, world-quantized stream, so edge lighting remains
-stable without the history that previously caused reprojection trails.
+whose nine probes span a depth edge reject temporal history entirely. Smooth cells
+reduce history continuously with camera translation instead of carrying the full
+stationary-camera weight through motion. Block-emitter selection uses a
+frame-independent, world-quantized stream, so lighting remains stable without the
+history that previously caused reprojection trails.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
