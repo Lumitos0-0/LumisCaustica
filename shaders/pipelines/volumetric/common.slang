@@ -721,6 +721,13 @@ public static const uint kFroxelSkyProbeCount = 2u;
 // (concentric disk mapping projected onto the unit sphere about sunDir).
 // When xi=(0.5,0.5) (i.e. fixed-sun mode) this returns exactly sunDir.
 // -----------------------------------------------------------------------------
+public void LightDirectionBasis(float3 lightDir, out float3 tangent, out float3 bitangent)
+{
+    float3 up = abs(lightDir.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    tangent = normalize(cross(up, lightDir));
+    bitangent = cross(lightDir, tangent);
+}
+
 public float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
 {
     // Concentric disk.
@@ -739,11 +746,29 @@ public float3 SampleSunDisk(float3 sunDir, float angularRadius, float2 xi)
     float diskY = r * sin(theta) * sin(angularRadius);
     float diskZ = cos(angularRadius);
 
-    // Build a tangent frame around sunDir.
-    float3 up = abs(sunDir.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
-    float3 T = normalize(cross(up, sunDir));
-    float3 B = cross(sunDir, T);
+    // Build a tangent frame around sunDir. This basis depends only on the light direction, never the
+    // camera, so extended-light samples rotate with the sun/moon rather than the view.
+    float3 T, B;
+    LightDirectionBasis(sunDir, T, B);
     return normalize(T * diskX + B * diskY + sunDir * diskZ);
+}
+
+public float3 PlayerAnchoredShadowOrigin(VolumetricPush pc, float3 worldPos, float3 sampleToLightDir)
+{
+    // The view froxel grid must rotate with the camera because XY is screen-space. The visibility
+    // estimator does not have to inherit that rotation. Quantize the shadow ray origin in the plane
+    // perpendicular to the light using a world-axis basis and an origin at the player/camera position.
+    // For a fixed player position and fixed sun direction, the sampled volumetric shadow field is stable
+    // under camera yaw/pitch; moving the player moves the lattice with them as requested.
+    float cell = 0.75f; // blocks; sub-block to avoid obvious Minecraft-sized shadow voxels.
+    float3 L = normalize(sampleToLightDir);
+    float3 T, B;
+    LightDirectionBasis(L, T, B);
+    float3 rel = worldPos - pc.camOffset;
+    float x = round(dot(rel, T) / cell) * cell;
+    float y = round(dot(rel, B) / cell) * cell;
+    float z = dot(rel, L);
+    return pc.camOffset + T * x + B * y + L * z;
 }
 
 // -----------------------------------------------------------------------------

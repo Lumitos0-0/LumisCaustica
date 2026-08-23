@@ -55,7 +55,8 @@ float TraceVisibility(float3 origin, float3 dir, float tMax)
 
 float DirectLightVisibility(float3 worldPos, float3 sampleToLightDir)
 {
-    return TraceVisibility(worldPos, sampleToLightDir, max(pc.farPlane - 0.1f, 0.1f));
+    float3 rayOriginWorld = PlayerAnchoredShadowOrigin(pc, worldPos, sampleToLightDir);
+    return TraceVisibility(rayOriginWorld, sampleToLightDir, max(pc.farPlane - 0.1f, 0.1f));
 }
 
 float SkyProbeVisibility(float3 worldPos, float3 sampleToSkyDir)
