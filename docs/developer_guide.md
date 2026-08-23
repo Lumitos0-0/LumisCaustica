@@ -112,16 +112,15 @@ constant-medium segment with Beer-Lambert transmittance and writes cumulative
 `{inScattering.rgb, transmittance}`. The indirect ray-generation pass samples
 that result at the primary ray's first interface before pre-exposure. Keeping a
 separate first-interface depth prevents clear glass or water's behind-surface
-DLSS guide depth from making atmospheric fog leak through the medium. Pass A runs
-before injection, so a Z slice that intersects terrain samples only its visible
-camera-side interval. The Gaussian pass is bilateral against the same depth,
-preventing an open cave/hole column from lending underground emitter radiance to
-an adjacent ground or wall column. XY injection stays at the cell centre so each
-column keeps a stable foreground/background identity under temporal accumulation.
-At final reconstruction, smooth regions use quadrilinear filtering; a depth
-silhouette instead selects the one of four neighboring columns whose low-resolution
-first depth is closest to the exact full-resolution pixel depth. This nearest-depth
-edge path removes clear/dark geometry halos without reopening underground leaks.
+DLSS guide depth from replacing the fog composition endpoint.
+
+The participating-media field itself is independent of scene depth: every froxel is
+populated, Gaussian-filtered, and quadrilinearly reconstructed at each pixel's exact
+native-resolution depth. This continuity is what hides individual frustum cells.
+Pass A runs before injection only so local block-emitter lighting can be suppressed
+when a stochastic sample lies behind the first camera surface. That targeted gate
+prevents a partially occupied slice from importing underground lava radiance into
+its visible segment without carving empty geometry-shaped columns into the volume.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
