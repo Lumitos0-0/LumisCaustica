@@ -39,6 +39,9 @@
 	"caustica.options.rt.lightShaftStrength": "Light Shafts",
 	"caustica.options.rt.lightShaftStrength.tooltip": "Strength of sun and moon scattering in fog. This does not change fog density, local emissive fog, or surface lighting.",
 
+	"caustica.options.rt.lightShaftFocus": "Shaft Focus",
+	"caustica.options.rt.lightShaftFocus.tooltip": "Concentrates sun and moon scattering toward their direction. Higher values make aligned light shafts more pronounced without increasing fog density.",
+
 	"caustica.options.rt.fogQuality": "Fog Quality",
 	"caustica.options.rt.fogQuality.tooltip": "Controls froxel resolution, depth slices, and local-light samples. Higher settings produce sharper, more stable fog at a higher GPU cost.",
 	"caustica.options.rt.fogQuality.0": "Performance",

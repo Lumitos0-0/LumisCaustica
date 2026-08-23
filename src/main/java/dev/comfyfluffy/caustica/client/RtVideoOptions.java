@@ -52,6 +52,7 @@ public final class RtVideoOptions {
             volumetricFog(),
             fogDensity(),
             lightShaftStrength(),
+            lightShaftFocus(),
             fogQuality(),
             dlssQuality()
         ));
@@ -165,6 +166,19 @@ public final class RtVideoOptions {
                     Component.literal(percent + "%")),
             new OptionInstance.IntRange(0, 400),
             Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Integer> lightShaftFocus() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_FOCUS;
+        return new OptionInstance<>(
+            "caustica.options.rt.lightShaftFocus",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.lightShaftFocus.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption,
+                    Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 90),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 90),
             percent -> setting.set(percent / 100.0f));
     }
 

@@ -99,7 +99,7 @@ public final class CausticaConfig {
         FILE.setComment("volumetrics",
                 " Camera-frustum froxel fog. quality: 0 performance, 1 balanced, 2 high, 3 ultra.\n"
                         + " grid-pixel-size and depth-slices define Balanced; other quality levels scale that baseline.\n"
-                        + " directional-strength boosts sun/moon shafts without changing density or surface lighting.\n"
+                        + " directional-strength and directional-focus shape sun/moon shafts without changing density.\n"
                         + " extinction is Beer-Lambert attenuation per block; max-distance and height values are blocks.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
@@ -581,6 +581,11 @@ public final class CausticaConfig {
             public static final FloatSetting DIRECTIONAL_STRENGTH =
                     clampedFloat("caustica.rt.fogDirectionalStrength",
                             "volumetrics.directional-strength", 1.0f, 0.0f, 4.0f);
+            // Dedicated HG anisotropy for the directional body. A higher value concentrates scattering
+            // around the sun/moon direction without changing medium density or local-emitter lighting.
+            public static final FloatSetting DIRECTIONAL_FOCUS =
+                    clampedFloat("caustica.rt.fogDirectionalFocus",
+                            "volumetrics.directional-focus", 0.70f, 0.0f, 0.9f);
             public static final FloatSetting HEIGHT_OFFSET =
                     finiteFloat("caustica.rt.fogHeightOffset", "volumetrics.height-offset", 16.0f);
             public static final FloatSetting HEIGHT_FALLOFF =

@@ -102,9 +102,9 @@ Balanced quality uses
 `/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their minimum local
 emitter proposal counts are 2, 4, 6, and 8. The finalized reservoir still traces
 one visibility ray. The advanced `grid-pixel-size` and `depth-slices` values define
-the Balanced baseline and all presets scale from it. Deterministic celestial
-visibility, temporal accumulation, and the 3×3 Gaussian filter denoise the field
-without changing its continuous quadrilinear reconstruction.
+the Balanced baseline and all presets scale from it. Deterministic celestial visibility, temporal
+accumulation, and a centre-weighted 3×3 filter denoise the field without changing
+its continuous quadrilinear reconstruction or washing out shaft boundaries.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -130,9 +130,11 @@ volumes; camera cuts, skipped frames, medium changes, and optical-setting
 changes invalidate history.
 
 Runtime controls expose enable/disable, extinction, directional light-shaft strength,
-and the four quality presets. Shaft strength multiplies only sun/moon in-scattering;
-it does not change extinction, ambient fog, emissive blocks, or surface lighting. The
-complete `[volumetrics]` TOML surface also includes the Balanced grid baseline, depth
+shaft focus, and the four quality presets. Strength multiplies only sun/moon
+in-scattering. Focus is a dedicated Henyey-Greenstein anisotropy that concentrates
+that scattering toward the celestial direction. Neither changes extinction, ambient
+fog, emissive blocks, or surface lighting. The complete `[volumetrics]` TOML surface
+also includes the Balanced grid baseline, depth
 distribution, maximum distance, single-scattering albedo, Henyey-Greenstein
 anisotropy, height falloff, noise, temporal weight, and local-light candidate count.
 Moonlight uses a luminance-preserving cool BT.709 tint shared by the atmosphere LUT,

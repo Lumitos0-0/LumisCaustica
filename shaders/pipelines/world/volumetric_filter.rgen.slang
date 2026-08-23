@@ -1,6 +1,7 @@
 // Low-pass the temporally accumulated scattering field in screen-froxel space before Z integration.
 // This filter operates on the continuous volume itself, not scene geometry. Final composition samples the
-// 3D field at each pixel's exact depth, so ordinary Gaussian filtering stays smooth and hides the grid.
+// 3D field at each pixel's exact depth. A centre-weighted kernel keeps denoising while preserving the
+// higher-frequency visibility transitions that define light-shaft edges.
 
 import world_common;
 import world_core;
@@ -20,9 +21,9 @@ void main() {
     float4 filtered = float4(0.0);
     float weightSum = 0.0;
     for (int y = -1; y <= 1; ++y) {
-        float wy = y == 0 ? 2.0 : 1.0;
+        float wy = y == 0 ? 4.0 : 1.0;
         for (int x = -1; x <= 1; ++x) {
-            float wx = x == 0 ? 2.0 : 1.0;
+            float wx = x == 0 ? 4.0 : 1.0;
             int3 samplePosition = clamp(center + int3(x, y, 0), int3(0), dimensions - 1);
             float weight = wx * wy;
             filtered += froxelScattering[samplePosition] * weight;

@@ -94,6 +94,7 @@ public final class RtVolumetrics {
         float albedo = CausticaConfig.Rt.Volumetrics.SINGLE_SCATTERING_ALBEDO.value();
         float anisotropy = CausticaConfig.Rt.Volumetrics.ANISOTROPY.value();
         float directionalStrength = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_STRENGTH.value();
+        float directionalFocus = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_FOCUS.value();
         float noiseAmount = CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT.value();
         float noiseScale = CausticaConfig.Rt.Volumetrics.NOISE_SCALE.value();
         float temporalWeight = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value();
@@ -101,8 +102,8 @@ public final class RtVolumetrics {
 
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value() && !submerged;
         long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
-                albedo, anisotropy, directionalStrength, noiseAmount, noiseScale, temporalWeight,
-                localCandidates, seaLevel);
+                albedo, anisotropy, directionalStrength, directionalFocus,
+                noiseAmount, noiseScale, temporalWeight, localCandidates, seaLevel);
         float cameraTravel2 = cameraDeltaX * cameraDeltaX + cameraDeltaY * cameraDeltaY
                 + cameraDeltaZ * cameraDeltaZ;
         boolean historyValid = enabled && lastRecordedFrame == frameIndex - 1
@@ -123,7 +124,7 @@ public final class RtVolumetrics {
                 new Float4(baseHeightRebased, noiseAmount, noiseScale, temporalWeight),
                 new Float4(wrappedWorldCoordinate(rebaseX), rebaseY,
                         wrappedWorldCoordinate(rebaseZ), timeSeconds),
-                new Float4(directionalStrength, 0.0f, 0.0f, 0.0f),
+                new Float4(directionalStrength, directionalFocus, 0.0f, 0.0f),
                 enabled, writeIndex, signature, frameIndex);
     }
 
@@ -222,10 +223,11 @@ public final class RtVolumetrics {
 
     private static long opticalSignature(float maxDistance, float distribution, float extinction,
                                          float heightFalloff, float albedo, float anisotropy,
-                                         float directionalStrength, float noiseAmount, float noiseScale,
-                                         float temporalWeight, int localCandidates, int seaLevel) {
+                                         float directionalStrength, float directionalFocus,
+                                         float noiseAmount, float noiseScale, float temporalWeight,
+                                         int localCandidates, int seaLevel) {
         long hash = opticalSignature(maxDistance, distribution, extinction, heightFalloff, albedo,
-                anisotropy, directionalStrength, noiseAmount, noiseScale, temporalWeight);
+                anisotropy, directionalStrength, directionalFocus, noiseAmount, noiseScale, temporalWeight);
         hash = (hash ^ Integer.toUnsignedLong(localCandidates)) * 0x100000001b3L;
         return (hash ^ Integer.toUnsignedLong(seaLevel)) * 0x100000001b3L;
     }

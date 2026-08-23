@@ -117,7 +117,7 @@ public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
     float3 lightDirection = celestialLight.dir;
     skyVisibility = visibility(samplePosition, lightDirection, 10000.0).transmittance;
     float3 visibleIlluminance = celestialLight.illuminance * skyVisibility;
-    return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogOptics.w);
+    return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogLighting.y);
 }
 
 public float3 clampFroxelSource(float3 source) {

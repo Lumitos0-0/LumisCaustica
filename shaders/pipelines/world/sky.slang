@@ -534,7 +534,7 @@ public struct CelestialLight {
  * than sunlight.
  */
 public float3 moonlightTintBt709() {
-    static const float3 tint = float3(0.72, 0.84, 1.10);
+    static const float3 tint = float3(0.45, 0.68, 1.35);
     return tint / dot(tint, float3(0.2126, 0.7152, 0.0722));
 }
 

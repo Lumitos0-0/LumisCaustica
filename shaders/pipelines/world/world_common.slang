@@ -101,7 +101,7 @@ public struct WorldPush {
     public float4   fogShape;
     // xyz converts rebased coordinates into a small world-stable noise domain; w is animation time.
     public float4   fogWorld;
-    public float4   fogLighting;      // x directional sun/moon scattering strength; yzw reserved
+    public float4   fogLighting;      // x directional strength, y directional HG focus; zw reserved
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
