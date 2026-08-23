@@ -63,48 +63,29 @@ public float froxelOpaqueDistance(float2 coordinate) {
 }
 
 /**
- * Stable low-resolution depth representative for one XY froxel. Five fixed full-resolution probes retain
- * the farthest visible layer and its coordinate. A silhouette cell therefore represents the background
- * fog rather than terminating the whole column at a leaf or block edge; foreground pixels still stop at
- * their exact per-pixel depth during composition. minDepth/maxDepth also identify cells where temporal
- * history crosses a depth discontinuity.
+ * Stable low-resolution depth representative for one XY froxel. A fixed 3x3 pattern reaches close to the
+ * tile boundary and retains the farthest visible layer and its coordinate. A silhouette cell therefore
+ * represents background fog rather than terminating the whole column at a leaf or block edge; foreground
+ * pixels still stop at their exact per-pixel depth during composition. minDepth/maxDepth also identify a
+ * wider guard band around depth discontinuities for temporal-history rejection.
  */
 public void froxelBackgroundDepth(int2 cell, out float2 sampleCoordinate,
                                    out float minDepth, out float maxDepth) {
     float2 base = float2(cell);
-    float2 coordinate = base + float2(0.25, 0.25);
-    float depth = froxelOpaqueDistance(coordinate);
-    sampleCoordinate = coordinate;
-    minDepth = depth;
-    maxDepth = depth;
-
-    coordinate = base + float2(0.75, 0.25);
-    depth = froxelOpaqueDistance(coordinate);
-    minDepth = min(minDepth, depth);
-    if (depth > maxDepth) {
-        maxDepth = depth;
-        sampleCoordinate = coordinate;
-    }
-    coordinate = base + float2(0.25, 0.75);
-    depth = froxelOpaqueDistance(coordinate);
-    minDepth = min(minDepth, depth);
-    if (depth > maxDepth) {
-        maxDepth = depth;
-        sampleCoordinate = coordinate;
-    }
-    coordinate = base + float2(0.75, 0.75);
-    depth = froxelOpaqueDistance(coordinate);
-    minDepth = min(minDepth, depth);
-    if (depth > maxDepth) {
-        maxDepth = depth;
-        sampleCoordinate = coordinate;
-    }
-    coordinate = base + 0.5;
-    depth = froxelOpaqueDistance(coordinate);
-    minDepth = min(minDepth, depth);
-    if (depth > maxDepth) {
-        maxDepth = depth;
-        sampleCoordinate = coordinate;
+    sampleCoordinate = base + 0.5;
+    minDepth = worldPush.fogDistance.x;
+    maxDepth = 0.0;
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 3; ++x) {
+            // 0.05, 0.50 and 0.95 cover the interior and a near-edge guard band without crossing cells.
+            float2 coordinate = base + float2(float(x), float(y)) * 0.45 + 0.05;
+            float depth = froxelOpaqueDistance(coordinate);
+            minDepth = min(minDepth, depth);
+            if (depth > maxDepth) {
+                maxDepth = depth;
+                sampleCoordinate = coordinate;
+            }
+        }
     }
 }
 

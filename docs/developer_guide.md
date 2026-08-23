@@ -99,9 +99,11 @@ The fog implementation is split by responsibility:
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; the advanced
-`grid-pixel-size` and `depth-slices` values define the Balanced baseline and
-all presets scale from it. The 3×3 Gaussian scattering filter removes isolated
+`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their local-emitter
+candidate floors are 2, 4, 6, and 8 respectively. Setting
+`local-light-candidates = 0` still explicitly disables emitter injection. The
+advanced `grid-pixel-size` and `depth-slices` values define the Balanced baseline
+and all presets scale from it. The 3×3 Gaussian scattering filter removes isolated
 Monte Carlo cells before integration, while higher-resolution presets recover
 sharper shadow and density boundaries.
 
@@ -114,16 +116,17 @@ that result at the primary ray's first interface before pre-exposure. Keeping a
 separate first-interface depth prevents clear glass or water's behind-surface
 DLSS guide depth from making atmospheric fog leak through the medium. Pass A runs
 before injection, so a Z slice that intersects terrain samples only its visible
-camera-side interval. Each XY cell checks five fixed full-resolution depths and
-represents the farthest one. A cell crossing a silhouette therefore retains the
-background fog instead of terminating the whole low-resolution column at a leaf or
-block edge; foreground pixels still compose only to their exact native-resolution
-depth. Broad ground and walls have no far background probe, so underground slices
-remain clipped. The Gaussian pass remains bilateral against scene depth but does
-not hard-cut silhouette columns, preventing open cave lighting from spreading into
-ground without erasing the retained background layer. Cells
-whose five probes span a depth edge use short temporal history, avoiding
-reprojection trails while smooth fog keeps its normal noise accumulation.
+camera-side interval. Each XY cell checks a fixed 3×3 pattern of full-resolution
+depths and represents the farthest one. A cell crossing a silhouette therefore
+retains the background fog instead of terminating the whole low-resolution column
+at a leaf or block edge; foreground pixels still compose only to their exact
+native-resolution depth. Broad ground and walls have no far background probe, so
+underground slices remain clipped. The Gaussian pass remains bilateral against
+scene depth but does not hard-cut silhouette columns, preventing open cave lighting
+from spreading into ground without erasing the retained background layer. Cells
+whose nine probes span a depth edge reject temporal history entirely. Block-emitter
+selection uses a frame-independent, world-quantized stream, so edge lighting remains
+stable without the history that previously caused reprojection trails.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light

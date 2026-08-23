@@ -133,7 +133,6 @@ public float4 injectFroxel(uint3 index) {
     uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u
             ^ worldPush.frameIndex * 26699u;
     seed = pcg(seed);
-    uint proposalSeed = pcg(seed);
 
     float2 cellCoordinate;
     float minColumnDepth;
@@ -155,6 +154,18 @@ public float4 injectFroxel(uint3 index) {
     froxelRay(cellCoordinate, rayOrigin, viewRay);
     float3 samplePosition = rayOrigin + viewRay * distance;
 
+    // Block emitters use a world-quantized, frame-independent stream. Their selected light and rectangle
+    // point therefore do not reshuffle every frame; the spatial filter handles the remaining estimator
+    // variation without requiring long history that would trail during camera motion.
+    float stableDistance = 0.5 * (nearDistance + visibleFarDistance);
+    float3 emitterPosition = rayOrigin + viewRay * stableDistance;
+    int3 emitterCell = int3(floor(emitterPosition + worldPush.fogWorld.xyz));
+    uint emitterSeed = uint(emitterCell.x) * 73856093u
+            ^ uint(emitterCell.y) * 19349663u ^ uint(emitterCell.z) * 83492791u;
+    uint emitterProposalSeed = emitterSeed ^ 0x9e3779b9u;
+    emitterSeed = pcg(emitterSeed);
+    emitterProposalSeed = pcg(emitterProposalSeed);
+
     float extinction = froxelExtinction(samplePosition);
     if (extinction <= 1.0e-7) {
         return float4(0.0);
@@ -169,7 +180,7 @@ public float4 injectFroxel(uint3 index) {
     float3 directional = froxelDirectionalLighting(samplePosition, viewRay, seed, skyVisibility);
     float3 incident = ambient * skyVisibility
             + directional
-            + froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed);
+            + froxelEmitterLighting(emitterPosition, viewRay, emitterSeed, emitterProposalSeed);
     float3 source = clampFroxelSource(extinction * worldPush.fogOptics.rgb * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
 
@@ -182,10 +193,10 @@ public float4 injectFroxel(uint3 index) {
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
             float depthEdgeThreshold = max(1.0, minColumnDepth * 0.08);
             bool depthEdge = maxColumnDepth - minColumnDepth > depthEdgeThreshold;
-            // Depth-edge cells can switch background representatives during camera motion. Give them only
-            // short history so the fog does not visibly trail behind silhouettes; smooth cells keep the
-            // configured accumulation needed for noise convergence.
-            float historyWeight = depthEdge ? min(worldPush.fogShape.w, 0.2) : worldPush.fogShape.w;
+            // A depth-edge cell can switch background representatives during camera motion. Reject its
+            // history outright: even a small blend leaves a visible outline trail, while block-emitter
+            // sampling is now frame-stable and the spatial pass supplies edge denoising without history.
+            float historyWeight = depthEdge ? 0.0 : worldPush.fogShape.w;
             current = lerp(current, history, historyWeight);
         }
     }

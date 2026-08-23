@@ -189,13 +189,16 @@ public final class RtVolumetrics {
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
     }
 
-    private static int effectiveLocalLightCandidates() {
+    static int effectiveLocalLightCandidates() {
         int configured = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES.value();
+        if (configured == 0) {
+            return 0;
+        }
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0 -> Math.min(configured, 1);
-            case 2 -> Math.max(configured, 3);
-            case 3 -> Math.max(configured, 4);
-            default -> configured;
+            case 0 -> Math.max(configured, 2);
+            case 2 -> Math.max(configured, 6);
+            case 3 -> Math.max(configured, 8);
+            default -> Math.max(configured, 4);
         };
     }
 
