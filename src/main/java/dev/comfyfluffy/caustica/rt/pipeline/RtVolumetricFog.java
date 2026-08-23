@@ -1,5 +1,6 @@
 package dev.comfyfluffy.caustica.rt.pipeline;
 
+import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -97,8 +98,11 @@ public final class RtVolumetricFog {
     private static final int FOG_FORMAT = VK10.VK_FORMAT_R16G16B16A16_SFLOAT;
     private static final int CONF_FORMAT = VK10.VK_FORMAT_R16_SFLOAT;
 
-    // FroxelMatrices: 3 float4x4 plus 6 float4 medium/state records = 288 bytes.
-    private static final long MATRICES_BUF_SIZE = 288;
+    // FroxelMatrices: 4 float4x4 plus 6 float4 medium/state records = 352 bytes.
+    private static final long MATRICES_BUF_SIZE = 352;
+    // Keep procedural density noise world-anchored without sending huge absolute Minecraft
+    // coordinates to fp32 shaders. The noise repeats only at this coarse period.
+    private static final int NOISE_ORIGIN_PERIOD = 65536;
     // Matrix-buffer ring depth, matching the world push ring: with TrackedGraphicsUse waits the
     // depth is a host-stall-avoidance choice, never a correctness one.
     private static final int MATRIX_RING = 6;
@@ -600,6 +604,7 @@ public final class RtVolumetricFog {
             invViewProj.get(fb); fb.position(16);
             curViewProj.get(fb); fb.position(32);
             prevViewProj.get(fb); fb.position(48);
+            new Matrix4f(prevViewProj).invert().get(fb); fb.position(64);
             fb.put(CausticaConfig.Rt.Fog.AIR_ALBEDO.value())
                     .put(CausticaConfig.Rt.Fog.SKY_AMBIENT.value())
                     .put(CausticaConfig.Rt.Fog.SKY_PROBE_DISTANCE.value())
@@ -614,7 +619,10 @@ public final class RtVolumetricFog {
                     .put(ambientRadiance * weatherLightScale)
                     .put(ambientRadiance * weatherLightScale)
                     .put(1.0f);
-            fb.put((float) rebaseOriginX).put((float) rebaseOriginY).put((float) rebaseOriginZ).put(0.0f);
+            fb.put((float) Math.floorMod(rebaseOriginX, NOISE_ORIGIN_PERIOD))
+                    .put((float) Math.floorMod(rebaseOriginY, NOISE_ORIGIN_PERIOD))
+                    .put((float) Math.floorMod(rebaseOriginZ, NOISE_ORIGIN_PERIOD))
+                    .put(0.0f);
             matBuf.flush(0L, MATRICES_BUF_SIZE);
         }
 

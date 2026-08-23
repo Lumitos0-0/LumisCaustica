@@ -30,7 +30,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
     // --- Center sample.
     float4 center = fogCurrent[id];
-    float3 centerWorld = FroxelCenterWorldSpace(pc, id);
+    float3 centerWorld = FroxelCenterRebasedWorldSpace(pc, id);
     float  centerDepth = FroxelCenterViewDepth(pc, id.z);
 
     // Scene depth at the CENTER pixel.
@@ -58,7 +58,7 @@ void main(uint3 id : SV_DispatchThreadID)
             // Early out: a zero-sigma neighbor (no medium) contributes nothing.
             if (n.w < 1.0e-6f) continue;
 
-            float3 nWorld = FroxelCenterWorldSpace(pc, uint3(nId));
+            float3 nWorld = FroxelCenterRebasedWorldSpace(pc, uint3(nId));
             float  nDepth = FroxelCenterViewDepth(pc, (uint)nId.z);
 
             // Per-neighbor scene depth sample (sampled at the neighbor's XY).

@@ -1,7 +1,7 @@
 // Pass 3 — Temporal reprojection + neighborhood clamping + confidence.
 //
-// For each CURRENT-frame froxel (stable center P_world):
-//   * Reproject P_world into the PREVIOUS froxel grid via WorldToFroxelPrevious.
+// For each CURRENT-frame froxel (stable center P_rebasedWorld in the current terrain rebase frame):
+//   * Reproject that physical point into the PREVIOUS froxel grid via WorldToFroxelPrevious.
 //   * Sample the history volume with TRILINEAR filtering at that continuous
 //     UVW coordinate (the reprojected location is not an integer cell).
 //   * Validate the history sample. History use requires the full conjunction
@@ -13,8 +13,8 @@
 //     The host folds the first four into pc.historyValid (see RtVolumetricFog);
 //     prevUvw inside [0,1]^3 is tested below against an UNCLAMPED w so depths
 //     the previous grid never covered reject instead of sampling a clamped
-//     boundary slice. Within a valid sample, depth/medium/motion/edge
-//     confidence terms then modulate (never gate) the blend weight.
+//     boundary slice. Within a valid sample, depth/medium/motion/edge and physical
+//     reprojection-error confidence terms then modulate (never gate) the blend weight.
 //     History is NEVER rejected just because the binary shadow sample
 //     changed -- that noise is what temporal integration is meant to converge.
 //   * Compute a 3x3x3 neighborhood of CURRENT-frame (spatially-filtered) RGB
@@ -132,7 +132,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float4 current = fogVolume[id];
 
-    float3 worldPos = FroxelCenterWorldSpace(pc, id);
+    float3 worldPos = FroxelCenterRebasedWorldSpace(pc, id);
 
     // Continuous history froxel coordinate in UVW (all axes unclamped; the bounds
     // test below decides whether the point was covered by the previous grid at all),
@@ -182,6 +182,14 @@ void main(uint3 id : SV_DispatchThreadID)
         float zEdge = min(prevUvw.z, 1.0f - prevUvw.z);
         float edgeConf = smoothstep(0.0f, 0.03f, min(min(edge.x, edge.y), zEdge));
 
+        // Physical reprojection validation: the nearest previous froxel center should still be close
+        // to the current physical region. This catches stale camera-relative origins, incompatible
+        // previous matrices, and depth-mapping drift before history can smear them.
+        float reprojectionError = FroxelHistoryReprojectionError(pc, worldPos, prevUvw);
+        float allowedError = max(0.75f, curFroxelDepth * 0.035f);
+        float reprojectionConf = 1.0f - smoothstep(allowedError, allowedError * 4.0f,
+                                                   reprojectionError);
+
         // Motion magnitude (camera translation between frames).
         float3 motion = pc.camOffset - pc.prevCamOffset;
         float motionLen = length(motion);
@@ -201,7 +209,8 @@ void main(uint3 id : SV_DispatchThreadID)
         // don't trust history either (we're in a disoccluded region).
         float depthConf = curFroxelInFront ? 1.0f : 0.0f;
 
-        float effective = histConf * edgeConf * motionConf * depthConf * densityCompat * clampConf;
+        float effective = histConf * edgeConf * motionConf * depthConf * densityCompat
+                        * reprojectionConf * clampConf;
 
         float baseW = clamp(pc.historyBaseWeight, 0.0f, 0.99f);
         float w = clamp(baseW * effective, 0.0f, 0.97f);

@@ -107,11 +107,11 @@ float SampleConfidenceTrilinear(float3 coord)
 
 // Shared reprojection probe for the diagnostic views: the previous-frame froxel UVW of the
 // froxel under this pixel, going through the exact production mapping
-// (FroxelCenterWorldSpace -> WorldToFroxelPrevious) so the visualization reflects the
+// (FroxelCenterRebasedWorldSpace -> WorldToFroxelPrevious) so the visualization reflects the
 // temporal pass's math. inside = the coordinate lies within the previous grid's [0,1]^3.
-float3 DebugPrevUvw(float2 fxy, float wStart, uint D, out bool inside)
+float3 DebugPrevUvw(float2 fxy, float wStart, uint D, out bool inside, out float3 worldPos)
 {
-    float3 worldPos = FroxelCenterWorldSpace(pc,
+    worldPos = FroxelCenterRebasedWorldSpace(pc,
         uint3(clamp((int)fxy.x, 0, (int)FroxelSize(pc).x - 1),
               clamp((int)fxy.y, 0, (int)FroxelSize(pc).y - 1),
               clamp((int)(wStart), 0, (int)D - 1)));
@@ -260,7 +260,7 @@ void main(uint2 id : SV_DispatchThreadID)
             debugAbsorption = absorbTap;
             debugSlice = z;
             float3 midWorldPos = rayDir * ((tNear + tFar) * 0.5f) + pc.camOffset;
-            debugWorldChecker = WorldChecker(midWorldPos, 0.25f);
+            debugWorldChecker = WorldChecker(midWorldPos + GetMatrices(pc).noiseOrigin.xyz, 0.25f);
             marched = true;
         }
 
@@ -317,13 +317,13 @@ void main(uint2 id : SV_DispatchThreadID)
             color = float3(t, 0.5f + 0.5f * sin(t * 10.0f), 1.0f - t);
             break;
         }
-        case 9: { // DEBUG_VOLUME_REPROJECTION_ERROR
+        case 9: { // DEBUG_VOLUME_REPROJECTION_ERROR: physical error in blocks.
             bool inside;
-            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside);
-            float3 curUvw = float3(fxy / float2(FroxelSize(pc).xy),
-                                    clamp(wStart / max(float(D), 1.0f), 0.0f, 1.0f));
-            float err = inside ? length(prevUvw - curUvw) : 1.0f;
-            color = inside ? float3(saturate(err * 8.0f), saturate(1.0f - err * 8.0f), 0.0f)
+            float3 debugWorldPos;
+            float3 prevUvw = DebugPrevUvw(fxy, wStart, D, inside, debugWorldPos);
+            float err = inside ? FroxelHistoryReprojectionError(pc, debugWorldPos, prevUvw) : 1.0e30f;
+            float vis = saturate(err * 4.0f);
+            color = inside ? float3(vis, saturate(1.0f - vis), 0.0f)
                            : float3(1.0f, 0.0f, 1.0f);
             break;
         }

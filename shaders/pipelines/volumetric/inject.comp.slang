@@ -71,7 +71,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id >= FroxelSize(pc))) return;
 
     // Stable froxel identity: world center is deterministic for (id, camera/frustum).
-    float3 worldPos = FroxelCenterWorldSpace(pc, id);
+    float3 worldPos = FroxelCenterRebasedWorldSpace(pc, id);
     FroxelMedium medium = EvaluateMedium(pc, worldPos);
     float sigmaLuma = FroxelMediumSigmaLuma(medium);
 

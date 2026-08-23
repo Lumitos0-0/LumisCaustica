@@ -5,12 +5,14 @@
 // COORDINATE-SPACE GLOSSARY (used throughout the volumetric pipeline):
 //
 //   world         : absolute Minecraft double-precision world space (CPU only, never in shaders).
-//   rebased-world : camera-relative world in which the current terrain origin (terrain.blockX/Y/Z)
-//                   is subtracted. camOffset = cam - terrain.block* is the camera position in
-//                   this space. All GPU world positions are in rebased-world so fp32 precision
-//                   stays sufficient far from origin. Previous-frame camera offset is given
-//                   relative to the CURRENT rebase origin (prevCamOffset = camOffset - camDelta),
-//                   which means positions can be reprojected across origin rebases without drift.
+//   rebased-world : absolute Minecraft world minus the current terrain rebase origin
+//                   (terrain.blockX/Y/Z), NOT minus the camera. camOffset = cam - terrain.block*
+//                   is the camera position in this space. All GPU physical positions used by
+//                   density, ray queries, lighting, integration identity, and history are in this
+//                   CURRENT rebase frame so fp32 precision stays sufficient far from origin.
+//                   Previous-frame camera offset is also expressed in the CURRENT rebase frame
+//                   (prevCamOffset = camOffset - camDelta), which means positions can be
+//                   reprojected across origin rebases without comparing incompatible origins.
 //   view          : this pipeline works with camera-relative rebased-world vectors (camera at
 //                   origin, axes NOT rotated into the camera frame): everything UnprojectNdc
 //                   returns is of that form. There is NO rotated view space anywhere below.
@@ -62,6 +64,10 @@ public struct FroxelMatrices
     // (jitter-free, for reprojection). The previous camera position relative to the current
     // rebase origin is VolumetricPush.prevCamOffset.
     public float4x4 prevViewProj;
+    // Previous clip-space -> previous camera-relative rebased world. This is the exact inverse
+    // of prevViewProj and is used only to validate that history samples represent the same
+    // physical region after reprojection. It uses the same jitter-free convention as prevViewProj.
+    public float4x4 prevInvViewProj;
 
     // The following float4s are frame/medium state carried in the same BDA buffer as the matrices
     // so VolumetricPush remains inside Vulkan's 128-byte guaranteed push-constant limit. Units:
@@ -84,9 +90,10 @@ public struct FroxelMatrices
     // ambientRadiance: rgb = stable sky/airglow ambient radiance scale,
     //                  a = multiplier for TLAS-tested sky visibility probes.
     public float4 ambientRadiance;
-    // worldOrigin: current terrain rebase origin in absolute block coordinates, used only to anchor
-    // procedural density noise in world space while all ray/query positions remain rebased-world.
-    public float4 worldOrigin;
+    // noiseOrigin: current terrain rebase origin reduced modulo the procedural-noise period.
+    // This anchors density noise to the Minecraft world without putting huge absolute coordinates
+    // in fp32 shader state. Ray/query/reprojection positions remain rebased-world.
+    public float4 noiseOrigin;
 };
 
 // -----------------------------------------------------------------------------
@@ -246,8 +253,8 @@ public float FroxelCenterViewDepth(VolumetricPush pc, uint zSlice)
 // Authoritative inverse of froxelSliceDistance(). Returns a clamped coordinate in [0,1].
 public float froxelSliceCoord(float viewDepth, float nearPlane, float farPlane)
 {
-    float ratio = max(viewDepth, nearPlane) / max(nearPlane, kEpsilon);
-    float w = log(max(ratio, 1.0001f)) / LogRatio(nearPlane, farPlane);
+    float ratio = max(viewDepth, kEpsilon) / max(nearPlane, kEpsilon);
+    float w = log(max(ratio, kEpsilon)) / LogRatio(nearPlane, farPlane);
     return clamp(w, 0.0f, 1.0f);
 }
 
@@ -263,8 +270,8 @@ public float SliceCoordFromViewDepth(float viewDepth, float nearPlane, float far
 // the clamped boundary slice and treating it as history.
 public float SliceCoordFromViewDepthUnclamped(float viewDepth, float nearPlane, float farPlane)
 {
-    float ratio = max(viewDepth, nearPlane) / max(nearPlane, kEpsilon);
-    return log(max(ratio, 1.0001f)) / LogRatio(nearPlane, farPlane);
+    float ratio = max(viewDepth, kEpsilon) / max(nearPlane, kEpsilon);
+    return log(max(ratio, kEpsilon)) / LogRatio(nearPlane, farPlane);
 }
 
 // Near and far edge view-depths of integer slice z (z in [0..D-1]).
@@ -375,12 +382,59 @@ public float3 FroxelCenterViewSpace(VolumetricPush pc, uint3 froxel)
     return dir * t;
 }
 
-// Stable rebased-world point at the froxel's canonical center.
-// This is the identity anchor for temporal reprojection: the same (ix,iy,iz)
-// refers to the same physical point in the world for a given camera/frustum.
-public float3 FroxelCenterWorldSpace(VolumetricPush pc, uint3 froxel)
+// Stable rebased-world point at the froxel's canonical center in the CURRENT rebase frame.
+// This is the identity anchor for density, TLAS ray origins, lighting and temporal reprojection.
+public float3 FroxelCenterRebasedWorldSpace(VolumetricPush pc, uint3 froxel)
 {
     return FroxelCenterViewSpace(pc, froxel) + pc.camOffset;
+}
+
+// Legacy name kept for existing call sites. It returns rebased-world, not absolute Minecraft world.
+public float3 FroxelCenterWorldSpace(VolumetricPush pc, uint3 froxel)
+{
+    return FroxelCenterRebasedWorldSpace(pc, froxel);
+}
+
+// Continuous froxel coordinate -> camera-relative rebased-world vector for an arbitrary frame whose
+// inverse projection*rotation is supplied. uvw.xy use screen-UV convention; uvw.z is the canonical
+// exponential slice coordinate. This is the inverse of WorldToFroxelUvw when paired with the matching
+// camera offset and view-projection matrices.
+public float3 FroxelUvwToViewSpace(VolumetricPush pc, float3 uvw, float4x4 invViewProj)
+{
+    float ndcX = uvw.x * 2.0f - 1.0f;
+    float ndcY = 1.0f - uvw.y * 2.0f;
+    float3 wNear = UnprojectNdc(invViewProj, ndcX, ndcY, 1.0f);
+    float3 wFar  = UnprojectNdc(invViewProj, ndcX, ndcY, 0.0f);
+    float3 dir = normalize(wFar - wNear);
+    float viewDepth = froxelSliceDistance(uvw.z, pc.nearPlane, pc.farPlane);
+    float t = RayTFromViewDepth(viewDepth, dir, CameraForwardWorld(invViewProj));
+    return dir * t;
+}
+
+public float3 FroxelUvwToRebasedWorldSpace(VolumetricPush pc, float3 uvw,
+                                           float3 camOff, float4x4 invViewProj)
+{
+    return FroxelUvwToViewSpace(pc, uvw, invViewProj) + camOff;
+}
+
+public float FroxelHistoryReprojectionError(VolumetricPush pc, float3 currentWorldPos, float3 prevUvw)
+{
+    if (any(prevUvw < float3(0.0f, 0.0f, 0.0f)) || any(prevUvw > float3(1.0f, 1.0f, 1.0f)))
+        return 1.0e30f;
+
+    // Measure against the nearest previous froxel center, not the continuous coordinate that was
+    // just projected. The continuous forward/inverse transform is mathematically identity even when
+    // it lands between cells; history storage is discrete, so this reports the physical footprint of
+    // the actual history sample neighborhood and exposes stale-origin/grid mismatches as block error.
+    uint3 dims = FroxelSize(pc);
+    int3 nearest = int3(floor(prevUvw * float3(dims)));
+    nearest = clamp(nearest, int3(0, 0, 0), (int3)dims - int3(1, 1, 1));
+    float3 centerUvw = ((float3)nearest + float3(0.5f, 0.5f, 0.5f)) / float3(dims);
+
+    FroxelMatrices m = GetMatrices(pc);
+    float3 prevWorldPos = FroxelUvwToRebasedWorldSpace(pc, centerUvw,
+                                                       pc.prevCamOffset, m.prevInvViewProj);
+    return distance(currentWorldPos, prevWorldPos);
 }
 
 // Render-res pixel ray direction (normalized), also returns NDC u,v.
@@ -538,10 +592,10 @@ public float AirDensityAt(VolumetricPush pc, float3 worldPos)
     float baseDensity = pc.heightFogDensity * heightTerm + pc.globalDensity;
 
     // Large-scale, world-anchored density variation: subtle enough not to become cloud rendering,
-    // strong enough to prevent perfectly flat slabs at long distances. The noise coordinate adds the
-    // current terrain rebase origin back to the rebased froxel position, so a static world point keeps
-    // the same density through camera motion and origin rebases.
-    float3 noisePos = worldPos + f.worldOrigin.xyz;
+    // strong enough to prevent perfectly flat slabs at long distances. The noise coordinate adds a
+    // modulo-reduced terrain origin back to the rebased froxel position, so a static world point keeps
+    // the same density through camera motion and origin rebases without losing fp32 precision.
+    float3 noisePos = worldPos + f.noiseOrigin.xyz;
     float n0 = ValueNoise3D(noisePos * 0.01875f);
     float n1 = ValueNoise3D(noisePos * 0.05500f + float3(17.0f, 3.0f, 29.0f));
     float modulation = 0.82f + 0.28f * n0 + 0.10f * n1;
