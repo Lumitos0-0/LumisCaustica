@@ -5,8 +5,8 @@ import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkDevice;
 
 /**
- * A VMA-backed image + view, created in {@code VK_IMAGE_LAYOUT_GENERAL}. Used for RT output
- * storage images. Created via {@link dev.comfyfluffy.caustica.rt.RtContext#createStorageImage}; freed with {@link #destroy()}.
+ * A VMA-backed 2D or 3D image + view, created in {@code VK_IMAGE_LAYOUT_GENERAL}. Created through
+ * {@link dev.comfyfluffy.caustica.rt.RtContext}; freed with {@link #destroy()}.
  */
 public final class RtImage {
     public final long image;
@@ -14,12 +14,18 @@ public final class RtImage {
     public final long view;
     public final int width;
     public final int height;
+    public final int depth;
 
     private final long vma;
     private final VkDevice vk;
     private boolean destroyed;
 
     public RtImage(long vma, VkDevice vk, long image, long allocation, long view, int width, int height) {
+        this(vma, vk, image, allocation, view, width, height, 1);
+    }
+
+    public RtImage(long vma, VkDevice vk, long image, long allocation, long view,
+                   int width, int height, int depth) {
         this.vma = vma;
         this.vk = vk;
         this.image = image;
@@ -27,6 +33,7 @@ public final class RtImage {
         this.view = view;
         this.width = width;
         this.height = height;
+        this.depth = depth;
     }
 
     public void destroy() {

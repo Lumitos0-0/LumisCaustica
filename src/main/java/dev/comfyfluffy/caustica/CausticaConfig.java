@@ -56,7 +56,8 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Volumetrics.ENABLED,
+            Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
@@ -95,6 +96,10 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("volumetrics",
+                " Camera-frustum froxel fog. XY resolution is render size / grid-pixel-size; depth-slices controls Z.\n"
+                        + " extinction is Beer-Lambert attenuation per block; max-distance and height values are blocks.\n"
+                        + " Structural grid settings take effect when render resources are next recreated.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -545,6 +550,41 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        /** Camera-frustum participating-media grid and its physically based material controls. */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
+            public static final IntSetting GRID_PIXEL_SIZE =
+                    clampedInt("caustica.rt.froxelGridPixelSize", "volumetrics.grid-pixel-size", 16, 4, 64);
+            public static final IntSetting DEPTH_SLICES =
+                    clampedInt("caustica.rt.froxelDepthSlices", "volumetrics.depth-slices", 48, 8, 128);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.froxelMaxDistance", "volumetrics.max-distance", 192.0f, 8.0f, 2048.0f);
+            public static final FloatSetting DEPTH_EXPONENT =
+                    clampedFloat("caustica.rt.froxelDepthExponent", "volumetrics.depth-exponent", 2.0f, 1.0f, 8.0f);
+            public static final FloatSetting EXTINCTION =
+                    clampedFloat("caustica.rt.fogExtinction", "volumetrics.extinction", 0.0035f, 0.0f, 0.1f);
+            public static final FloatSetting SINGLE_SCATTERING_ALBEDO =
+                    clampedFloat("caustica.rt.fogAlbedo", "volumetrics.single-scattering-albedo", 0.92f, 0.0f, 1.0f);
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "volumetrics.anisotropy", 0.35f, -0.95f, 0.95f);
+            public static final FloatSetting HEIGHT_OFFSET =
+                    finiteFloat("caustica.rt.fogHeightOffset", "volumetrics.height-offset", 16.0f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fogHeightFalloff", "volumetrics.height-falloff", 0.012f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_AMOUNT =
+                    clampedFloat("caustica.rt.fogNoiseAmount", "volumetrics.noise-amount", 0.35f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_SCALE =
+                    clampedFloat("caustica.rt.fogNoiseScale", "volumetrics.noise-scale", 0.035f, 0.0001f, 2.0f);
+            public static final FloatSetting TEMPORAL_WEIGHT =
+                    clampedFloat("caustica.rt.fogTemporalWeight", "volumetrics.temporal-weight", 0.9f, 0.0f, 0.99f);
+            public static final IntSetting LOCAL_LIGHT_CANDIDATES =
+                    clampedInt("caustica.rt.fogLocalLightCandidates", "volumetrics.local-light-candidates", 2, 0, 8);
+
+            private Volumetrics() {
             }
         }
 

@@ -70,6 +70,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
+import dev.comfyfluffy.caustica.rt.volumetric.RtVolumetrics;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
@@ -244,6 +245,9 @@ public final class RtComposite {
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
+    // Camera-aligned participating-media grid. It owns first-interface depth and ping-ponged 3D images;
+    // the world pipeline supplies the ray-traced lighting/visibility stages that update them.
+    private final RtVolumetrics volumetrics = new RtVolumetrics();
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -718,7 +722,9 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            "volumetric_inject.rgen.spv",
+                            "volumetric_integrate.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -733,6 +739,7 @@ public final class RtComposite {
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
+                volumetrics.bindAll(worldPipeline);
             }
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
@@ -900,7 +907,8 @@ public final class RtComposite {
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
+                && volumetrics.matches(renderW, renderH)) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -932,6 +940,7 @@ public final class RtComposite {
         renderH = optimal != null ? optimal[1] : height;
         renderSizeRrEnabled = rrEnabled;
         renderSizeRrQuality = rrQuality;
+        volumetrics.ensure(ctx, renderW, renderH);
 
         // RT traces and DLSS-RR reconstruct scene-linear ACEScg in an HDR R16G16B16A16_SFLOAT target,
         // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
@@ -977,6 +986,7 @@ public final class RtComposite {
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
+            volumetrics.bindAll(worldPipeline);
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
@@ -1104,6 +1114,10 @@ public final class RtComposite {
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
                     terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, 0f);
+            int seaLevel = level != null ? level.getSeaLevel() : 63;
+            RtVolumetrics.FrameData fogFrame = volumetrics.prepareFrame(frameCounter,
+                    terrain.blockX, terrain.blockY, terrain.blockZ, seaLevel, (flags & 1) != 0,
+                    waterWaveTime, mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so
@@ -1156,7 +1170,12 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    fogFrame.gridAndFlags(),
+                    fogFrame.distanceParams(),
+                    fogFrame.optics(),
+                    fogFrame.shape(),
+                    fogFrame.worldOffsetAndTime()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1199,7 +1218,8 @@ public final class RtComposite {
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.skyLut")) {
                 skyLut.record(cmd, pushBuf.deviceAddress);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT/history writes visible to volumetrics
+            volumetrics.record(ctx, cmd, active, pushConstants, fogFrame);
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -1494,6 +1514,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        volumetrics.destroy();
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();

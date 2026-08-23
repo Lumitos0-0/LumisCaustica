@@ -30,6 +30,12 @@
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 
+	"caustica.options.rt.volumetricFog": "Volumetric Fog",
+	"caustica.options.rt.volumetricFog.tooltip": "Enable ray-traced lighting and shadows in the camera-aligned froxel fog volume.",
+
+	"caustica.options.rt.fogDensity": "Fog Density",
+	"caustica.options.rt.fogDensity.tooltip": "Extinction of the participating medium. Higher values produce denser haze and more visible light shafts.",
+
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",
 
