@@ -135,6 +135,8 @@ it does not change extinction, ambient fog, emissive blocks, or surface lighting
 complete `[volumetrics]` TOML surface also includes the Balanced grid baseline, depth
 distribution, maximum distance, single-scattering albedo, Henyey-Greenstein
 anisotropy, height falloff, noise, temporal weight, and local-light candidate count.
+Moonlight uses a luminance-preserving cool BT.709 tint shared by the atmosphere LUT,
+surface NEE, and volumetric shafts; the look package's moon lux remains unchanged.
 
 The design follows these references:
 

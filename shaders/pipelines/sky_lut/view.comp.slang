@@ -27,7 +27,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
     int row = int(tid.y) - body * SKY_VIEW_LUT_H;
     bool isSun = body == SKY_VIEW_BODY_SUN;
     float3 worldLightDir = isSun ? sky.sunDir : sky.moonDir;
-    float3 illuminance = float3(isSun ? sky.sunIlluminance : sky.moonIlluminance);
+    float3 illuminance = isSun
+            ? float3(sky.sunIlluminance) : sky.moonIlluminance * moonlightTintBt709();
     float angularRadius = isSun ? sky.sunAngularRadius : sky.moonAngularRadius;
 
     // Sampling applies the half-texel correction; the bake must invert exactly that, so it works in the
