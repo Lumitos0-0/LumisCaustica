@@ -135,9 +135,10 @@ public float4 injectFroxel(uint3 index) {
     seed = pcg(seed);
     uint proposalSeed = pcg(seed);
 
-    // Jitter the material/light sample within the cell. Reprojection accumulates these sub-cell samples,
-    // turning the coarse grid into temporal supersampling rather than a fixed staircase.
-    float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
+    // Keep XY at the cell centre so this column has a stable first-surface identity. Random XY samples
+    // alternated between leaves/terrain and the sky at silhouettes, contaminating temporal history and
+    // producing a clear halo. Z, area-light, and celestial samples remain temporally jittered.
+    float2 cellCoordinate = float2(index.xy) + 0.5;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
     // A large nonlinear slice can straddle the first opaque surface. Sampling its unconstrained midpoint

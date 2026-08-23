@@ -116,7 +116,12 @@ DLSS guide depth from making atmospheric fog leak through the medium. Pass A run
 before injection, so a Z slice that intersects terrain samples only its visible
 camera-side interval. The Gaussian pass is bilateral against the same depth,
 preventing an open cave/hole column from lending underground emitter radiance to
-an adjacent ground or wall column.
+an adjacent ground or wall column. XY injection stays at the cell centre so each
+column keeps a stable foreground/background identity under temporal accumulation.
+At final reconstruction, smooth regions use quadrilinear filtering; a depth
+silhouette instead selects the one of four neighboring columns whose low-resolution
+first depth is closest to the exact full-resolution pixel depth. This nearest-depth
+edge path removes clear/dark geometry halos without reopening underground leaks.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
