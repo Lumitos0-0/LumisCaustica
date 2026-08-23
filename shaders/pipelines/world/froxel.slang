@@ -51,6 +51,17 @@ public void froxelRay(float2 coordinate, out float3 origin, out float3 direction
     direction = normalize(farP - nearP);
 }
 
+/** First camera interface for a floating XY froxel coordinate, sampled from Pass A's current depth. */
+public float froxelOpaqueDistance(float2 coordinate) {
+    uint depthWidth;
+    uint depthHeight;
+    volumeDepth.GetDimensions(depthWidth, depthHeight);
+    float2 uv = clamp(coordinate / float2(worldPush.froxelGrid.xy), 0.0, 1.0);
+    int2 pixel = min(int2(uv * float2(depthWidth, depthHeight)),
+            int2(int(depthWidth) - 1, int(depthHeight) - 1));
+    return clamp(volumeDepth[pixel], 0.0, worldPush.fogDistance.x);
+}
+
 public float froxelHash(float3 p) {
     p = frac(p * 0.1031);
     p += dot(p, p.yzx + 33.33);

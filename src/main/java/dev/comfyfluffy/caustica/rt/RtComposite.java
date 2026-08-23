@@ -1219,14 +1219,17 @@ public final class RtComposite {
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.skyLut")) {
                 skyLut.record(cmd, pushBuf.deviceAddress);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT/history writes visible to volumetrics
-            volumetrics.record(ctx, cmd, active, pushConstants, fogFrame);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // continuation/guide writes visible to pass B
+            // Pass A's first-interface volumeDepth both clips froxel injection to camera-visible air and
+            // makes the spatial filter depth-aware. Continuation/guide writes also become visible to Pass B.
+            VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            volumetrics.record(ctx, cmd, active, pushConstants, fogFrame);
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);

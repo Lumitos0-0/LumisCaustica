@@ -1,10 +1,11 @@
 // Low-pass the temporally accumulated scattering field in screen-froxel space before Z integration.
-// A compact 3x3 Gaussian removes single-cell Monte Carlo fireflies and sub-cell shadow noise while the
-// quality presets recover edge sharpness by increasing the physical XY grid resolution.
+// A compact depth-aware 3x3 Gaussian removes single-cell Monte Carlo fireflies and sub-cell shadow noise
+// without carrying lighting across opaque silhouettes or from an open/deep column into a blocked one.
 
 import world_common;
 import world_core;
 import bindings;
+import froxel;
 
 [shader("raygeneration")]
 void main() {
@@ -17,6 +18,16 @@ void main() {
 
     int3 dimensions = worldPush.froxelGrid.xyz;
     int3 center = int3(index);
+    float2 centerCoordinate = float2(center.xy) + 0.5;
+    float centerDepth = froxelOpaqueDistance(centerCoordinate);
+    float sliceNear = froxelBoundaryDistance(float(center.z));
+    float sliceFar = froxelBoundaryDistance(float(center.z + 1));
+    if (sliceNear >= centerDepth) {
+        froxelFiltered[center] = float4(0.0);
+        return;
+    }
+
+    float depthSigma = max((sliceFar - sliceNear) * 2.0, 1.0);
     float4 filtered = float4(0.0);
     float weightSum = 0.0;
     for (int y = -1; y <= 1; ++y) {
@@ -24,10 +35,17 @@ void main() {
         for (int x = -1; x <= 1; ++x) {
             float wx = x == 0 ? 2.0 : 1.0;
             int3 samplePosition = clamp(center + int3(x, y, 0), int3(0), dimensions - 1);
-            float weight = wx * wy;
+            float sampleDepth = froxelOpaqueDistance(float2(samplePosition.xy) + 0.5);
+            if (sliceNear >= sampleDepth) {
+                continue;
+            }
+            // Bilateral depth weighting prevents a nearby wall/ground column from borrowing a lit froxel
+            // from an adjacent hole whose first surface is many blocks farther away.
+            float depthWeight = exp(-abs(sampleDepth - centerDepth) / depthSigma);
+            float weight = wx * wy * depthWeight;
             filtered += froxelScattering[samplePosition] * weight;
             weightSum += weight;
         }
     }
-    froxelFiltered[center] = filtered / weightSum;
+    froxelFiltered[center] = weightSum > 1.0e-6 ? filtered / weightSum : float4(0.0);
 }

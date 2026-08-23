@@ -112,7 +112,11 @@ constant-medium segment with Beer-Lambert transmittance and writes cumulative
 `{inScattering.rgb, transmittance}`. The indirect ray-generation pass samples
 that result at the primary ray's first interface before pre-exposure. Keeping a
 separate first-interface depth prevents clear glass or water's behind-surface
-DLSS guide depth from making atmospheric fog leak through the medium.
+DLSS guide depth from making atmospheric fog leak through the medium. Pass A runs
+before injection, so a Z slice that intersects terrain samples only its visible
+camera-side interval. The Gaussian pass is bilateral against the same depth,
+preventing an open cave/hole column from lending underground emitter radiance to
+an adjacent ground or wall column.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light

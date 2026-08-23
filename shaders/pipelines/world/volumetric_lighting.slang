@@ -140,7 +140,14 @@ public float4 injectFroxel(uint3 index) {
     float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
-    float distance = lerp(nearDistance, farDistance, rndf(seed));
+    // A large nonlinear slice can straddle the first opaque surface. Sampling its unconstrained midpoint
+    // may land underground, cache a lava emitter there, and then apply that sample to the visible part of
+    // the slice in front of the ground. Clamp the sample interval to Pass A's current first-interface depth.
+    float visibleFarDistance = min(farDistance, froxelOpaqueDistance(cellCoordinate));
+    if (visibleFarDistance <= nearDistance) {
+        return float4(0.0);
+    }
+    float distance = lerp(nearDistance, visibleFarDistance, rndf(seed));
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
