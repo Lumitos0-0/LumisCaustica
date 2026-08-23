@@ -135,16 +135,17 @@ public float4 injectFroxel(uint3 index) {
     seed = pcg(seed);
     uint proposalSeed = pcg(seed);
 
-    // Keep XY at the cell centre so this column has a stable first-surface identity. Random XY samples
-    // alternated between leaves/terrain and the sky at silhouettes, contaminating temporal history and
-    // producing a clear halo. Z, area-light, and celestial samples remain temporally jittered.
-    float2 cellCoordinate = float2(index.xy) + 0.5;
+    float2 cellCoordinate;
+    float minColumnDepth;
+    float maxColumnDepth;
+    froxelBackgroundDepth(int2(index.xy), cellCoordinate, minColumnDepth, maxColumnDepth);
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
     // A large nonlinear slice can straddle the first opaque surface. Sampling its unconstrained midpoint
     // may land underground, cache a lava emitter there, and then apply that sample to the visible part of
-    // the slice in front of the ground. Clamp the sample interval to Pass A's current first-interface depth.
-    float visibleFarDistance = min(farDistance, froxelOpaqueDistance(cellCoordinate));
+    // the slice in front of the ground. The farthest of five stable tile probes preserves background fog
+    // at silhouettes while broad opaque ground still clips every underground slice.
+    float visibleFarDistance = min(farDistance, maxColumnDepth);
     if (visibleFarDistance <= nearDistance) {
         return float4(0.0);
     }
@@ -179,7 +180,13 @@ public float4 injectFroxel(uint3 index) {
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
             history.rgb = min(max(history.rgb, float3(0.0)), current.rgb * 4.0 + float3(8.0));
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            current = lerp(current, history, worldPush.fogShape.w);
+            float depthEdgeThreshold = max(1.0, minColumnDepth * 0.08);
+            bool depthEdge = maxColumnDepth - minColumnDepth > depthEdgeThreshold;
+            // Depth-edge cells can switch background representatives during camera motion. Give them only
+            // short history so the fog does not visibly trail behind silhouettes; smooth cells keep the
+            // configured accumulation needed for noise convergence.
+            float historyWeight = depthEdge ? min(worldPush.fogShape.w, 0.2) : worldPush.fogShape.w;
+            current = lerp(current, history, historyWeight);
         }
     }
     return min(current, float4(HALF_MAX));

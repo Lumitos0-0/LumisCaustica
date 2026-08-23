@@ -18,15 +18,9 @@ void main() {
 
     int3 dimensions = worldPush.froxelGrid.xyz;
     int3 center = int3(index);
-    float2 centerCoordinate = float2(center.xy) + 0.5;
-    float centerDepth = froxelOpaqueDistance(centerCoordinate);
+    float centerDepth = froxelOpaqueDistance(float2(center.xy) + 0.5);
     float sliceNear = froxelBoundaryDistance(float(center.z));
     float sliceFar = froxelBoundaryDistance(float(center.z + 1));
-    if (sliceNear >= centerDepth) {
-        froxelFiltered[center] = float4(0.0);
-        return;
-    }
-
     float depthSigma = max((sliceFar - sliceNear) * 2.0, 1.0);
     float4 filtered = float4(0.0);
     float weightSum = 0.0;
@@ -36,11 +30,10 @@ void main() {
             float wx = x == 0 ? 2.0 : 1.0;
             int3 samplePosition = clamp(center + int3(x, y, 0), int3(0), dimensions - 1);
             float sampleDepth = froxelOpaqueDistance(float2(samplePosition.xy) + 0.5);
-            if (sliceNear >= sampleDepth) {
-                continue;
-            }
             // Bilateral depth weighting prevents a nearby wall/ground column from borrowing a lit froxel
-            // from an adjacent hole whose first surface is many blocks farther away.
+            // from an adjacent hole whose first surface is many blocks farther away. Occupancy itself is
+            // carried by the injected sample; do not hard-cut the filtered column at this point depth,
+            // because silhouette cells intentionally retain their far/background layer.
             float depthWeight = exp(-abs(sampleDepth - centerDepth) / depthSigma);
             float weight = wx * wy * depthWeight;
             filtered += froxelScattering[samplePosition] * weight;

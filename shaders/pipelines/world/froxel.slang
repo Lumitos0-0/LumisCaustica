@@ -62,6 +62,52 @@ public float froxelOpaqueDistance(float2 coordinate) {
     return clamp(volumeDepth[pixel], 0.0, worldPush.fogDistance.x);
 }
 
+/**
+ * Stable low-resolution depth representative for one XY froxel. Five fixed full-resolution probes retain
+ * the farthest visible layer and its coordinate. A silhouette cell therefore represents the background
+ * fog rather than terminating the whole column at a leaf or block edge; foreground pixels still stop at
+ * their exact per-pixel depth during composition. minDepth/maxDepth also identify cells where temporal
+ * history crosses a depth discontinuity.
+ */
+public void froxelBackgroundDepth(int2 cell, out float2 sampleCoordinate,
+                                   out float minDepth, out float maxDepth) {
+    float2 base = float2(cell);
+    float2 coordinate = base + float2(0.25, 0.25);
+    float depth = froxelOpaqueDistance(coordinate);
+    sampleCoordinate = coordinate;
+    minDepth = depth;
+    maxDepth = depth;
+
+    coordinate = base + float2(0.75, 0.25);
+    depth = froxelOpaqueDistance(coordinate);
+    minDepth = min(minDepth, depth);
+    if (depth > maxDepth) {
+        maxDepth = depth;
+        sampleCoordinate = coordinate;
+    }
+    coordinate = base + float2(0.25, 0.75);
+    depth = froxelOpaqueDistance(coordinate);
+    minDepth = min(minDepth, depth);
+    if (depth > maxDepth) {
+        maxDepth = depth;
+        sampleCoordinate = coordinate;
+    }
+    coordinate = base + float2(0.75, 0.75);
+    depth = froxelOpaqueDistance(coordinate);
+    minDepth = min(minDepth, depth);
+    if (depth > maxDepth) {
+        maxDepth = depth;
+        sampleCoordinate = coordinate;
+    }
+    coordinate = base + 0.5;
+    depth = froxelOpaqueDistance(coordinate);
+    minDepth = min(minDepth, depth);
+    if (depth > maxDepth) {
+        maxDepth = depth;
+        sampleCoordinate = coordinate;
+    }
+}
+
 public float froxelHash(float3 p) {
     p = frac(p * 0.1031);
     p += dot(p, p.yzx + 33.33);
@@ -166,55 +212,6 @@ public float4 froxelTrilinearIntegrated(float3 coordinate) {
             lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
 }
 
-public float4 froxelIntegratedAtColumn(int2 column, int z0, int z1, float zFraction) {
-    return lerp(froxelIntegratedLoad(int3(column, z0)),
-            froxelIntegratedLoad(int3(column, z1)), zFraction);
-}
-
-/**
- * Reconstruct the low-resolution XY volume without mixing the foreground and background at silhouettes.
- * Smooth regions retain quadrilinear filtering. At a depth edge, select whichever of the four columns has
- * first-interface depth closest to the full-resolution pixel, then only interpolate along Z. This is the
- * nearest-depth upsampling rule used for low-resolution volumetric effects: it avoids both foreground fog
- * bleeding onto geometry and the inverse dark/clear halo caused by borrowing a clipped foreground column
- * for a background pixel.
- */
-public float4 froxelEdgeAwareIntegrated(float3 coordinate, float pixelDepth) {
-    int3 dimensions = froxelDimensions();
-    float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
-    int3 lo = int3(floor(bounded));
-    int3 hi = min(lo + int3(1), dimensions - 1);
-    float3 f = frac(bounded);
-
-    float d00 = froxelOpaqueDistance(float2(lo.xy) + 0.5);
-    float d10 = froxelOpaqueDistance(float2(hi.x, lo.y) + 0.5);
-    float d01 = froxelOpaqueDistance(float2(lo.x, hi.y) + 0.5);
-    float d11 = froxelOpaqueDistance(float2(hi.xy) + 0.5);
-    float minDepth = min(min(d00, d10), min(d01, d11));
-    float maxDepth = max(max(d00, d10), max(d01, d11));
-    float edgeThreshold = max(1.0, minDepth * 0.08);
-    if (maxDepth - minDepth <= edgeThreshold) {
-        return froxelTrilinearIntegrated(bounded);
-    }
-
-    int2 selected = lo.xy;
-    float closestDifference = abs(d00 - pixelDepth);
-    float difference = abs(d10 - pixelDepth);
-    if (difference < closestDifference) {
-        closestDifference = difference;
-        selected = int2(hi.x, lo.y);
-    }
-    difference = abs(d01 - pixelDepth);
-    if (difference < closestDifference) {
-        closestDifference = difference;
-        selected = int2(lo.x, hi.y);
-    }
-    difference = abs(d11 - pixelDepth);
-    if (difference < closestDifference) {
-        selected = hi.xy;
-    }
-    return froxelIntegratedAtColumn(selected, lo.z, hi.z, f.z);
-}
 
 /** Reproject a translated-world froxel sample into the previous frame's scattering volume. */
 public bool froxelReprojectHistory(float3 position, out float4 history) {
@@ -245,7 +242,7 @@ public float4 froxelAtPixel(uint2 pixel, uint2 imageSize) {
     float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
     float slice = froxelSliceForDistance(distance);
     float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 1.0);
-    float4 integrated = froxelEdgeAwareIntegrated(coordinate, distance);
+    float4 integrated = froxelTrilinearIntegrated(coordinate);
     if (slice < 1.0) {
         // Texel zero is integrated through the first boundary. Recover a partial constant-medium segment
         // so fog begins continuously at the camera rather than popping on at the first Z slice.

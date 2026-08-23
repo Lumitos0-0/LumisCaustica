@@ -114,14 +114,16 @@ that result at the primary ray's first interface before pre-exposure. Keeping a
 separate first-interface depth prevents clear glass or water's behind-surface
 DLSS guide depth from making atmospheric fog leak through the medium. Pass A runs
 before injection, so a Z slice that intersects terrain samples only its visible
-camera-side interval. The Gaussian pass is bilateral against the same depth,
-preventing an open cave/hole column from lending underground emitter radiance to
-an adjacent ground or wall column. XY injection stays at the cell centre so each
-column keeps a stable foreground/background identity under temporal accumulation.
-At final reconstruction, smooth regions use quadrilinear filtering; a depth
-silhouette instead selects the one of four neighboring columns whose low-resolution
-first depth is closest to the exact full-resolution pixel depth. This nearest-depth
-edge path removes clear/dark geometry halos without reopening underground leaks.
+camera-side interval. Each XY cell checks five fixed full-resolution depths and
+represents the farthest one. A cell crossing a silhouette therefore retains the
+background fog instead of terminating the whole low-resolution column at a leaf or
+block edge; foreground pixels still compose only to their exact native-resolution
+depth. Broad ground and walls have no far background probe, so underground slices
+remain clipped. The Gaussian pass remains bilateral against scene depth but does
+not hard-cut silhouette columns, preventing open cave lighting from spreading into
+ground without erasing the retained background layer. Cells
+whose five probes span a depth edge use short temporal history, avoiding
+reprojection trails while smooth fog keeps its normal noise accumulation.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
