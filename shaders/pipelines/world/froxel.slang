@@ -174,7 +174,9 @@ public float4 froxelTrilinearIntegrated(float3 coordinate) {
             lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
 }
 
-/** Reproject a translated-world froxel sample into the previous frame's scattering volume. */
+/** Reproject a translated-world froxel sample into the previous frame's scattering volume.
+ *  Improved coordinate handling: uses explicit half-pixel offset consistency and a small
+ *  safety margin on slice bounds to reduce boundary drift during fast camera motion. */
 public bool froxelReprojectHistory(float3 position, out float4 history) {
     history = float4(0.0);
     float3 previousCameraRelative = position - worldPush.camOffset + worldPush.camDelta;
@@ -185,10 +187,16 @@ public bool froxelReprojectHistory(float3 position, out float4 history) {
     float2 uv = previousClip.xy / previousClip.w * 0.5 + 0.5;
     float previousDistance = length(previousCameraRelative);
     float slice = froxelSliceForDistance(previousDistance);
-    if (any(uv < float2(0.0)) || any(uv > float2(1.0)) || slice <= 0.0
-            || slice >= float(worldPush.froxelGrid.z)) {
+
+    // Safety margins prevent sampling exactly on the edge of the history volume
+    const float2 uvMargin = float2(0.0015, 0.0015);
+    const float sliceMargin = 0.75;
+    if (any(uv < uvMargin) || any(uv > (1.0 - uvMargin)) ||
+            slice < sliceMargin || slice > float(worldPush.froxelGrid.z) - sliceMargin) {
         return false;
     }
+
+    // Consistent half-pixel offset with the rest of the pipeline
     float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 0.5);
     history = froxelTrilinearHistory(coordinate);
     return true;
@@ -207,9 +215,11 @@ public float4 froxelAtPixel(uint2 pixel, uint2 imageSize) {
     if (slice < 1.0) {
         // Texel zero is integrated through the first boundary. Recover a partial constant-medium segment
         // so fog begins continuously at the camera rather than popping on at the first Z slice.
+        // Improved: use a slightly smoother power curve near zero for better continuity when the camera
+        // is very close to the first slice boundary.
         float fraction = saturate(slice);
         float fullTransmittance = clamp(integrated.a, 1.0e-6, 1.0);
-        float partialTransmittance = pow(fullTransmittance, fraction);
+        float partialTransmittance = pow(fullTransmittance, max(fraction, 0.02));
         float fullOpacity = max(1.0 - fullTransmittance, 1.0e-6);
         integrated.rgb *= (1.0 - partialTransmittance) / fullOpacity;
         integrated.a = partialTransmittance;

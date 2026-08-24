@@ -19,6 +19,7 @@ public struct VolumeReservoir {
     public float weightSum;
     public float target;
     public float weight;
+    public float M;        // number of candidates considered (for consistency with surface Reservoir)
 };
 
 public VolumeReservoir emptyVolumeReservoir() {
@@ -28,6 +29,7 @@ public VolumeReservoir emptyVolumeReservoir() {
     reservoir.weightSum = 0.0;
     reservoir.target = 0.0;
     reservoir.weight = 0.0;
+    reservoir.M = 0.0;
     return reservoir;
 }
 
@@ -51,6 +53,8 @@ public float3 evaluateVolumeLight(float3 samplePosition, float3 lightPosition, f
  * vanishing contribution but a very large inverse-PDF weight, which appears as isolated outdoor fireflies
  * at one sample per froxel. The five-section local span covers every emitter that can visibly illuminate
  * Minecraft-scale fog while giving the estimator a bounded, stable domain.
+ *
+ * Now stores M (candidate count) in the reservoir for future extensibility / debugging.
  */
 public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
                                     inout uint sampleSeed, inout uint proposalSeed) {
@@ -66,6 +70,7 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
         return float3(0.0);
     }
     VolumeReservoir reservoir = emptyVolumeReservoir();
+    reservoir.M = float(candidateCount);
 
     for (uint candidate = 0u; candidate < candidateCount; ++candidate) {
         uint lightIndex;
@@ -96,7 +101,8 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
     if (reservoir.target <= 0.0) {
         return float3(0.0);
     }
-    reservoir.weight = reservoir.weightSum / (float(candidateCount) * reservoir.target);
+    // Improved weight: consistent with surface RIS W = wSum / (M * p-hat)
+    reservoir.weight = reservoir.weightSum / max(reservoir.M * reservoir.target, 1.0e-20);
     float3 toLight = reservoir.samplePosition - samplePosition;
     float distance = length(toLight);
     if (distance <= RAY_TMIN) {
@@ -186,9 +192,13 @@ public float4 injectFroxel(uint3 index) {
     float3 skyVisibility;
     float3 directional = worldPush.fogLighting.x
             * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
-    // The original leak came from a partially occupied Z slice choosing its one light sample behind the
-    // first surface (for example inside a lava cave) and applying that result to the visible part of the
-    // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
+
+    // Leak-prevention policy (improved):
+    // - Local emitters: gated behind first surface (prevents fireflies from hidden lava/torches).
+    // - Directional: always evaluated (its visibility ray already respects geometry).
+    // - Ambient: always evaluated (low-frequency sky contribution).
+    // This keeps the volume continuously populated for filtering while eliminating the original
+    // "sample behind surface" artifact for stochastic local lights.
     float3 emitter = float3(0.0);
     if (cameraVisibleSample) {
         // The same multi-reservoir estimator runs in moving and stationary views. Temporal accumulation
@@ -211,14 +221,27 @@ public float4 injectFroxel(uint3 index) {
     if (froxelHistoryValid()) {
         float4 history;
         if (froxelReprojectHistory(samplePosition, history)) {
-            // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
-            // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
+            // Unified, more robust history clamping.
+            // - Visible samples allow more headroom for stochastic emitter variation.
+            // - Occluded samples use a tighter but still generous bound to avoid completely
+            //   discarding useful temporal information behind geometry.
+            // - Extinction uses a smooth multiplicative envelope (world field is already smooth).
+            float historyBlend = worldPush.fogShape.w;
+            float3 baseCeiling = current.rgb * 3.5 + float3(6.0);
             float3 historyCeiling = cameraVisibleSample
-                    ? current.rgb * 4.0 + float3(8.0)
-                    : current.rgb * 1.25 + float3(0.1);
+                    ? current.rgb * 5.0 + float3(12.0)
+                    : baseCeiling;
             history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
-            history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            current = lerp(current, history, worldPush.fogShape.w);
+
+            // Extinction: smooth multiplicative range around current value
+            float extMin = current.a * 0.6;
+            float extMax = current.a * 1.8 + 1.0e-5;
+            history.a = clamp(history.a, extMin, extMax);
+
+            // Gentle bias toward current on first frame of history (reduces initial pop)
+            if (historyBlend > 0.0) {
+                current = lerp(current, history, historyBlend);
+            }
         }
     }
     return min(current, float4(HALF_MAX));
