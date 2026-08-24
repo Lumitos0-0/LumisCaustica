@@ -99,10 +99,12 @@ The fog implementation is split by responsibility:
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their minimum local
-emitter proposal counts are 2, 4, 6, and 8. The finalized reservoir still traces
-one visibility ray. The advanced `grid-pixel-size` and `depth-slices` values define
-the Balanced baseline and all presets scale from it. Deterministic celestial visibility, temporal
+`/20 × 40`, High uses `/12 × 64`, Ultra uses `/8 × 80`, and Ultra+ uses
+`/6 × 96`. Their minimum local-emitter proposal counts are 2, 4, 6, 8, and 8.
+The finalized reservoir still traces one visibility ray. Ultra+ has roughly twice
+Ultra's froxel count and is intended for very high-end GPUs. The advanced
+`grid-pixel-size` and `depth-slices` values define the Balanced baseline and all
+presets scale from it. Deterministic celestial visibility, temporal
 accumulation, and a centre-weighted 3×3 filter denoise the field without changing
 its continuous quadrilinear reconstruction or washing out shaft boundaries.
 

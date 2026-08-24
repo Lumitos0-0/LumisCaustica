@@ -46,7 +46,8 @@ final class RtFroxelGridTest {
                     {96, 54, 40},
                     {120, 68, 48},
                     {160, 90, 64},
-                    {240, 135, 80}
+                    {240, 135, 80},
+                    {320, 180, 96}
             };
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
@@ -70,7 +71,7 @@ final class RtFroxelGridTest {
         int oldCandidates = candidates.value();
         try {
             candidates.set(2);
-            int[] expected = {2, 4, 6, 8};
+            int[] expected = {2, 4, 6, 8, 8};
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
                 assertEquals(expected[preset], RtVolumetrics.effectiveLocalLightCandidates());

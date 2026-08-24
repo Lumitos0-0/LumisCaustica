@@ -198,12 +198,14 @@ public final class RtVolumetrics {
             case 0 -> Math.max(4, Math.round(basePixelSize * 1.25f));
             case 2 -> Math.max(4, Math.round(basePixelSize * 0.75f));
             case 3 -> Math.max(4, Math.round(basePixelSize * 0.5f));
+            case 4 -> Math.max(4, Math.round(basePixelSize * 0.375f));
             default -> basePixelSize;
         };
         int depthSlices = switch (quality) {
             case 0 -> Math.max(8, Math.round(baseDepthSlices * (5.0f / 6.0f)));
             case 2 -> Math.min(128, Math.round(baseDepthSlices * (4.0f / 3.0f)));
             case 3 -> Math.min(128, Math.round(baseDepthSlices * (5.0f / 3.0f)));
+            case 4 -> Math.min(128, Math.round(baseDepthSlices * 2.0f));
             default -> baseDepthSlices;
         };
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
@@ -219,7 +221,7 @@ public final class RtVolumetrics {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
             case 0 -> Math.max(configured, 2);
             case 2 -> Math.max(configured, 6);
-            case 3 -> Math.max(configured, 8);
+            case 3, 4 -> Math.max(configured, 8);
             default -> Math.max(configured, 4);
         };
     }
