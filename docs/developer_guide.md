@@ -101,10 +101,11 @@ Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
 `/20 × 40`, High uses `/12 × 64`, Ultra uses `/8 × 80`, and Ultra+ uses
 `/6 × 96`. Their minimum local-emitter proposal counts are 2, 4, 6, 8, and 8.
-At rest, the finalized reservoir traces one visibility ray. During motion, Performance,
-Balanced/High, Ultra, and Ultra+ average 1, 2, 3, and 4 independently shadowed emitter
-reservoirs respectively. Ultra+ has roughly twice Ultra's froxel count and is intended
-for very high-end GPUs. The advanced
+Performance, Balanced, High, Ultra, and Ultra+ average 2, 3, 4, 6, and 8 independently
+shadowed emitter reservoirs per froxel in both moving and stationary views. The emitter
+receiver is always the stable cell centre/Z midpoint; only low-frequency medium density
+keeps temporal jitter. Ultra+ has roughly twice Ultra's froxel count and is intended for
+very high-end GPUs. The advanced
 `grid-pixel-size` and `depth-slices` values define the Balanced baseline and all
 presets scale from it. High, Ultra, and Ultra+ cap history weight at 0.90, 0.78,
 and 0.65 respectively, trading their real spatial resolution for less stationary
@@ -136,9 +137,9 @@ screen displacement measured in froxel cells lower history confidence; this prev
 denser lower-altitude fog, underwater caustic bands, or sharp sun halos from lagging
 behind camera translation/rotation. During motion, injection switches from temporal
 sub-cell jitter to coherent cell-centre/Z-midpoint samples and a world-stable emitter
-proposal stream. Quality-dependent in-motion emitter supersampling attacks the dominant
-remaining variance with additional short visibility rays rather than screen-space blur.
-Reprojected history retains at least 90% confidence; an asymmetric current-frame ceiling
+proposal stream. Quality-dependent emitter supersampling is identical in motion and at
+rest, attacking the dominant variance with additional short visibility rays rather than
+screen-space blur. Reprojected history retains at least 90% confidence; an asymmetric current-frame ceiling
 removes stale bright shafts while preserving low history values that suppress noisy
 bright estimates. The same sharp centre-weighted 3×3 filter is
 used in motion and at rest, so camera movement no longer changes apparent detail.

@@ -157,7 +157,6 @@ public float4 injectFroxel(uint3 index) {
     uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u
             ^ worldPush.frameIndex * 26699u;
     seed = pcg(seed);
-    uint proposalSeed = pcg(seed);
 
     // Temporal jitter gives stationary views sub-cell supersampling, but reducing history during camera
     // motion would expose those changing one-frame samples as noise. Use coherent cell centres while the
@@ -174,6 +173,17 @@ public float4 injectFroxel(uint3 index) {
     froxelRay(cellCoordinate, rayOrigin, viewRay);
     float3 samplePosition = rayOrigin + viewRay * distance;
     bool cameraVisibleSample = distance <= froxelOpaqueDistance(cellCoordinate);
+
+    // Local emitters use a fixed centre/midpoint receiver even while material density keeps temporal
+    // sub-cell jitter. This makes the expensive shadowed estimator bit-stable between moving and still
+    // cameras; only the low-frequency medium sample continues to supersample over time.
+    float2 emitterCoordinate = float2(index.xy) + 0.5;
+    float3 emitterOrigin;
+    float3 emitterViewRay;
+    froxelRay(emitterCoordinate, emitterOrigin, emitterViewRay);
+    float emitterDistance = 0.5 * (nearDistance + farDistance);
+    float3 emitterPosition = emitterOrigin + emitterViewRay * emitterDistance;
+    bool emitterCameraVisible = emitterDistance <= froxelOpaqueDistance(emitterCoordinate);
 
     float extinction = froxelExtinction(samplePosition);
     if (extinction <= 1.0e-7) {
@@ -192,22 +202,20 @@ public float4 injectFroxel(uint3 index) {
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
     float3 emitter = float3(0.0);
-    if (cameraVisibleSample) {
-        uint sampleCount = cameraMoving ? froxelMotionEmitterSamples() : 1u;
-        int3 stableCell = int3(floor(samplePosition + worldPush.fogWorld.xyz));
+    if (emitterCameraVisible) {
+        // Use the same world-stable multi-reservoir estimator in motion and at rest. Temporal accumulation
+        // can refine it further, but no longer changes which base estimator the player sees.
+        uint sampleCount = froxelEmitterSamples();
+        int3 stableCell = int3(floor(emitterPosition + worldPush.fogWorld.xyz));
         uint stableBase = uint(stableCell.x) * 73856093u
                 ^ uint(stableCell.y) * 19349663u ^ uint(stableCell.z) * 83492791u;
         for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
-            uint emitterSeed = cameraMoving
-                    ? stableBase ^ (lightSample + 1u) * 0x85ebca6bu : seed;
-            uint emitterProposalSeed = cameraMoving
-                    ? stableBase ^ (lightSample + 1u) * 0xc2b2ae35u : proposalSeed;
-            if (cameraMoving) {
-                emitterSeed = pcg(emitterSeed);
-                emitterProposalSeed = pcg(emitterProposalSeed);
-            }
+            uint emitterSeed = stableBase ^ (lightSample + 1u) * 0x85ebca6bu;
+            uint emitterProposalSeed = stableBase ^ (lightSample + 1u) * 0xc2b2ae35u;
+            emitterSeed = pcg(emitterSeed);
+            emitterProposalSeed = pcg(emitterProposalSeed);
             emitter += froxelEmitterLighting(
-                    samplePosition, viewRay, emitterSeed, emitterProposalSeed);
+                    emitterPosition, emitterViewRay, emitterSeed, emitterProposalSeed);
         }
         emitter /= float(sampleCount);
     }

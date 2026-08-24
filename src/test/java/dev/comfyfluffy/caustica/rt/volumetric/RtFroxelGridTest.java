@@ -85,14 +85,14 @@ final class RtFroxelGridTest {
     }
 
     @Test
-    void qualityPresetsIncreaseInMotionEmitterSamples() {
+    void qualityPresetsIncreaseEmitterSamplesInAllCameraStates() {
         CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
         int oldQuality = quality.value();
         try {
-            int[] expected = {1, 2, 2, 3, 4};
+            int[] expected = {2, 3, 4, 6, 8};
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
-                assertEquals(expected[preset], RtVolumetrics.effectiveMotionEmitterSamples());
+                assertEquals(expected[preset], RtVolumetrics.effectiveEmitterSamples());
             }
         } finally {
             quality.set(oldQuality);
