@@ -85,6 +85,21 @@ final class RtFroxelGridTest {
     }
 
     @Test
+    void highResolutionPresetsCapTemporalSoftening() {
+        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
+        int oldQuality = quality.value();
+        try {
+            float[] expected = {0.95f, 0.95f, 0.92f, 0.86f, 0.80f};
+            for (int preset = 0; preset < expected.length; preset++) {
+                quality.set(preset);
+                assertEquals(expected[preset], RtVolumetrics.effectiveTemporalWeight(0.95f), 1.0e-6f);
+            }
+        } finally {
+            quality.set(oldQuality);
+        }
+    }
+
+    @Test
     void rejectsInvalidGridAndDepthParameters() {
         assertThrows(IllegalArgumentException.class,
                 () -> RtFroxelGrid.forRenderSize(0, 720, 16, 48));

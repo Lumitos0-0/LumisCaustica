@@ -85,7 +85,8 @@ public final class RtVolumetrics {
      */
     public FrameData prepareFrame(long frameIndex, int rebaseX, int rebaseY, int rebaseZ,
                                   int seaLevel, boolean submerged, float timeSeconds,
-                                  float cameraDeltaX, float cameraDeltaY, float cameraDeltaZ) {
+                                  float cameraDeltaX, float cameraDeltaY, float cameraDeltaZ,
+                                  float cameraRotationDelta) {
         requireReady();
         float maxDistance = CausticaConfig.Rt.Volumetrics.MAX_DISTANCE.value();
         float distribution = CausticaConfig.Rt.Volumetrics.DEPTH_EXPONENT.value();
@@ -98,7 +99,8 @@ public final class RtVolumetrics {
         float causticStrength = 0.0f;
         float noiseAmount = CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT.value();
         float noiseScale = CausticaConfig.Rt.Volumetrics.NOISE_SCALE.value();
-        float temporalWeight = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value();
+        float temporalWeight = effectiveTemporalWeight(
+                CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value());
         int localCandidates = effectiveLocalLightCandidates();
 
         if (submerged) {
@@ -140,7 +142,7 @@ public final class RtVolumetrics {
                 new Float4(baseHeightRebased, noiseAmount, noiseScale, temporalWeight),
                 new Float4(wrappedWorldCoordinate(rebaseX), rebaseY,
                         wrappedWorldCoordinate(rebaseZ), timeSeconds),
-                new Float4(directionalStrength, directionalFocus, causticStrength, 0.0f),
+                new Float4(directionalStrength, directionalFocus, causticStrength, cameraRotationDelta),
                 enabled, writeIndex, signature, frameIndex);
     }
 
@@ -209,6 +211,15 @@ public final class RtVolumetrics {
             default -> baseDepthSlices;
         };
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
+    }
+
+    static float effectiveTemporalWeight(float configured) {
+        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
+            case 2 -> Math.min(configured, 0.92f);
+            case 3 -> Math.min(configured, 0.86f);
+            case 4 -> Math.min(configured, 0.80f);
+            default -> configured;
+        };
     }
 
     static int effectiveLocalLightCandidates() {

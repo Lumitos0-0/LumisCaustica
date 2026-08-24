@@ -159,14 +159,16 @@ public float4 injectFroxel(uint3 index) {
     seed = pcg(seed);
     uint proposalSeed = pcg(seed);
 
-    // Jitter inside the complete froxel so temporal accumulation supersamples one continuous 3D field.
-    // Scene depth must not truncate the field itself: doing so creates empty rectangular columns that make
-    // the frustum grid visible. Depth is used only below to suppress local emitters sampled behind the
-    // first camera surface.
-    float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
+    // Temporal jitter gives stationary views sub-cell supersampling, but reducing history during camera
+    // motion would expose those changing one-frame samples as noise. Use coherent cell centres while the
+    // camera moves; high/ultra grid resolution and the spatial kernel provide the in-motion reconstruction.
+    bool cameraMoving = length(worldPush.camDelta) > 0.002 || worldPush.fogLighting.w > 0.001;
+    float2 cellOffset = cameraMoving ? float2(0.5) : float2(rndf(seed), rndf(seed));
+    float2 cellCoordinate = float2(index.xy) + cellOffset;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
-    float distance = lerp(nearDistance, farDistance, rndf(seed));
+    float distanceFraction = cameraMoving ? 0.5 : rndf(seed);
+    float distance = lerp(nearDistance, farDistance, distanceFraction);
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
@@ -186,11 +188,24 @@ public float4 injectFroxel(uint3 index) {
     float3 skyVisibility;
     float3 directional = worldPush.fogLighting.x
             * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
+    // Freeze the local-light proposal stream in world space during motion as well. This removes the other
+    // major per-frame noise source without changing the stationary temporal estimator.
+    uint emitterSeed = seed;
+    uint emitterProposalSeed = proposalSeed;
+    if (cameraMoving) {
+        int3 stableCell = int3(floor(samplePosition + worldPush.fogWorld.xyz));
+        emitterSeed = uint(stableCell.x) * 73856093u
+                ^ uint(stableCell.y) * 19349663u ^ uint(stableCell.z) * 83492791u;
+        emitterProposalSeed = emitterSeed ^ 0x9e3779b9u;
+        emitterSeed = pcg(emitterSeed);
+        emitterProposalSeed = pcg(emitterProposalSeed);
+    }
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
     float3 emitter = cameraVisibleSample
-            ? froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed) : float3(0.0);
+            ? froxelEmitterLighting(samplePosition, viewRay, emitterSeed, emitterProposalSeed)
+            : float3(0.0);
     float3 incident = ambient * skyVisibility + directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
