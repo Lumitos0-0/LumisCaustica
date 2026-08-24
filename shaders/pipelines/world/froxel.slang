@@ -192,9 +192,9 @@ public bool froxelReprojectHistory(float3 position, out float4 history,
     }
     float2 motionInCells = (previousUv - currentUv) * float2(worldPush.froxelGrid.xy);
     // Reprojection is geometrically correct, but a camera-aligned volume changes its world-space footprint
-    // under rotation. Heavy history across multiple froxel cells therefore appears to lag behind the sun
-    // and other sharp shafts. Keep full history at rest and fade it rapidly as the grid moves on screen.
-    reprojectionConfidence = exp(-2.0 * length(motionInCells));
+    // under rotation. Keep most of the history so moving frames retain stationary quality; the injection
+    // pass clips that history tightly around the coherent current sample to prevent old shafts from lagging.
+    reprojectionConfidence = 0.9 + 0.1 * exp(-2.0 * length(motionInCells));
     float3 coordinate = float3(previousUv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 0.5);
     history = froxelTrilinearHistory(coordinate);
     return true;

@@ -132,12 +132,12 @@ records as surface path tracing. Temporal history radiance is normalized by the
 current/history extinction ratio. Vertical velocity and the current-to-previous
 screen displacement measured in froxel cells lower history confidence; this prevents
 denser lower-altitude fog, underwater caustic bands, or sharp sun halos from lagging
-behind camera translation/rotation. While that confidence is low, injection switches
-from temporal sub-cell jitter to coherent cell-centre/Z-midpoint samples and a
-world-stable emitter proposal stream. The spatial pass simultaneously widens RGB to
-a 5×5 binomial kernel while keeping extinction on the tight 3×3 kernel. This hides
-one-frame lighting variance during motion without making fog density breathe; at rest
-the RGB kernel returns to a sharp centre-weighted 3×3.
+behind camera translation/rotation. During motion, injection switches from temporal
+sub-cell jitter to coherent cell-centre/Z-midpoint samples and a world-stable emitter
+proposal stream. Reprojected history retains at least 90% confidence; an asymmetric
+current-frame ceiling removes stale bright shafts while preserving low history values
+that suppress noisy bright estimates. The same sharp centre-weighted 3×3 filter is
+used in motion and at rest, so camera movement no longer changes apparent detail.
 
 While submerged, the froxel extinction coefficient represents particulate
 out-scattering; the path tracer continues

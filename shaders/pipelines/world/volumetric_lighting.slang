@@ -221,6 +221,12 @@ public float4 injectFroxel(uint3 index) {
             // ascending carries denser, brighter lower-altitude fog upward until the camera stops.
             float densityRatio = current.a / max(history.a, 1.0e-6);
             history.rgb *= clamp(densityRatio, 0.0, 4.0);
+            if (cameraMoving) {
+                // Keep low history values available to suppress a noisy bright current estimate, but cap
+                // stale bright history immediately when the current shaft becomes dark or occluded.
+                float3 motionCeiling = current.rgb * 1.25 + float3(0.10);
+                history.rgb = min(history.rgb, motionCeiling);
+            }
             float3 historyCeiling = cameraVisibleSample
                     ? current.rgb * 4.0 + float3(8.0)
                     : current.rgb * 1.25 + float3(0.1);
