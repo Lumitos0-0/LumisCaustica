@@ -104,11 +104,10 @@ Balanced quality uses
 The finalized reservoir still traces one visibility ray. Ultra+ has roughly twice
 Ultra's froxel count and is intended for very high-end GPUs. The advanced
 `grid-pixel-size` and `depth-slices` values define the Balanced baseline and all
-presets scale from it. High, Ultra, and Ultra+ cap history weight at 0.92, 0.86,
-and 0.80 respectively, trading their real spatial resolution for less stationary
-softening. Deterministic celestial visibility, temporal accumulation, and a
-centre-weighted 3×3 filter denoise the field without changing its continuous
-quadrilinear reconstruction or washing out shaft boundaries.
+presets scale from it. High, Ultra, and Ultra+ cap history weight at 0.90, 0.78,
+and 0.65 respectively, trading their real spatial resolution for less stationary
+softening. Deterministic celestial visibility and temporal accumulation denoise the
+field without changing its continuous quadrilinear reconstruction.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -135,8 +134,13 @@ screen displacement measured in froxel cells lower history confidence; this prev
 denser lower-altitude fog, underwater caustic bands, or sharp sun halos from lagging
 behind camera translation/rotation. While that confidence is low, injection switches
 from temporal sub-cell jitter to coherent cell-centre/Z-midpoint samples and a
-world-stable emitter proposal stream, avoiding the noisy quality drop during motion. While submerged, the froxel
-extinction coefficient represents particulate out-scattering; the path tracer continues
+world-stable emitter proposal stream. The spatial pass simultaneously widens RGB to
+a 5×5 binomial kernel while keeping extinction on the tight 3×3 kernel. This hides
+one-frame lighting variance during motion without making fog density breathe; at rest
+the RGB kernel returns to a sharp centre-weighted 3×3.
+
+While submerged, the froxel extinction coefficient represents particulate
+out-scattering; the path tracer continues
 to own colored water absorption, so the two are not double-counted. Directional light is attenuated from the
 water surface to each froxel and modulated by the analytic wave-Jacobian caustic already
 used on underwater receivers. This projects animated focusing bands through the water

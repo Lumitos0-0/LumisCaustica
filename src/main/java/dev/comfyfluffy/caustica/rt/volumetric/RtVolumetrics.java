@@ -215,9 +215,9 @@ public final class RtVolumetrics {
 
     static float effectiveTemporalWeight(float configured) {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 2 -> Math.min(configured, 0.92f);
-            case 3 -> Math.min(configured, 0.86f);
-            case 4 -> Math.min(configured, 0.80f);
+            case 2 -> Math.min(configured, 0.90f);
+            case 3 -> Math.min(configured, 0.78f);
+            case 4 -> Math.min(configured, 0.65f);
             default -> configured;
         };
     }
