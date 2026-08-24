@@ -103,8 +103,10 @@ Balanced, High, Ultra, and Ultra+ use `/18 × 44`, `/14 × 56`, `/10 × 72`,
 independently sampled and shadowed emitter reservoirs per froxel in both moving and
 stationary views. This shifts the quality budget away from repeated light rays and
 into real XYZ volume resolution. The advanced grid settings remain the scale baseline
-for every preset. High, Ultra, and Ultra+ cap history at 0.90, 0.78, and 0.65 to retain
-more of that spatial detail.
+for every preset. History weight `w` averages `(1 + w) / (1 - w)` frames, and the
+default 0.75 averages about seven, so a new light or shadow settles in roughly ten
+frames instead of smearing the volume through repeated trilinear resampling. High,
+Ultra, and Ultra+ cap it at 0.65, 0.55, and 0.45 to retain more of that spatial detail.
 Deterministic celestial visibility, temporal accumulation, and a centre-weighted
 3×3 filter denoise the field without changing its continuous quadrilinear reconstruction.
 

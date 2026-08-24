@@ -90,12 +90,35 @@ final class RtFroxelGridTest {
         int oldQuality = quality.value();
         try {
             int[] emitterSamples = {1, 1, 2, 2, 3};
-            float[] historyWeights = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f};
+            // The setting clamps at 0.90, so that ceiling is the longest history any preset can start from.
+            float configured = 0.90f;
+            float[] historyWeights = {configured, configured, 0.65f, 0.55f, 0.45f};
             for (int preset = 0; preset < emitterSamples.length; preset++) {
                 quality.set(preset);
                 assertEquals(emitterSamples[preset], RtVolumetrics.effectiveEmitterSamples());
                 assertEquals(historyWeights[preset],
-                        RtVolumetrics.effectiveTemporalWeight(0.95f), 1.0e-6f);
+                        RtVolumetrics.effectiveTemporalWeight(configured), 1.0e-6f);
+            }
+        } finally {
+            quality.set(oldQuality);
+        }
+    }
+
+    @Test
+    void defaultHistoryWeightKeepsTheAverageShort() {
+        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
+        int oldQuality = quality.value();
+        // defaultValue() is the shipped setting, independent of any local -D or config file override.
+        float configured = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.defaultValue();
+        assertEquals(0.75f, configured, 1.0e-6f);
+        try {
+            for (int preset = 0; preset <= 4; preset++) {
+                quality.set(preset);
+                float weight = RtVolumetrics.effectiveTemporalWeight(configured);
+                assertTrue(weight <= configured);
+                // An exponential history of weight w averages (1 + w) / (1 - w) frames. Longer averages
+                // delay lighting changes and blur the volume through repeated trilinear resampling.
+                assertTrue((1.0f + weight) / (1.0f - weight) <= 7.0f + 1.0e-4f);
             }
         } finally {
             quality.set(oldQuality);

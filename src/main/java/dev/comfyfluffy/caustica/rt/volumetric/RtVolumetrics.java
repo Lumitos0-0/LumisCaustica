@@ -217,11 +217,16 @@ public final class RtVolumetrics {
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
     }
 
+    /**
+     * History weight actually sent to the shader. Higher presets resolve the same volume with more froxels
+     * and more emitter reservoirs per froxel, so they need less frame averaging to stay noise-free and cap
+     * the weight to keep that resolution visible instead of blurring it back out.
+     */
     static float effectiveTemporalWeight(float configured) {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 2 -> Math.min(configured, 0.90f);
-            case 3 -> Math.min(configured, 0.78f);
-            case 4 -> Math.min(configured, 0.65f);
+            case 2 -> Math.min(configured, 0.65f);
+            case 3 -> Math.min(configured, 0.55f);
+            case 4 -> Math.min(configured, 0.45f);
             default -> configured;
         };
     }
