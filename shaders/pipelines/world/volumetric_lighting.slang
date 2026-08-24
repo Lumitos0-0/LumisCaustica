@@ -7,8 +7,10 @@ import world_core;
 import bindings;
 import sky;
 import math;
+import medium;
 import trace;
 import lighting;
+import water;
 import froxel;
 
 public struct VolumeReservoir {
@@ -115,9 +117,31 @@ public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
     // The deterministic body-centre ray is coherent; the existing Gaussian/temporal passes soften it at
     // the volume's intended frequency without changing surface-light penumbrae.
     float3 lightDirection = celestialLight.dir;
-    skyVisibility = visibility(samplePosition, lightDirection, 10000.0).transmittance;
-    float3 visibleIlluminance = celestialLight.illuminance * skyVisibility;
+    VisibilityResult shadow = visibility(samplePosition, lightDirection, 10000.0);
+    skyVisibility = shadow.transmittance;
+    float causticFocus = 1.0;
+    if (froxelUnderwater() && shadow.waterHitT > 0.0) {
+        // The camera path already accounts for water absorption. This is the independent light-to-sample
+        // path from the surface, attenuated through water before scattering toward the viewer.
+        skyVisibility *= exp(-waterExtinction(worldPush.waterParams.xyz) * shadow.waterHitT);
+        if ((worldPush.flags & 16u) != 0u && worldPush.fogLighting.z > 0.0) {
+            float3 surfacePosition = samplePosition + lightDirection * shadow.waterHitT;
+            float pattern = waterCaustic(surfacePosition, lightDirection, shadow.waterHitT);
+            causticFocus = max(0.0, lerp(1.0, pattern, worldPush.fogLighting.z));
+        }
+    }
+    float3 visibleIlluminance = celestialLight.illuminance * skyVisibility * causticFocus;
     return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogLighting.y);
+}
+
+public float3 froxelScatteringColor() {
+    if (!froxelUnderwater()) {
+        return worldPush.fogOptics.rgb;
+    }
+    float3 biomeTint = max(worldPush.waterParams.xyz, float3(1.0e-4));
+    biomeTint /= max(biomeTint.r, max(biomeTint.g, biomeTint.b));
+    // Preserve biome identity while maintaining the cyan-blue particulate scattering expected underwater.
+    return lerp(float3(0.25, 0.65, 1.0), biomeTint, 0.35);
 }
 
 public float3 clampFroxelSource(float3 source) {
@@ -168,7 +192,7 @@ public float4 injectFroxel(uint3 index) {
     float3 emitter = cameraVisibleSample
             ? froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed) : float3(0.0);
     float3 incident = ambient * skyVisibility + directional + emitter;
-    float3 source = clampFroxelSource(extinction * worldPush.fogOptics.rgb * incident);
+    float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
 
     if (froxelHistoryValid()) {

@@ -19,6 +19,10 @@ public bool froxelHistoryValid() {
     return (uint(worldPush.froxelGrid.w) & 2u) != 0u;
 }
 
+public bool froxelUnderwater() {
+    return (uint(worldPush.froxelGrid.w) & 4u) != 0u;
+}
+
 public uint froxelLocalLightCandidates() {
     return (uint(worldPush.froxelGrid.w) >> 8u) & 0xffu;
 }

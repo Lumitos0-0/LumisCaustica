@@ -53,6 +53,8 @@ public final class RtVideoOptions {
             fogDensity(),
             lightShaftStrength(),
             lightShaftFocus(),
+            underwaterFog(),
+            underwaterCaustics(),
             fogQuality(),
             dlssQuality()
         ));
@@ -179,6 +181,32 @@ public final class RtVideoOptions {
                     Component.literal(percent + "%")),
             new OptionInstance.IntRange(0, 90),
             Math.clamp(Math.round(setting.value() * 100.0f), 0, 90),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    private static OptionInstance<Integer> underwaterFog() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.UNDERWATER_SCATTERING;
+        return new OptionInstance<>(
+            "caustica.options.rt.underwaterFog",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.underwaterFog.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption,
+                    Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 150),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 150),
+            percent -> setting.set(percent / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> underwaterCaustics() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.UNDERWATER_CAUSTIC_STRENGTH;
+        return new OptionInstance<>(
+            "caustica.options.rt.underwaterCaustics",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.underwaterCaustics.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption,
+                    Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 300),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 300),
             percent -> setting.set(percent / 100.0f));
     }
 

@@ -95,15 +95,28 @@ public final class RtVolumetrics {
         float anisotropy = CausticaConfig.Rt.Volumetrics.ANISOTROPY.value();
         float directionalStrength = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_STRENGTH.value();
         float directionalFocus = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_FOCUS.value();
+        float causticStrength = 0.0f;
         float noiseAmount = CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT.value();
         float noiseScale = CausticaConfig.Rt.Volumetrics.NOISE_SCALE.value();
         float temporalWeight = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value();
         int localCandidates = effectiveLocalLightCandidates();
 
-        boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value() && !submerged;
+        if (submerged) {
+            maxDistance = CausticaConfig.Rt.Volumetrics.UNDERWATER_MAX_DISTANCE.value();
+            extinction = CausticaConfig.Rt.Volumetrics.UNDERWATER_SCATTERING.value();
+            heightFalloff = 0.0f;
+            albedo = 1.0f;
+            anisotropy = CausticaConfig.Rt.Volumetrics.UNDERWATER_ANISOTROPY.value();
+            directionalFocus = Math.max(directionalFocus, anisotropy);
+            causticStrength = CausticaConfig.Rt.Volumetrics.UNDERWATER_CAUSTIC_STRENGTH.value();
+            noiseAmount = Math.min(noiseAmount, 0.15f);
+            noiseScale = Math.max(noiseScale, 0.05f);
+        }
+
+        boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value();
         long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
-                albedo, anisotropy, directionalStrength, directionalFocus,
-                noiseAmount, noiseScale, temporalWeight, localCandidates, seaLevel);
+                albedo, anisotropy, directionalStrength, directionalFocus, causticStrength,
+                noiseAmount, noiseScale, temporalWeight, localCandidates, seaLevel, submerged);
         float cameraTravel2 = cameraDeltaX * cameraDeltaX + cameraDeltaY * cameraDeltaY
                 + cameraDeltaZ * cameraDeltaZ;
         boolean historyValid = enabled && lastRecordedFrame == frameIndex - 1
@@ -112,6 +125,9 @@ public final class RtVolumetrics {
         int flags = enabled ? 1 : 0;
         if (historyValid) {
             flags |= 2;
+        }
+        if (submerged) {
+            flags |= 4;
         }
         flags |= (Math.clamp(localCandidates, 0, 255) << 8);
         int writeIndex = (int) (frameIndex & 1L);
@@ -124,7 +140,7 @@ public final class RtVolumetrics {
                 new Float4(baseHeightRebased, noiseAmount, noiseScale, temporalWeight),
                 new Float4(wrappedWorldCoordinate(rebaseX), rebaseY,
                         wrappedWorldCoordinate(rebaseZ), timeSeconds),
-                new Float4(directionalStrength, directionalFocus, 0.0f, 0.0f),
+                new Float4(directionalStrength, directionalFocus, causticStrength, 0.0f),
                 enabled, writeIndex, signature, frameIndex);
     }
 
@@ -223,13 +239,15 @@ public final class RtVolumetrics {
 
     private static long opticalSignature(float maxDistance, float distribution, float extinction,
                                          float heightFalloff, float albedo, float anisotropy,
-                                         float directionalStrength, float directionalFocus,
+                                         float directionalStrength, float directionalFocus, float causticStrength,
                                          float noiseAmount, float noiseScale, float temporalWeight,
-                                         int localCandidates, int seaLevel) {
+                                         int localCandidates, int seaLevel, boolean submerged) {
         long hash = opticalSignature(maxDistance, distribution, extinction, heightFalloff, albedo,
-                anisotropy, directionalStrength, directionalFocus, noiseAmount, noiseScale, temporalWeight);
+                anisotropy, directionalStrength, directionalFocus, causticStrength,
+                noiseAmount, noiseScale, temporalWeight);
         hash = (hash ^ Integer.toUnsignedLong(localCandidates)) * 0x100000001b3L;
-        return (hash ^ Integer.toUnsignedLong(seaLevel)) * 0x100000001b3L;
+        hash = (hash ^ Integer.toUnsignedLong(seaLevel)) * 0x100000001b3L;
+        return (hash ^ (submerged ? 1L : 0L)) * 0x100000001b3L;
     }
 
     private void requireReady() {

@@ -90,8 +90,8 @@ public struct WorldPush {
     public float    preExposure;
 
     // ---- Camera-frustum participating media.
-    // xyz dimensions; w bit 0 enables the pass, bit 1 validates temporal history, bits 8..15 are the
-    // number of block-emitter RIS candidates used per froxel.
+    // xyz dimensions; w bit 0 enables the pass, bit 1 validates temporal history, bit 2 selects water,
+    // and bits 8..15 are the number of block-emitter RIS candidates used per froxel.
     public int4     froxelGrid;
     // x maximum camera-ray distance (blocks), y depth-distribution exponent,
     // z base extinction coefficient (1/block), w exponential height falloff (1/block).
@@ -101,7 +101,7 @@ public struct WorldPush {
     public float4   fogShape;
     // xyz converts rebased coordinates into a small world-stable noise domain; w is animation time.
     public float4   fogWorld;
-    public float4   fogLighting;      // x directional strength, y directional HG focus; zw reserved
+    public float4   fogLighting;      // x directional strength, y HG focus, z underwater caustic strength
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

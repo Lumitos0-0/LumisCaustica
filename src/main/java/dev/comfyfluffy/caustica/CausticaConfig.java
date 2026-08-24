@@ -100,6 +100,7 @@ public final class CausticaConfig {
                 " Camera-frustum froxel fog. quality: 0 performance, 1 balanced, 2 high, 3 ultra.\n"
                         + " grid-pixel-size and depth-slices define Balanced; other quality levels scale that baseline.\n"
                         + " directional-strength and directional-focus shape sun/moon shafts without changing density.\n"
+                        + " underwater-scattering and underwater-caustic-strength control submerged fog and beams.\n"
                         + " extinction is Beer-Lambert attenuation per block; max-distance and height values are blocks.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
@@ -586,6 +587,20 @@ public final class CausticaConfig {
             public static final FloatSetting DIRECTIONAL_FOCUS =
                     clampedFloat("caustica.rt.fogDirectionalFocus",
                             "volumetrics.directional-focus", 0.70f, 0.0f, 0.9f);
+            // Underwater uses scattering here while per-segment waterExtinction remains absorption. Keeping
+            // those coefficients separate avoids applying the path tracer's water absorption twice.
+            public static final FloatSetting UNDERWATER_SCATTERING =
+                    clampedFloat("caustica.rt.underwaterFog",
+                            "volumetrics.underwater-scattering", 0.025f, 0.0f, 0.15f);
+            public static final FloatSetting UNDERWATER_MAX_DISTANCE =
+                    clampedFloat("caustica.rt.underwaterFogDistance",
+                            "volumetrics.underwater-max-distance", 64.0f, 8.0f, 256.0f);
+            public static final FloatSetting UNDERWATER_ANISOTROPY =
+                    clampedFloat("caustica.rt.underwaterAnisotropy",
+                            "volumetrics.underwater-anisotropy", 0.78f, 0.0f, 0.9f);
+            public static final FloatSetting UNDERWATER_CAUSTIC_STRENGTH =
+                    clampedFloat("caustica.rt.underwaterCaustics",
+                            "volumetrics.underwater-caustic-strength", 1.0f, 0.0f, 3.0f);
             public static final FloatSetting HEIGHT_OFFSET =
                     finiteFloat("caustica.rt.fogHeightOffset", "volumetrics.height-offset", 16.0f);
             public static final FloatSetting HEIGHT_FALLOFF =

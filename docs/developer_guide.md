@@ -125,16 +125,22 @@ its visible segment without carving empty geometry-shaped columns into the volum
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
-records as surface path tracing. Temporal reprojection ping-pongs the injection
-volumes; camera cuts, skipped frames, medium changes, and optical-setting
-changes invalidate history.
+records as surface path tracing. While submerged, the froxel extinction coefficient
+represents particulate out-scattering; the path tracer continues to own colored water
+absorption, so the two are not double-counted. Directional light is attenuated from the
+water surface to each froxel and modulated by the analytic wave-Jacobian caustic already
+used on underwater receivers. This projects animated focusing bands through the water
+volume while retaining TLAS shadows. Temporal reprojection ping-pongs the injection
+volumes; camera cuts, skipped frames, medium changes, and optical-setting changes
+invalidate history.
 
 Runtime controls expose enable/disable, extinction, directional light-shaft strength,
 shaft focus, and the four quality presets. Strength multiplies only sun/moon
 in-scattering. Focus is a dedicated Henyey-Greenstein anisotropy that concentrates
 that scattering toward the celestial direction. Neither changes extinction, ambient
-fog, emissive blocks, or surface lighting. The complete `[volumetrics]` TOML surface
-also includes the Balanced grid baseline, depth
+fog, emissive blocks, or surface lighting. Underwater Fog controls particulate
+scattering and Water Caustics controls wave focusing in the submerged volume. The
+complete `[volumetrics]` TOML surface also includes the Balanced grid baseline, depth
 distribution, maximum distance, single-scattering albedo, Henyey-Greenstein
 anisotropy, height falloff, noise, temporal weight, and local-light candidate count.
 Moonlight uses a luminance-preserving cool BT.709 tint shared by the atmosphere LUT,
