@@ -43,11 +43,11 @@ final class RtFroxelGridTest {
             pixelSize.set(16);
             slices.set(48);
             int[][] expected = {
-                    {96, 54, 40},
-                    {120, 68, 48},
-                    {160, 90, 64},
-                    {240, 135, 80},
-                    {320, 180, 96}
+                    {107, 60, 44},
+                    {138, 78, 56},
+                    {192, 108, 72},
+                    {275, 155, 88},
+                    {384, 216, 112}
             };
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
@@ -89,7 +89,7 @@ final class RtFroxelGridTest {
         CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
         int oldQuality = quality.value();
         try {
-            int[] emitterSamples = {2, 3, 4, 6, 8};
+            int[] emitterSamples = {1, 1, 2, 2, 3};
             float[] historyWeights = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f};
             for (int preset = 0; preset < emitterSamples.length; preset++) {
                 quality.set(preset);

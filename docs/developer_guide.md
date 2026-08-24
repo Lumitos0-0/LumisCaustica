@@ -97,14 +97,14 @@ The fog implementation is split by responsibility:
 - `world/volumetric_inject.rgen.slang`, `world/volumetric_filter.rgen.slang`,
   and `world/volumetric_integrate.rgen.slang` are the GPU entry points.
 
-Balanced quality uses
-`ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, Ultra uses `/8 × 80`, and Ultra+ uses
-`/6 × 96`. Performance, Balanced, High, Ultra, and Ultra+ average 2, 3, 4, 6, and
-8 independently sampled and shadowed emitter reservoirs per froxel in both moving
-and stationary views. The advanced `grid-pixel-size` and `depth-slices` values define
-the Balanced baseline and all presets scale from it. High, Ultra, and Ultra+ cap
-history at 0.90, 0.78, and 0.65 to retain more of their real spatial detail.
+With the default `grid-pixel-size = 16` and `depth-slices = 48`, Performance,
+Balanced, High, Ultra, and Ultra+ use `/18 × 44`, `/14 × 56`, `/10 × 72`,
+`/7 × 88`, and `/5 × 112` respectively. They average 1, 1, 2, 2, and 3
+independently sampled and shadowed emitter reservoirs per froxel in both moving and
+stationary views. This shifts the quality budget away from repeated light rays and
+into real XYZ volume resolution. The advanced grid settings remain the scale baseline
+for every preset. High, Ultra, and Ultra+ cap history at 0.90, 0.78, and 0.65 to retain
+more of that spatial detail.
 Deterministic celestial visibility, temporal accumulation, and a centre-weighted
 3×3 filter denoise the field without changing its continuous quadrilinear reconstruction.
 

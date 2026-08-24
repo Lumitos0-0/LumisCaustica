@@ -199,17 +199,19 @@ public final class RtVolumetrics {
         int basePixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE.value();
         int baseDepthSlices = CausticaConfig.Rt.Volumetrics.DEPTH_SLICES.value();
         int pixelSize = switch (quality) {
-            case 0 -> Math.max(4, Math.round(basePixelSize * 1.25f));
-            case 2 -> Math.max(4, Math.round(basePixelSize * 0.75f));
-            case 3 -> Math.max(4, Math.round(basePixelSize * 0.5f));
-            case 4 -> Math.max(4, Math.round(basePixelSize * 0.375f));
+            case 0 -> Math.max(4, Math.round(basePixelSize * 1.125f));
+            case 1 -> Math.max(4, Math.round(basePixelSize * 0.875f));
+            case 2 -> Math.max(4, Math.round(basePixelSize * 0.625f));
+            case 3 -> Math.max(4, Math.round(basePixelSize * 0.4375f));
+            case 4 -> Math.max(4, Math.round(basePixelSize * 0.3125f));
             default -> basePixelSize;
         };
         int depthSlices = switch (quality) {
-            case 0 -> Math.max(8, Math.round(baseDepthSlices * (5.0f / 6.0f)));
-            case 2 -> Math.min(128, Math.round(baseDepthSlices * (4.0f / 3.0f)));
-            case 3 -> Math.min(128, Math.round(baseDepthSlices * (5.0f / 3.0f)));
-            case 4 -> Math.min(128, Math.round(baseDepthSlices * 2.0f));
+            case 0 -> Math.max(8, Math.round(baseDepthSlices * (11.0f / 12.0f)));
+            case 1 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 6.0f)));
+            case 2 -> Math.min(128, Math.round(baseDepthSlices * 1.5f));
+            case 3 -> Math.min(128, Math.round(baseDepthSlices * (11.0f / 6.0f)));
+            case 4 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 3.0f)));
             default -> baseDepthSlices;
         };
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
@@ -226,12 +228,10 @@ public final class RtVolumetrics {
 
     static int effectiveEmitterSamples() {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0 -> 2;
-            case 1 -> 3;
-            case 2 -> 4;
-            case 3 -> 6;
-            case 4 -> 8;
-            default -> 2;
+            case 0, 1 -> 1;
+            case 2, 3 -> 2;
+            case 4 -> 3;
+            default -> 1;
         };
     }
 
