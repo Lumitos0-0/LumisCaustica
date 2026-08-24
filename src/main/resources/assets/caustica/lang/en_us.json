@@ -49,11 +49,12 @@
 	"caustica.options.rt.underwaterCaustics.tooltip": "Strength of animated wave-focusing patterns projected into underwater volumetric light shafts.",
 
 	"caustica.options.rt.fogQuality": "Fog Quality",
-	"caustica.options.rt.fogQuality.tooltip": "Controls froxel resolution, depth slices, and local-light samples. Higher settings produce sharper, more stable fog at a higher GPU cost.",
+	"caustica.options.rt.fogQuality.tooltip": "Controls froxel resolution, depth slices, and local-light samples. Ultra+ is intended for very high-end GPUs and has a large ray-tracing cost.",
 	"caustica.options.rt.fogQuality.0": "Performance",
 	"caustica.options.rt.fogQuality.1": "Balanced",
 	"caustica.options.rt.fogQuality.2": "High",
 	"caustica.options.rt.fogQuality.3": "Ultra",
+	"caustica.options.rt.fogQuality.4": "Ultra+",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",

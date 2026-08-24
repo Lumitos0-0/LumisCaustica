@@ -99,12 +99,14 @@ The fog implementation is split by responsibility:
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their minimum local
-emitter proposal counts are 2, 4, 6, and 8. The finalized reservoir still traces
-one visibility ray. The advanced `grid-pixel-size` and `depth-slices` values define
-the Balanced baseline and all presets scale from it. Deterministic celestial visibility, temporal
-accumulation, and a centre-weighted 3×3 filter denoise the field without changing
-its continuous quadrilinear reconstruction or washing out shaft boundaries.
+`/20 × 40`, High uses `/12 × 64`, Ultra uses `/8 × 80`, and Ultra+ uses
+`/6 × 96`. Performance, Balanced, High, Ultra, and Ultra+ average 2, 3, 4, 6, and
+8 independently sampled and shadowed emitter reservoirs per froxel in both moving
+and stationary views. The advanced `grid-pixel-size` and `depth-slices` values define
+the Balanced baseline and all presets scale from it. High, Ultra, and Ultra+ cap
+history at 0.90, 0.78, and 0.65 to retain more of their real spatial detail.
+Deterministic celestial visibility, temporal accumulation, and a centre-weighted
+3×3 filter denoise the field without changing its continuous quadrilinear reconstruction.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -135,7 +137,7 @@ volumes; camera cuts, skipped frames, medium changes, and optical-setting change
 invalidate history.
 
 Runtime controls expose enable/disable, extinction, directional light-shaft strength,
-shaft focus, and the four quality presets. Strength multiplies only sun/moon
+shaft focus, and the five quality presets. Strength multiplies only sun/moon
 in-scattering. Focus is a dedicated Henyey-Greenstein anisotropy that concentrates
 that scattering toward the celestial direction. Neither changes extinction, ambient
 fog, emissive blocks, or surface lighting. Underwater Fog controls particulate

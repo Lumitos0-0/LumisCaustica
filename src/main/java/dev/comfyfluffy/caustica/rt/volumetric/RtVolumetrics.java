@@ -98,8 +98,10 @@ public final class RtVolumetrics {
         float causticStrength = 0.0f;
         float noiseAmount = CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT.value();
         float noiseScale = CausticaConfig.Rt.Volumetrics.NOISE_SCALE.value();
-        float temporalWeight = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value();
+        float temporalWeight = effectiveTemporalWeight(
+                CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value());
         int localCandidates = effectiveLocalLightCandidates();
+        int emitterSamples = effectiveEmitterSamples();
 
         if (submerged) {
             maxDistance = CausticaConfig.Rt.Volumetrics.UNDERWATER_MAX_DISTANCE.value();
@@ -116,7 +118,8 @@ public final class RtVolumetrics {
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value();
         long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
                 albedo, anisotropy, directionalStrength, directionalFocus, causticStrength,
-                noiseAmount, noiseScale, temporalWeight, localCandidates, seaLevel, submerged);
+                noiseAmount, noiseScale, temporalWeight, localCandidates, emitterSamples,
+                seaLevel, submerged);
         float cameraTravel2 = cameraDeltaX * cameraDeltaX + cameraDeltaY * cameraDeltaY
                 + cameraDeltaZ * cameraDeltaZ;
         boolean historyValid = enabled && lastRecordedFrame == frameIndex - 1
@@ -130,6 +133,7 @@ public final class RtVolumetrics {
             flags |= 4;
         }
         flags |= (Math.clamp(localCandidates, 0, 255) << 8);
+        flags |= (Math.clamp(emitterSamples, 1, 15) << 16);
         int writeIndex = (int) (frameIndex & 1L);
         float baseHeightRebased = seaLevel + CausticaConfig.Rt.Volumetrics.HEIGHT_OFFSET.value() - rebaseY;
 
@@ -198,15 +202,37 @@ public final class RtVolumetrics {
             case 0 -> Math.max(4, Math.round(basePixelSize * 1.25f));
             case 2 -> Math.max(4, Math.round(basePixelSize * 0.75f));
             case 3 -> Math.max(4, Math.round(basePixelSize * 0.5f));
+            case 4 -> Math.max(4, Math.round(basePixelSize * 0.375f));
             default -> basePixelSize;
         };
         int depthSlices = switch (quality) {
             case 0 -> Math.max(8, Math.round(baseDepthSlices * (5.0f / 6.0f)));
             case 2 -> Math.min(128, Math.round(baseDepthSlices * (4.0f / 3.0f)));
             case 3 -> Math.min(128, Math.round(baseDepthSlices * (5.0f / 3.0f)));
+            case 4 -> Math.min(128, Math.round(baseDepthSlices * 2.0f));
             default -> baseDepthSlices;
         };
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
+    }
+
+    static float effectiveTemporalWeight(float configured) {
+        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
+            case 2 -> Math.min(configured, 0.90f);
+            case 3 -> Math.min(configured, 0.78f);
+            case 4 -> Math.min(configured, 0.65f);
+            default -> configured;
+        };
+    }
+
+    static int effectiveEmitterSamples() {
+        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
+            case 0 -> 2;
+            case 1 -> 3;
+            case 2 -> 4;
+            case 3 -> 6;
+            case 4 -> 8;
+            default -> 2;
+        };
     }
 
     static int effectiveLocalLightCandidates() {
@@ -219,7 +245,7 @@ public final class RtVolumetrics {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
             case 0 -> Math.max(configured, 2);
             case 2 -> Math.max(configured, 6);
-            case 3 -> Math.max(configured, 8);
+            case 3, 4 -> Math.max(configured, 8);
             default -> Math.max(configured, 4);
         };
     }
@@ -241,11 +267,13 @@ public final class RtVolumetrics {
                                          float heightFalloff, float albedo, float anisotropy,
                                          float directionalStrength, float directionalFocus, float causticStrength,
                                          float noiseAmount, float noiseScale, float temporalWeight,
-                                         int localCandidates, int seaLevel, boolean submerged) {
+                                         int localCandidates, int emitterSamples,
+                                         int seaLevel, boolean submerged) {
         long hash = opticalSignature(maxDistance, distribution, extinction, heightFalloff, albedo,
                 anisotropy, directionalStrength, directionalFocus, causticStrength,
                 noiseAmount, noiseScale, temporalWeight);
         hash = (hash ^ Integer.toUnsignedLong(localCandidates)) * 0x100000001b3L;
+        hash = (hash ^ Integer.toUnsignedLong(emitterSamples)) * 0x100000001b3L;
         hash = (hash ^ Integer.toUnsignedLong(seaLevel)) * 0x100000001b3L;
         return (hash ^ (submerged ? 1L : 0L)) * 0x100000001b3L;
     }

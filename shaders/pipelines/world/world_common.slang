@@ -91,7 +91,7 @@ public struct WorldPush {
 
     // ---- Camera-frustum participating media.
     // xyz dimensions; w bit 0 enables the pass, bit 1 validates temporal history, bit 2 selects water,
-    // and bits 8..15 are the number of block-emitter RIS candidates used per froxel.
+    // bits 8..15 are emitter RIS candidates, and bits 16..19 are emitter reservoirs per froxel.
     public int4     froxelGrid;
     // x maximum camera-ray distance (blocks), y depth-distribution exponent,
     // z base extinction coefficient (1/block), w exponential height falloff (1/block).

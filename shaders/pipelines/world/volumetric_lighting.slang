@@ -189,8 +189,21 @@ public float4 injectFroxel(uint3 index) {
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
-    float3 emitter = cameraVisibleSample
-            ? froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed) : float3(0.0);
+    float3 emitter = float3(0.0);
+    if (cameraVisibleSample) {
+        // The same multi-reservoir estimator runs in moving and stationary views. Temporal accumulation
+        // still refines it, but does not switch the renderer to a different base lighting algorithm.
+        uint sampleCount = froxelEmitterSamples();
+        for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
+            uint emitterSeed = seed ^ (lightSample + 1u) * 0x85ebca6bu;
+            uint emitterProposalSeed = proposalSeed ^ (lightSample + 1u) * 0xc2b2ae35u;
+            emitterSeed = pcg(emitterSeed);
+            emitterProposalSeed = pcg(emitterProposalSeed);
+            emitter += froxelEmitterLighting(
+                    samplePosition, viewRay, emitterSeed, emitterProposalSeed);
+        }
+        emitter /= float(sampleCount);
+    }
     float3 incident = ambient * skyVisibility + directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
