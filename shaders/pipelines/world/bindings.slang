@@ -20,6 +20,16 @@ import world_common;
 [[vk::binding(10, 0)]] public Sampler2D skyViewLut;
 [[vk::binding(11, 0)]] public Sampler2D transmittanceLut;
 
+// Camera-frustum participating media. volumeDepth stores the first primary interface distance so fog
+// stops at glass/water instead of leaking through it. The scattering pair ping-pongs temporal history;
+// froxelFiltered removes single-cell noise before froxelIntegrated stores cumulative
+// {in-scattering.rgb, transmittance} along each XY column.
+[[vk::binding(12, 0)]] [format("r32f")] public RWTexture2D<float> volumeDepth;
+[[vk::binding(13, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelScattering;
+[[vk::binding(14, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelHistory;
+[[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFiltered;
+[[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
+
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];

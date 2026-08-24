@@ -23,6 +23,7 @@ changes while the renderer is being built.
 - DLSS Frame Generation support (experimental)
 - HDR output
 - Dynamic entity rendering in the ray-traced scene
+- Frustum-froxel volumetric fog with ray-traced sun, moon, and emissive-block shadows
 - LabPBR-style material support
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations
 
@@ -80,7 +81,7 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
-- [ ] Nether/End sky, weather, volumetric fog/clouds
+- [ ] Nether/End sky, weather, volumetric clouds
 - [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD
 - [ ] ReSTIR

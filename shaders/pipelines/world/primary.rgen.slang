@@ -23,6 +23,10 @@ import water;
 import trace;
 import guides;
 
+// First camera-interface distance for volumetric composition. Kept separate from gDepth because clear
+// transmission deliberately replaces the DLSS guide depth with the destination behind glass/water.
+static float firstVolumeDistance = 0.0;
+
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
@@ -45,6 +49,10 @@ public PathSegment tracePrimary(PathSegment seg,
                                                showCelestial);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
+        if (bounce == 0) {
+            firstVolumeDistance = payload.hitT < 0.0
+                    ? worldPush.fogDistance.x : min(payload.hitT, worldPush.fogDistance.x);
+        }
 
         if (payload.hitT < 0.0) {
             if (bounce == 0) {
@@ -249,4 +257,5 @@ void main() {
     queue[pixelIndex] = packPathSegment(terminal, nextRecord);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
+    volumeDepth[pix] = max(firstVolumeDistance, 0.0);
 }
