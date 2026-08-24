@@ -197,7 +197,8 @@ public float4 injectFroxel(uint3 index) {
 
     if (froxelHistoryValid()) {
         float4 history;
-        if (froxelReprojectHistory(samplePosition, history)) {
+        float reprojectionConfidence;
+        if (froxelReprojectHistory(samplePosition, history, reprojectionConfidence)) {
             // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
             // Reprojection can land between Z slices whose world-space height differs from the current
@@ -214,7 +215,7 @@ public float4 injectFroxel(uint3 index) {
             // much faster than lateral motion. Reduce only that history confidence; at rest the configured
             // accumulation weight is unchanged and retains its denoising quality.
             float verticalConfidence = exp(-abs(worldPush.camDelta.y) * 8.0);
-            float historyWeight = worldPush.fogShape.w * verticalConfidence;
+            float historyWeight = worldPush.fogShape.w * verticalConfidence * reprojectionConfidence;
             current = lerp(current, history, historyWeight);
         }
     }

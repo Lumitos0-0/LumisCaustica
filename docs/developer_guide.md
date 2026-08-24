@@ -126,9 +126,10 @@ its visible segment without carving empty geometry-shaped columns into the volum
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
 records as surface path tracing. Temporal history radiance is normalized by the
-current/history extinction ratio, and vertical camera velocity lowers history confidence;
-this prevents denser lower-altitude fog or underwater caustic bands from being dragged
-upward while preserving the full denoising weight at rest. While submerged, the froxel
+current/history extinction ratio. Vertical velocity and the current-to-previous
+screen displacement measured in froxel cells lower history confidence; this prevents
+denser lower-altitude fog, underwater caustic bands, or sharp sun halos from lagging
+behind camera translation/rotation while preserving the full denoising weight at rest. While submerged, the froxel
 extinction coefficient represents particulate out-scattering; the path tracer continues
 to own colored water absorption, so the two are not double-counted. Directional light is attenuated from the
 water surface to each froxel and modulated by the analytic wave-Jacobian caustic already
