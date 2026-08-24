@@ -188,24 +188,29 @@ public float4 injectFroxel(uint3 index) {
     float3 skyVisibility;
     float3 directional = worldPush.fogLighting.x
             * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
-    // Freeze the local-light proposal stream in world space during motion as well. This removes the other
-    // major per-frame noise source without changing the stationary temporal estimator.
-    uint emitterSeed = seed;
-    uint emitterProposalSeed = proposalSeed;
-    if (cameraMoving) {
-        int3 stableCell = int3(floor(samplePosition + worldPush.fogWorld.xyz));
-        emitterSeed = uint(stableCell.x) * 73856093u
-                ^ uint(stableCell.y) * 19349663u ^ uint(stableCell.z) * 83492791u;
-        emitterProposalSeed = emitterSeed ^ 0x9e3779b9u;
-        emitterSeed = pcg(emitterSeed);
-        emitterProposalSeed = pcg(emitterProposalSeed);
-    }
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
-    float3 emitter = cameraVisibleSample
-            ? froxelEmitterLighting(samplePosition, viewRay, emitterSeed, emitterProposalSeed)
-            : float3(0.0);
+    float3 emitter = float3(0.0);
+    if (cameraVisibleSample) {
+        uint sampleCount = cameraMoving ? froxelMotionEmitterSamples() : 1u;
+        int3 stableCell = int3(floor(samplePosition + worldPush.fogWorld.xyz));
+        uint stableBase = uint(stableCell.x) * 73856093u
+                ^ uint(stableCell.y) * 19349663u ^ uint(stableCell.z) * 83492791u;
+        for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
+            uint emitterSeed = cameraMoving
+                    ? stableBase ^ (lightSample + 1u) * 0x85ebca6bu : seed;
+            uint emitterProposalSeed = cameraMoving
+                    ? stableBase ^ (lightSample + 1u) * 0xc2b2ae35u : proposalSeed;
+            if (cameraMoving) {
+                emitterSeed = pcg(emitterSeed);
+                emitterProposalSeed = pcg(emitterProposalSeed);
+            }
+            emitter += froxelEmitterLighting(
+                    samplePosition, viewRay, emitterSeed, emitterProposalSeed);
+        }
+        emitter /= float(sampleCount);
+    }
     float3 incident = ambient * skyVisibility + directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
