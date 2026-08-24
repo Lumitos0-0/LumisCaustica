@@ -268,7 +268,6 @@ public final class RtComposite {
     private final Matrix4f mvPrevProjView = new Matrix4f();
     private final Matrix4f mvCurProjView = new Matrix4f();
     private final Matrix4f mvPushMatrix = new Matrix4f();
-    private final Matrix4f fogPrevViewRotation = new Matrix4f();
     private final Matrix4f frameInvViewProj = new Matrix4f();
     private final BlockPos.MutableBlockPos cameraBlockPos = new BlockPos.MutableBlockPos();
     private double mvPrevCamX;
@@ -277,7 +276,6 @@ public final class RtComposite {
     private float mvCamDeltaX;
     private float mvCamDeltaY;
     private float mvCamDeltaZ;
-    private float fogRotationDelta;
     private boolean mvHasPrev;
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
@@ -1022,35 +1020,17 @@ public final class RtComposite {
             mvCamDeltaX = (float) (camX - mvPrevCamX);
             mvCamDeltaY = (float) (camY - mvPrevCamY);
             mvCamDeltaZ = (float) (camZ - mvPrevCamZ);
-            fogRotationDelta = rotationDelta(frameViewRotation, fogPrevViewRotation);
         } else {
             mvPushMatrix.set(mvCurProjView);
             mvCamDeltaX = 0f;
             mvCamDeltaY = 0f;
             mvCamDeltaZ = 0f;
-            fogRotationDelta = 0f;
         }
-        fogPrevViewRotation.set(frameViewRotation);
         mvPrevProjView.set(mvCurProjView);
         mvPrevCamX = camX;
         mvPrevCamY = camY;
         mvPrevCamZ = camZ;
         mvHasPrev = true;
-    }
-
-    private static float rotationDelta(Matrix4fc current, Matrix4fc previous) {
-        float d00 = current.m00() - previous.m00();
-        float d01 = current.m01() - previous.m01();
-        float d02 = current.m02() - previous.m02();
-        float d10 = current.m10() - previous.m10();
-        float d11 = current.m11() - previous.m11();
-        float d12 = current.m12() - previous.m12();
-        float d20 = current.m20() - previous.m20();
-        float d21 = current.m21() - previous.m21();
-        float d22 = current.m22() - previous.m22();
-        return (float) Math.sqrt(d00 * d00 + d01 * d01 + d02 * d02
-                + d10 * d10 + d11 * d11 + d12 * d12
-                + d20 * d20 + d21 * d21 + d22 * d22);
     }
 
     private void recordFrame(RtContext ctx, RtPipeline active, GpuTexture nativeColor) {
@@ -1138,7 +1118,7 @@ public final class RtComposite {
             int seaLevel = level != null ? level.getSeaLevel() : 63;
             RtVolumetrics.FrameData fogFrame = volumetrics.prepareFrame(frameCounter,
                     terrain.blockX, terrain.blockY, terrain.blockZ, seaLevel, (flags & 1) != 0,
-                    waterWaveTime, mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ, fogRotationDelta);
+                    waterWaveTime, mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so

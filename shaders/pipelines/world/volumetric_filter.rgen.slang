@@ -1,6 +1,7 @@
 // Low-pass the temporally accumulated scattering field in screen-froxel space before Z integration.
-// The same centre-weighted 3x3 kernel is used in motion and at rest so camera movement does not change
-// apparent shaft sharpness. Motion stability comes from coherent sampling and clipped temporal history.
+// This filter operates on the continuous volume itself, not scene geometry. Final composition samples the
+// 3D field at each pixel's exact depth. A centre-weighted kernel keeps denoising while preserving the
+// higher-frequency visibility transitions that define light-shaft edges.
 
 import world_common;
 import world_core;

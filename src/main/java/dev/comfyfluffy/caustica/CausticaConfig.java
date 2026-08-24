@@ -97,7 +97,7 @@ public final class CausticaConfig {
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
         FILE.setComment("volumetrics",
-                " Camera-frustum froxel fog. quality: 0 performance, 1 balanced, 2 high, 3 ultra, 4 ultra+.\n"
+                " Camera-frustum froxel fog. quality: 0 performance, 1 balanced, 2 high, 3 ultra.\n"
                         + " grid-pixel-size and depth-slices define Balanced; other quality levels scale that baseline.\n"
                         + " directional-strength and directional-focus shape sun/moon shafts without changing density.\n"
                         + " underwater-scattering and underwater-caustic-strength control submerged fog and beams.\n"
@@ -559,10 +559,10 @@ public final class CausticaConfig {
         public static final class Volumetrics {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
-            // 0 performance, 1 balanced, 2 high, 3 ultra, 4 ultra+. GRID_PIXEL_SIZE and DEPTH_SLICES
-            // define the balanced baseline; the quality preset scales both, preserving advanced TOML tuning.
+            // 0 performance, 1 balanced, 2 high, 3 ultra. GRID_PIXEL_SIZE and DEPTH_SLICES define the
+            // balanced baseline; the quality preset scales both, preserving advanced TOML tuning.
             public static final IntSetting QUALITY =
-                    clampedInt("caustica.rt.froxelQuality", "volumetrics.quality", 1, 0, 4);
+                    clampedInt("caustica.rt.froxelQuality", "volumetrics.quality", 1, 0, 3);
             public static final IntSetting GRID_PIXEL_SIZE =
                     clampedInt("caustica.rt.froxelGridPixelSize", "volumetrics.grid-pixel-size", 16, 4, 64);
             public static final IntSetting DEPTH_SLICES =

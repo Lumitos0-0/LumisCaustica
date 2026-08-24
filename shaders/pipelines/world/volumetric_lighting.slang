@@ -157,33 +157,21 @@ public float4 injectFroxel(uint3 index) {
     uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u
             ^ worldPush.frameIndex * 26699u;
     seed = pcg(seed);
+    uint proposalSeed = pcg(seed);
 
-    // Temporal jitter gives stationary views sub-cell supersampling, but reducing history during camera
-    // motion would expose those changing one-frame samples as noise. Use coherent cell centres while the
-    // camera moves; high/ultra grid resolution and the spatial kernel provide the in-motion reconstruction.
-    bool cameraMoving = length(worldPush.camDelta) > 0.002 || worldPush.fogLighting.w > 0.001;
-    float2 cellOffset = cameraMoving ? float2(0.5) : float2(rndf(seed), rndf(seed));
-    float2 cellCoordinate = float2(index.xy) + cellOffset;
+    // Jitter inside the complete froxel so temporal accumulation supersamples one continuous 3D field.
+    // Scene depth must not truncate the field itself: doing so creates empty rectangular columns that make
+    // the frustum grid visible. Depth is used only below to suppress local emitters sampled behind the
+    // first camera surface.
+    float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
-    float distanceFraction = cameraMoving ? 0.5 : rndf(seed);
-    float distance = lerp(nearDistance, farDistance, distanceFraction);
+    float distance = lerp(nearDistance, farDistance, rndf(seed));
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
     float3 samplePosition = rayOrigin + viewRay * distance;
     bool cameraVisibleSample = distance <= froxelOpaqueDistance(cellCoordinate);
-
-    // Local emitters use a fixed centre/midpoint receiver even while material density keeps temporal
-    // sub-cell jitter. This makes the expensive shadowed estimator bit-stable between moving and still
-    // cameras; only the low-frequency medium sample continues to supersample over time.
-    float2 emitterCoordinate = float2(index.xy) + 0.5;
-    float3 emitterOrigin;
-    float3 emitterViewRay;
-    froxelRay(emitterCoordinate, emitterOrigin, emitterViewRay);
-    float emitterDistance = 0.5 * (nearDistance + farDistance);
-    float3 emitterPosition = emitterOrigin + emitterViewRay * emitterDistance;
-    bool emitterCameraVisible = emitterDistance <= froxelOpaqueDistance(emitterCoordinate);
 
     float extinction = froxelExtinction(samplePosition);
     if (extinction <= 1.0e-7) {
@@ -201,56 +189,23 @@ public float4 injectFroxel(uint3 index) {
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
-    float3 emitter = float3(0.0);
-    if (emitterCameraVisible) {
-        // Use the same world-stable multi-reservoir estimator in motion and at rest. Temporal accumulation
-        // can refine it further, but no longer changes which base estimator the player sees.
-        uint sampleCount = froxelEmitterSamples();
-        int3 stableCell = int3(floor(emitterPosition + worldPush.fogWorld.xyz));
-        uint stableBase = uint(stableCell.x) * 73856093u
-                ^ uint(stableCell.y) * 19349663u ^ uint(stableCell.z) * 83492791u;
-        for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
-            uint emitterSeed = stableBase ^ (lightSample + 1u) * 0x85ebca6bu;
-            uint emitterProposalSeed = stableBase ^ (lightSample + 1u) * 0xc2b2ae35u;
-            emitterSeed = pcg(emitterSeed);
-            emitterProposalSeed = pcg(emitterProposalSeed);
-            emitter += froxelEmitterLighting(
-                    emitterPosition, emitterViewRay, emitterSeed, emitterProposalSeed);
-        }
-        emitter /= float(sampleCount);
-    }
+    float3 emitter = cameraVisibleSample
+            ? froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed) : float3(0.0);
     float3 incident = ambient * skyVisibility + directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
 
     if (froxelHistoryValid()) {
         float4 history;
-        float reprojectionConfidence;
-        if (froxelReprojectHistory(samplePosition, history, reprojectionConfidence)) {
+        if (froxelReprojectHistory(samplePosition, history)) {
             // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
-            // Reprojection can land between Z slices whose world-space height differs from the current
-            // sample. Rescale radiance by the current/history density ratio before blending; otherwise
-            // ascending carries denser, brighter lower-altitude fog upward until the camera stops.
-            float densityRatio = current.a / max(history.a, 1.0e-6);
-            history.rgb *= clamp(densityRatio, 0.0, 4.0);
-            if (cameraMoving) {
-                // Keep low history values available to suppress a noisy bright current estimate, but cap
-                // stale bright history immediately when the current shaft becomes dark or occluded.
-                float3 motionCeiling = current.rgb * 1.25 + float3(0.10);
-                history.rgb = min(history.rgb, motionCeiling);
-            }
             float3 historyCeiling = cameraVisibleSample
                     ? current.rgb * 4.0 + float3(8.0)
                     : current.rgb * 1.25 + float3(0.1);
             history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            // Vertical movement crosses the exponential height field (or moving underwater caustic bands)
-            // much faster than lateral motion. Reduce only that history confidence; at rest the configured
-            // accumulation weight is unchanged and retains its denoising quality.
-            float verticalConfidence = exp(-abs(worldPush.camDelta.y) * 8.0);
-            float historyWeight = worldPush.fogShape.w * verticalConfidence * reprojectionConfidence;
-            current = lerp(current, history, historyWeight);
+            current = lerp(current, history, worldPush.fogShape.w);
         }
     }
     return min(current, float4(HALF_MAX));

@@ -46,8 +46,7 @@ final class RtFroxelGridTest {
                     {96, 54, 40},
                     {120, 68, 48},
                     {160, 90, 64},
-                    {240, 135, 80},
-                    {320, 180, 96}
+                    {240, 135, 80}
             };
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
@@ -71,7 +70,7 @@ final class RtFroxelGridTest {
         int oldCandidates = candidates.value();
         try {
             candidates.set(2);
-            int[] expected = {2, 4, 6, 8, 8};
+            int[] expected = {2, 4, 6, 8};
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
                 assertEquals(expected[preset], RtVolumetrics.effectiveLocalLightCandidates());
@@ -81,36 +80,6 @@ final class RtFroxelGridTest {
         } finally {
             quality.set(oldQuality);
             candidates.set(oldCandidates);
-        }
-    }
-
-    @Test
-    void qualityPresetsIncreaseEmitterSamplesInAllCameraStates() {
-        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
-        int oldQuality = quality.value();
-        try {
-            int[] expected = {2, 3, 4, 6, 8};
-            for (int preset = 0; preset < expected.length; preset++) {
-                quality.set(preset);
-                assertEquals(expected[preset], RtVolumetrics.effectiveEmitterSamples());
-            }
-        } finally {
-            quality.set(oldQuality);
-        }
-    }
-
-    @Test
-    void highResolutionPresetsCapTemporalSoftening() {
-        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
-        int oldQuality = quality.value();
-        try {
-            float[] expected = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f};
-            for (int preset = 0; preset < expected.length; preset++) {
-                quality.set(preset);
-                assertEquals(expected[preset], RtVolumetrics.effectiveTemporalWeight(0.95f), 1.0e-6f);
-            }
-        } finally {
-            quality.set(oldQuality);
         }
     }
 

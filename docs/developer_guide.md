@@ -99,18 +99,12 @@ The fog implementation is split by responsibility:
 
 Balanced quality uses
 `ceil(render width / 16) × ceil(render height / 16) × 48`. Performance uses
-`/20 × 40`, High uses `/12 × 64`, Ultra uses `/8 × 80`, and Ultra+ uses
-`/6 × 96`. Their minimum local-emitter proposal counts are 2, 4, 6, 8, and 8.
-Performance, Balanced, High, Ultra, and Ultra+ average 2, 3, 4, 6, and 8 independently
-shadowed emitter reservoirs per froxel in both moving and stationary views. The emitter
-receiver is always the stable cell centre/Z midpoint; only low-frequency medium density
-keeps temporal jitter. Ultra+ has roughly twice Ultra's froxel count and is intended for
-very high-end GPUs. The advanced
-`grid-pixel-size` and `depth-slices` values define the Balanced baseline and all
-presets scale from it. High, Ultra, and Ultra+ cap history weight at 0.90, 0.78,
-and 0.65 respectively, trading their real spatial resolution for less stationary
-softening. Deterministic celestial visibility and temporal accumulation denoise the
-field without changing its continuous quadrilinear reconstruction.
+`/20 × 40`, High uses `/12 × 64`, and Ultra uses `/8 × 80`; their minimum local
+emitter proposal counts are 2, 4, 6, and 8. The finalized reservoir still traces
+one visibility ray. The advanced `grid-pixel-size` and `depth-slices` values define
+the Balanced baseline and all presets scale from it. Deterministic celestial visibility, temporal
+accumulation, and a centre-weighted 3×3 filter denoise the field without changing
+its continuous quadrilinear reconstruction or washing out shaft boundaries.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes linear
@@ -131,22 +125,9 @@ its visible segment without carving empty geometry-shaped columns into the volum
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
-records as surface path tracing. Temporal history radiance is normalized by the
-current/history extinction ratio. Vertical velocity and the current-to-previous
-screen displacement measured in froxel cells lower history confidence; this prevents
-denser lower-altitude fog, underwater caustic bands, or sharp sun halos from lagging
-behind camera translation/rotation. During motion, injection switches from temporal
-sub-cell jitter to coherent cell-centre/Z-midpoint samples and a world-stable emitter
-proposal stream. Quality-dependent emitter supersampling is identical in motion and at
-rest, attacking the dominant variance with additional short visibility rays rather than
-screen-space blur. Reprojected history retains at least 90% confidence; an asymmetric current-frame ceiling
-removes stale bright shafts while preserving low history values that suppress noisy
-bright estimates. The same sharp centre-weighted 3×3 filter is
-used in motion and at rest, so camera movement no longer changes apparent detail.
-
-While submerged, the froxel extinction coefficient represents particulate
-out-scattering; the path tracer continues
-to own colored water absorption, so the two are not double-counted. Directional light is attenuated from the
+records as surface path tracing. While submerged, the froxel extinction coefficient
+represents particulate out-scattering; the path tracer continues to own colored water
+absorption, so the two are not double-counted. Directional light is attenuated from the
 water surface to each froxel and modulated by the analytic wave-Jacobian caustic already
 used on underwater receivers. This projects animated focusing bands through the water
 volume while retaining TLAS shadows. Temporal reprojection ping-pongs the injection

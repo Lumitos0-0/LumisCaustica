@@ -217,8 +217,8 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption,
                     Component.translatable("caustica.options.rt.fogQuality." + value)),
-            new OptionInstance.IntRange(0, 4),
-            Math.clamp(setting.value(), 0, 4),
+            new OptionInstance.IntRange(0, 3),
+            Math.clamp(setting.value(), 0, 3),
             setting::set);
     }
 

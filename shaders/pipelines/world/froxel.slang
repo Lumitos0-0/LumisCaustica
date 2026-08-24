@@ -27,10 +27,6 @@ public uint froxelLocalLightCandidates() {
     return (uint(worldPush.froxelGrid.w) >> 8u) & 0xffu;
 }
 
-public uint froxelEmitterSamples() {
-    return max(1u, (uint(worldPush.froxelGrid.w) >> 16u) & 0x0fu);
-}
-
 public int3 froxelDimensions() {
     return worldPush.froxelGrid.xyz;
 }
@@ -175,31 +171,21 @@ public float4 froxelTrilinearIntegrated(float3 coordinate) {
 }
 
 /** Reproject a translated-world froxel sample into the previous frame's scattering volume. */
-public bool froxelReprojectHistory(float3 position, out float4 history,
-                                   out float reprojectionConfidence) {
+public bool froxelReprojectHistory(float3 position, out float4 history) {
     history = float4(0.0);
-    reprojectionConfidence = 0.0;
-    float3 currentCameraRelative = position - worldPush.camOffset;
-    float3 previousCameraRelative = currentCameraRelative + worldPush.camDelta;
-    float4 currentClip = mul(worldPush.curViewProj, float4(currentCameraRelative, 1.0));
+    float3 previousCameraRelative = position - worldPush.camOffset + worldPush.camDelta;
     float4 previousClip = mul(worldPush.prevViewProj, float4(previousCameraRelative, 1.0));
-    if (currentClip.w <= 0.0 || previousClip.w <= 0.0) {
+    if (previousClip.w <= 0.0) {
         return false;
     }
-    float2 currentUv = currentClip.xy / currentClip.w * 0.5 + 0.5;
-    float2 previousUv = previousClip.xy / previousClip.w * 0.5 + 0.5;
+    float2 uv = previousClip.xy / previousClip.w * 0.5 + 0.5;
     float previousDistance = length(previousCameraRelative);
     float slice = froxelSliceForDistance(previousDistance);
-    if (any(previousUv < float2(0.0)) || any(previousUv > float2(1.0)) || slice <= 0.0
+    if (any(uv < float2(0.0)) || any(uv > float2(1.0)) || slice <= 0.0
             || slice >= float(worldPush.froxelGrid.z)) {
         return false;
     }
-    float2 motionInCells = (previousUv - currentUv) * float2(worldPush.froxelGrid.xy);
-    // Reprojection is geometrically correct, but a camera-aligned volume changes its world-space footprint
-    // under rotation. Keep most of the history so moving frames retain stationary quality; the injection
-    // pass clips that history tightly around the coherent current sample to prevent old shafts from lagging.
-    reprojectionConfidence = 0.9 + 0.1 * exp(-2.0 * length(motionInCells));
-    float3 coordinate = float3(previousUv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 0.5);
+    float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 0.5);
     history = froxelTrilinearHistory(coordinate);
     return true;
 }
