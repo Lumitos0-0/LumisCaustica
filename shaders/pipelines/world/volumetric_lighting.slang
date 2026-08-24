@@ -200,12 +200,22 @@ public float4 injectFroxel(uint3 index) {
         if (froxelReprojectHistory(samplePosition, history)) {
             // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
             // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
+            // Reprojection can land between Z slices whose world-space height differs from the current
+            // sample. Rescale radiance by the current/history density ratio before blending; otherwise
+            // ascending carries denser, brighter lower-altitude fog upward until the camera stops.
+            float densityRatio = current.a / max(history.a, 1.0e-6);
+            history.rgb *= clamp(densityRatio, 0.0, 4.0);
             float3 historyCeiling = cameraVisibleSample
                     ? current.rgb * 4.0 + float3(8.0)
                     : current.rgb * 1.25 + float3(0.1);
             history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            current = lerp(current, history, worldPush.fogShape.w);
+            // Vertical movement crosses the exponential height field (or moving underwater caustic bands)
+            // much faster than lateral motion. Reduce only that history confidence; at rest the configured
+            // accumulation weight is unchanged and retains its denoising quality.
+            float verticalConfidence = exp(-abs(worldPush.camDelta.y) * 8.0);
+            float historyWeight = worldPush.fogShape.w * verticalConfidence;
+            current = lerp(current, history, historyWeight);
         }
     }
     return min(current, float4(HALF_MAX));
