@@ -88,9 +88,9 @@ JAVA_TOOL_OPTIONS='-Xmx8G -XX:+UseCompactObjectHeaders -XX:+AlwaysPreTouch -XX:+
 The fog implementation is split by responsibility:
 
 - `rt/volumetric/RtFroxelGrid` owns CPU-side grid and nonlinear depth math.
-- `rt/volumetric/RtVolumetrics` owns the first-interface depth image, two temporal
-  scattering volumes, the integrated volume, and pass scheduling.
-- `world/froxel.slang` owns frustum mapping, density, reprojection, filtering,
+- `rt/volumetric/RtVolumetrics` owns the first-interface depth image, the
+  scattering/filtered volumes, the per-pixel integrated image, and pass scheduling.
+- `world/froxel.slang` owns frustum mapping, density, the per-pixel fog sample,
   and scene-radiance composition.
 - `world/volumetric_lighting.slang` injects sky and block-emitter lighting using
   the world pipeline's existing TLAS and power-weighted light hierarchy.
@@ -100,30 +100,33 @@ The fog implementation is split by responsibility:
 With the default `grid-pixel-size = 16` and `depth-slices = 48`, Performance,
 Balanced, High, Ultra, and Ultra+ use `/18 × 44`, `/14 × 56`, `/10 × 72`,
 `/7 × 88`, and `/5 × 112` respectively. They average 1, 1, 2, 2, and 3
-independently sampled and shadowed emitter reservoirs per froxel in both moving and
-stationary views. This shifts the quality budget away from repeated light rays and
-into real XYZ volume resolution. The advanced grid settings remain the scale baseline
-for every preset. High, Ultra, and Ultra+ cap history at 0.90, 0.78, and 0.65 to retain
-more of that spatial detail.
-Deterministic celestial visibility, temporal accumulation, and a centre-weighted
-3×3 filter denoise the field without changing its continuous quadrilinear reconstruction.
+independently sampled and shadowed emitter reservoirs per froxel. This shifts the
+quality budget away from repeated light rays and into real XYZ volume resolution.
+
+The froxel volume is **deterministic**: injection samples each froxel at its centre
+with a fixed, frame-independent seed (no per-frame jitter, no frame index), so for a
+static scene the volume is identical every frame and needs **no temporal accumulation
+or reprojection** — which is precisely what makes it boil-free and free of
+reprojection/grid/ghost/lag artifacts. Directional light averages two stratified
+visibility rays per froxel (stable index-based offsets) to avoid the single-binary-ray
+outline shimmer; emissive block lighting uses a deterministic index-seeded RIS plus
+the spatial filter. A centre-weighted 3×3 bilateral filter denoises the field.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
-which concentrates samples near the camera. Injection writes linear
-`{scattering.rgb, extinction}`. A second pass analytically integrates each
-constant-medium segment with Beer-Lambert transmittance and writes cumulative
-`{inScattering.rgb, transmittance}`. The indirect ray-generation pass samples
-that result at the primary ray's first interface before pre-exposure. Keeping a
-separate first-interface depth prevents clear glass or water's behind-surface
-DLSS guide depth from replacing the fog composition endpoint.
+which concentrates samples near the camera. Injection writes deterministic
+`{scattering.rgb, extinction}` to `froxelScattering`. The filter spatially denoises it
+into `froxelFiltered`. The integrate pass then ray-marches **per pixel** (the pixel's
+own view ray) through the filtered volume with trilinear sampling, clamped at the first
+opaque/water surface depth, using a **static screen-space sub-slice dither** so the
+finite-depth discretization is interleaved spatially and never shows camera-facing
+layers. It writes a 2D `{inScattering.rgb, transmittance}` fog image at render
+resolution. Keeping a separate first-interface depth prevents clear glass or water's
+behind-surface DLSS guide depth from replacing the fog composition endpoint.
 
-The participating-media field itself is independent of scene depth: every froxel is
-populated, Gaussian-filtered, and quadrilinearly reconstructed at each pixel's exact
-native-resolution depth. This continuity is what hides individual frustum cells.
 Pass A runs before injection only so local block-emitter lighting can be suppressed
-when a stochastic sample lies behind the first camera surface. That targeted gate
-prevents a partially occupied slice from importing underground lava radiance into
-its visible segment without carving empty geometry-shaped columns into the volume.
+when a sample lies behind the first camera surface. That targeted gate prevents a
+partially occupied slice from importing underground lava radiance into its visible
+segment without carving empty geometry-shaped columns into the volume.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
@@ -132,9 +135,7 @@ represents particulate out-scattering; the path tracer continues to own colored 
 absorption, so the two are not double-counted. Directional light is attenuated from the
 water surface to each froxel and modulated by the analytic wave-Jacobian caustic already
 used on underwater receivers. This projects animated focusing bands through the water
-volume while retaining TLAS shadows. Temporal reprojection ping-pongs the injection
-volumes; camera cuts, skipped frames, medium changes, and optical-setting changes
-invalidate history.
+volume while retaining TLAS shadows.
 
 Runtime controls expose enable/disable, extinction, directional light-shaft strength,
 shaft focus, and the five quality presets. Strength multiplies only sun/moon
@@ -144,7 +145,7 @@ fog, emissive blocks, or surface lighting. Underwater Fog controls particulate
 scattering and Water Caustics controls wave focusing in the submerged volume. The
 complete `[volumetrics]` TOML surface also includes the Balanced grid baseline, depth
 distribution, maximum distance, single-scattering albedo, Henyey-Greenstein
-anisotropy, height falloff, noise, temporal weight, and local-light candidate count.
+anisotropy, height falloff, noise, and local-light candidate count.
 Moonlight uses a luminance-preserving cool BT.709 tint shared by the atmosphere LUT,
 surface NEE, and volumetric shafts; the look package's moon lux remains unchanged.
 
