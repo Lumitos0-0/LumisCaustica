@@ -134,8 +134,8 @@ public float4 froxelHistoryLoad(int3 p) {
     return froxelHistory[p];
 }
 
-public float4 froxelIntegratedLoad(int3 p) {
-    return froxelIntegrated[p];
+public float4 froxelFilteredLoad(int3 p) {
+    return froxelFiltered[p];
 }
 
 public float4 froxelTrilinearHistory(float3 coordinate) {
@@ -156,20 +156,21 @@ public float4 froxelTrilinearHistory(float3 coordinate) {
             lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
 }
 
-public float4 froxelTrilinearIntegrated(float3 coordinate) {
+/** Trilinear sample of the spatially filtered scattering volume (interpolated in the per-pixel raymarch). */
+public float4 froxelTrilinearFiltered(float3 coordinate) {
     int3 dimensions = froxelDimensions();
     float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
     int3 lo = int3(floor(bounded));
     int3 hi = min(lo + int3(1), dimensions - 1);
     float3 f = frac(bounded);
-    float4 c000 = froxelIntegratedLoad(int3(lo.x, lo.y, lo.z));
-    float4 c100 = froxelIntegratedLoad(int3(hi.x, lo.y, lo.z));
-    float4 c010 = froxelIntegratedLoad(int3(lo.x, hi.y, lo.z));
-    float4 c110 = froxelIntegratedLoad(int3(hi.x, hi.y, lo.z));
-    float4 c001 = froxelIntegratedLoad(int3(lo.x, lo.y, hi.z));
-    float4 c101 = froxelIntegratedLoad(int3(hi.x, lo.y, hi.z));
-    float4 c011 = froxelIntegratedLoad(int3(lo.x, hi.y, hi.z));
-    float4 c111 = froxelIntegratedLoad(int3(hi.x, hi.y, hi.z));
+    float4 c000 = froxelFilteredLoad(int3(lo.x, lo.y, lo.z));
+    float4 c100 = froxelFilteredLoad(int3(hi.x, lo.y, lo.z));
+    float4 c010 = froxelFilteredLoad(int3(lo.x, hi.y, lo.z));
+    float4 c110 = froxelFilteredLoad(int3(hi.x, hi.y, lo.z));
+    float4 c001 = froxelFilteredLoad(int3(lo.x, lo.y, hi.z));
+    float4 c101 = froxelFilteredLoad(int3(hi.x, lo.y, hi.z));
+    float4 c011 = froxelFilteredLoad(int3(lo.x, hi.y, hi.z));
+    float4 c111 = froxelFilteredLoad(int3(hi.x, hi.y, hi.z));
     return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
             lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
 }
@@ -202,29 +203,12 @@ public bool froxelReprojectHistory(float3 position, out float4 history) {
     return true;
 }
 
-/** Cumulative fog at the first primary interface, with trilinear XY/Z reconstruction. */
+/** Per-pixel fog {in-scattering.rgb, transmittance} produced by the integrate pass's clamped raymarch. */
 public float4 froxelAtPixel(uint2 pixel, uint2 imageSize) {
-    float distance = clamp(volumeDepth[int2(pixel)], 0.0, worldPush.fogDistance.x);
-    if (distance <= 0.0) {
+    if (any(pixel >= imageSize)) {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
-    float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
-    float slice = froxelSliceForDistance(distance);
-    float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 1.0);
-    float4 integrated = froxelTrilinearIntegrated(coordinate);
-    if (slice < 1.0) {
-        // Texel zero is integrated through the first boundary. Recover a partial constant-medium segment
-        // so fog begins continuously at the camera rather than popping on at the first Z slice.
-        // Improved: use a slightly smoother power curve near zero for better continuity when the camera
-        // is very close to the first slice boundary.
-        float fraction = saturate(slice);
-        float fullTransmittance = clamp(integrated.a, 1.0e-6, 1.0);
-        float partialTransmittance = pow(fullTransmittance, max(fraction, 0.02));
-        float fullOpacity = max(1.0 - fullTransmittance, 1.0e-6);
-        integrated.rgb *= (1.0 - partialTransmittance) / fullOpacity;
-        integrated.a = partialTransmittance;
-    }
-    return integrated;
+    return froxelIntegrated[pixel];
 }
 
 public float3 applyFroxelFog(uint2 pixel, uint2 imageSize, float3 sceneRadiance) {

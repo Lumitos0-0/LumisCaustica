@@ -112,27 +112,38 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
     return reservoir.contribution * reservoir.weight * visibilityToLight;
 }
 
-public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
+public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay, uint2 cellIndex,
                                          out float3 skyVisibility) {
     skyVisibility = float3(0.0);
     if (max(celestialLight.illuminance.r,
             max(celestialLight.illuminance.g, celestialLight.illuminance.b)) <= 1.0e-6) {
         return float3(0.0);
     }
-    // A single randomized angular visibility ray turns foliage edges into temporal salt-and-pepper noise.
-    // The deterministic body-centre ray is coherent; the existing Gaussian/temporal passes soften it at
-    // the volume's intended frequency without changing surface-light penumbrae.
+    // Two stratified visibility samples per froxel instead of a single binary point test. The old build's
+    // single ray produced hard lit/unlit cells at silhouettes -> intense outline shimmer. Averaging two
+    // decorrelated offsets integrates visibility over the cell footprint. The offsets are a stable
+    // low-discrepancy pattern from the grid index (world position would alias at large block coords) and
+    // do not depend on frameIndex, so the volume stays deterministic.
     float3 lightDirection = celestialLight.dir;
-    VisibilityResult shadow = visibility(samplePosition, lightDirection, 10000.0);
-    skyVisibility = shadow.transmittance;
+    float2 cellHash = frac(float2(float(cellIndex.x) * 0.7548776662, float(cellIndex.y) * 0.5698402909));
+    float2 vJitter = (cellHash * 2.0 - 1.0) * 0.5;
+    float3 shadowOffset = float3(vJitter.x, vJitter.y, 0.0) * 0.5;
+
+    VisibilityResult shadow1 = visibility(samplePosition + shadowOffset, lightDirection, 10000.0);
+    VisibilityResult shadow2 = visibility(samplePosition - shadowOffset, lightDirection, 10000.0);
+
+    float3 transmittance = (shadow1.transmittance + shadow2.transmittance) * 0.5;
+    skyVisibility = transmittance;
+
     float causticFocus = 1.0;
-    if (froxelUnderwater() && shadow.waterHitT > 0.0) {
+    if (froxelUnderwater() && (shadow1.waterHitT > 0.0 || shadow2.waterHitT > 0.0)) {
+        float avgWaterT = (shadow1.waterHitT + shadow2.waterHitT) * 0.5;
         // The camera path already accounts for water absorption. This is the independent light-to-sample
         // path from the surface, attenuated through water before scattering toward the viewer.
-        skyVisibility *= exp(-waterExtinction(worldPush.waterParams.xyz) * shadow.waterHitT);
+        skyVisibility *= exp(-waterExtinction(worldPush.waterParams.xyz) * avgWaterT);
         if ((worldPush.flags & 16u) != 0u && worldPush.fogLighting.z > 0.0) {
-            float3 surfacePosition = samplePosition + lightDirection * shadow.waterHitT;
-            float pattern = waterCaustic(surfacePosition, lightDirection, shadow.waterHitT);
+            float3 surfacePosition = samplePosition + lightDirection * avgWaterT;
+            float pattern = waterCaustic(surfacePosition, lightDirection, avgWaterT);
             causticFocus = max(0.0, lerp(1.0, pattern, worldPush.fogLighting.z));
         }
     }
@@ -160,19 +171,19 @@ public float3 clampFroxelSource(float3 source) {
 }
 
 public float4 injectFroxel(uint3 index) {
-    uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u
-            ^ worldPush.frameIndex * 26699u;
+    // Deterministic, frame-independent seed: the froxel volume must not change from frame to frame for a
+    // static scene, otherwise any stochastic term re-rolls every frame and (in the old temporal world)
+    // produces boil. No frameIndex, no frame-varying jitter.
+    uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u;
     seed = pcg(seed);
     uint proposalSeed = pcg(seed);
 
-    // Jitter inside the complete froxel so temporal accumulation supersamples one continuous 3D field.
-    // Scene depth must not truncate the field itself: doing so creates empty rectangular columns that make
-    // the frustum grid visible. Depth is used only below to suppress local emitters sampled behind the
-    // first camera surface.
-    float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
-    float nearDistance = froxelBoundaryDistance(float(index.z));
-    float farDistance = froxelBoundaryDistance(float(index.z + 1u));
-    float distance = lerp(nearDistance, farDistance, rndf(seed));
+    // Sample at the deterministic froxel CENTRE (no per-frame jitter). This is what made the prior clean
+    // build boil-free: the volume is a pure function of world position, so it is identical every frame
+    // and needs no temporal accumulation. Depth is used only to gate local emitters behind the first
+    // camera surface (leak prevention).
+    float2 cellCoordinate = float2(index.xy) + 0.5;
+    float distance = froxelBoundaryDistance(float(index.z) + 0.5);
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
@@ -191,7 +202,7 @@ public float4 injectFroxel(uint3 index) {
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
     float3 skyVisibility;
     float3 directional = worldPush.fogLighting.x
-            * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
+            * froxelDirectionalLighting(samplePosition, viewRay, index.xy, skyVisibility);
 
     // Leak-prevention policy (improved):
     // - Local emitters: gated behind first surface (prevents fireflies from hidden lava/torches).
@@ -201,8 +212,9 @@ public float4 injectFroxel(uint3 index) {
     // "sample behind surface" artifact for stochastic local lights.
     float3 emitter = float3(0.0);
     if (cameraVisibleSample) {
-        // The same multi-reservoir estimator runs in moving and stationary views. Temporal accumulation
-        // still refines it, but does not switch the renderer to a different base lighting algorithm.
+        // Deterministic multi-reservoir estimator, seeded from the froxel index (no frameIndex), so the
+        // emissive light choice is stable in space across frames. Gated behind the first surface so hidden
+        // lava/torch emitters don't leak into visible cells.
         uint sampleCount = froxelEmitterSamples();
         for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
             uint emitterSeed = seed ^ (lightSample + 1u) * 0x85ebca6bu;
@@ -216,33 +228,8 @@ public float4 injectFroxel(uint3 index) {
     }
     float3 incident = ambient * skyVisibility + directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
-    float4 current = float4(max(source, float3(0.0)), extinction);
-
-    if (froxelHistoryValid()) {
-        float4 history;
-        if (froxelReprojectHistory(samplePosition, history)) {
-            // Unified, more robust history clamping.
-            // - Visible samples allow more headroom for stochastic emitter variation.
-            // - Occluded samples use a tighter but still generous bound to avoid completely
-            //   discarding useful temporal information behind geometry.
-            // - Extinction uses a smooth multiplicative envelope (world field is already smooth).
-            float historyBlend = worldPush.fogShape.w;
-            float3 baseCeiling = current.rgb * 3.5 + float3(6.0);
-            float3 historyCeiling = cameraVisibleSample
-                    ? current.rgb * 5.0 + float3(12.0)
-                    : baseCeiling;
-            history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
-
-            // Extinction: smooth multiplicative range around current value
-            float extMin = current.a * 0.6;
-            float extMax = current.a * 1.8 + 1.0e-5;
-            history.a = clamp(history.a, extMin, extMax);
-
-            // Gentle bias toward current on first frame of history (reduces initial pop)
-            if (historyBlend > 0.0) {
-                current = lerp(current, history, historyBlend);
-            }
-        }
-    }
-    return min(current, float4(HALF_MAX));
+    // Deterministic {in-scattering, extinction}. There is deliberately NO temporal accumulation: this
+    // volume is recomputed identically each frame for a static scene, so it needs no history/reprojection
+    // and cannot boil/ghost/lag. The integrate pass raymarches it per-pixel with a stable spatial dither.
+    return min(float4(max(source, float3(0.0)), extinction), float4(HALF_MAX));
 }

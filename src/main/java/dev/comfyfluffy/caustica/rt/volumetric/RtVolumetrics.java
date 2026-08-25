@@ -67,8 +67,10 @@ public final class RtVolumetrics {
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering B " + extent);
         filtered = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel spatially filtered lighting " + extent);
-        integrated = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
-                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel integrated lighting " + extent);
+        // The integrate pass raymarches per-pixel and stores the fog at render resolution, so this is a
+        // 2D {in-scattering.rgb, transmittance} image (not a per-froxel 3D volume).
+        integrated = ctx.createStorageImage(renderWidth, renderHeight, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "froxel integrated lighting " + renderWidth + "x" + renderHeight);
         invalidateHistory();
     }
 
@@ -166,7 +168,8 @@ public final class RtVolumetrics {
             barrier(cmd);
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, FILTER_RAYGEN);
             barrier(cmd);
-            pipeline.trace(cmd, grid.width(), grid.height(), 1, pushConstants, INTEGRATE_RAYGEN);
+            // Integrate per-pixel at render resolution.
+            pipeline.trace(cmd, volumeDepth.width, volumeDepth.height, 1, pushConstants, INTEGRATE_RAYGEN);
             barrier(cmd);
         }
         lastRecordedFrame = frame.frameIndex();
