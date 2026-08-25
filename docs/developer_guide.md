@@ -98,10 +98,12 @@ The fog implementation is split by responsibility:
   and `world/volumetric_integrate.rgen.slang` are the GPU entry points.
 
 With the default `grid-pixel-size = 16` and `depth-slices = 48`, Performance,
-Balanced, High, Ultra, and Ultra+ use `/18 × 44`, `/14 × 56`, `/10 × 72`,
-`/7 × 88`, and `/5 × 112` respectively. They average 1, 1, 2, 2, and 3
-independently sampled and shadowed emitter reservoirs per froxel. This shifts the
-quality budget away from repeated light rays and into real XYZ volume resolution.
+Balanced, High, Ultra, and Ultra+ use `/18 × 44`, `/12 × 56`, `/8 × 72`,
+`/5 × 88`, and `/4 × 112` respectively. They average 1, 1, 2, 2, and 3
+independently sampled and shadowed emitter reservoirs per froxel. Because
+integration is per-pixel (cheap) and the volume is deterministic (no temporal filter
+or reprojection to amortize), the grid can be much finer than before; the residual
+per-cell shot noise is handled by the spatial filter rather than temporal reuse.
 
 The froxel volume is **deterministic**: injection samples each froxel at its centre
 with a fixed, frame-independent seed (no per-frame jitter, no frame index), so for a
@@ -110,7 +112,8 @@ or reprojection** — which is precisely what makes it boil-free and free of
 reprojection/grid/ghost/lag artifacts. Directional light averages two stratified
 visibility rays per froxel (stable index-based offsets) to avoid the single-binary-ray
 outline shimmer; emissive block lighting uses a deterministic index-seeded RIS plus
-the spatial filter. A centre-weighted 3×3 bilateral filter denoises the field.
+the spatial filter. A 5×5 bilateral filter weighting both extinction and peak-channel
+luminance (distance-adaptive sigma) denoises the deterministic field.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera. Injection writes deterministic
