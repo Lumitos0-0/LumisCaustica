@@ -133,21 +133,66 @@ public float2 causticLanding(float2 xz, float t, float3 inc, float h) {
     return xz + rdw.xz * (h / max(-rdw.y, 0.05));
 }
 
-public float waterCaustic(float3 exitPos, float3 lightDir, float waterDist) {
-    // Grazing light: the receiver-plane intersection degenerates and caustics vanish in reality anyway
-    // (long slant paths absorb + the pattern smears out) — fade the effect to neutral 1.0.
+/**
+ * Spectral chromatic dispersion in underwater wave caustics.
+ * Evaluates the inverse Jacobian determinant across wavelength-dependent IORs (Red, Green, Blue)
+ * sharing a single wave-gradient evaluation, projecting iridescent dispersion edges into underwater media.
+ */
+public float3 waterCausticRgb(float3 exitPos, float3 lightDir, float waterDist, float causticStrength) {
     float fade = smoothstep(0.06, 0.18, lightDir.y);
-    if (fade <= 0.0) return 1.0;
-    float h = max(waterDist * lightDir.y, 0.05); // vertical depth of the receiver below the exit point
+    if (fade <= 0.0) return float3(1.0);
+    float h = max(waterDist * lightDir.y, 0.05);
     float t = worldPush.waterParams.w;
     float3 inc = -lightDir;
-    float2 base = exitPos.xz + worldPush.waterAnchor.xy;  // world-stable wave domain (same as applyWaterWaves)
-    float2 p0 = causticLanding(base, t, inc, h);
-    float2 px = causticLanding(base + float2(CAUSTIC_EPS, 0.0), t, inc, h);
-    float2 pz = causticLanding(base + float2(0.0, CAUSTIC_EPS), t, inc, h);
-    float det = abs((px.x - p0.x) * (pz.y - p0.y) - (px.y - p0.y) * (pz.x - p0.x));
-    // Flat water ⇒ all landings displace identically ⇒ det = eps² ⇒ focus = 1 (energy-neutral); the
-    // clamp bounds the fold-line spikes whose energy the surrounding darkening already paid for.
-    float focus = (CAUSTIC_EPS * CAUSTIC_EPS) / max(det, 1.0e-5);
-    return lerp(1.0, min(focus, CAUSTIC_MAX), fade);
+    float2 base = exitPos.xz + worldPush.waterAnchor.xy;
+
+    float2 g0 = waterWaveGrad(base, t);
+    float2 gx = waterWaveGrad(base + float2(CAUSTIC_EPS, 0.0), t);
+    float2 gz = waterWaveGrad(base + float2(0.0, CAUSTIC_EPS), t);
+
+    float3 nw0 = normalize(float3(-g0.x, 1.0, -g0.y));
+    float3 nwx = normalize(float3(-gx.x, 1.0, -gx.y));
+    float3 nwz = normalize(float3(-gz.x, 1.0, -gz.y));
+
+    // Wavelength-dependent refractive indices for natural water (Red ~650nm, Green ~530nm, Blue ~440nm)
+    static const float3 IOR_RGB = float3(1.331, 1.333, 1.338);
+    float3 focusRgb;
+
+    // Channel R
+    float3 rdw0_r = refract(inc, nw0, 1.0 / IOR_RGB.r);
+    float3 rdwx_r = refract(inc, nwx, 1.0 / IOR_RGB.r);
+    float3 rdwz_r = refract(inc, nwz, 1.0 / IOR_RGB.r);
+    float2 p0_r = base + rdw0_r.xz * (h / max(-rdw0_r.y, 0.05));
+    float2 px_r = base + float2(CAUSTIC_EPS, 0.0) + rdwx_r.xz * (h / max(-rdwx_r.y, 0.05));
+    float2 pz_r = base + float2(0.0, CAUSTIC_EPS) + rdwz_r.xz * (h / max(-rdwz_r.y, 0.05));
+    float det_r = abs((px_r.x - p0_r.x) * (pz_r.y - p0_r.y) - (px_r.y - p0_r.y) * (pz_r.x - p0_r.x));
+    focusRgb.r = (CAUSTIC_EPS * CAUSTIC_EPS) / max(det_r, 1.0e-5);
+
+    // Channel G
+    float3 rdw0_g = refract(inc, nw0, 1.0 / IOR_RGB.g);
+    float3 rdwx_g = refract(inc, nwx, 1.0 / IOR_RGB.g);
+    float3 rdwz_g = refract(inc, nwz, 1.0 / IOR_RGB.g);
+    float2 p0_g = base + rdw0_g.xz * (h / max(-rdw0_g.y, 0.05));
+    float2 px_g = base + float2(CAUSTIC_EPS, 0.0) + rdwx_g.xz * (h / max(-rdwx_g.y, 0.05));
+    float2 pz_g = base + float2(0.0, CAUSTIC_EPS) + rdwz_g.xz * (h / max(-rdwz_g.y, 0.05));
+    float det_g = abs((px_g.x - p0_g.x) * (pz_g.y - p0_g.y) - (px_g.y - p0_g.y) * (pz_g.x - p0_g.x));
+    focusRgb.g = (CAUSTIC_EPS * CAUSTIC_EPS) / max(det_g, 1.0e-5);
+
+    // Channel B
+    float3 rdw0_b = refract(inc, nw0, 1.0 / IOR_RGB.b);
+    float3 rdwx_b = refract(inc, nwx, 1.0 / IOR_RGB.b);
+    float3 rdwz_b = refract(inc, nwz, 1.0 / IOR_RGB.b);
+    float2 p0_b = base + rdw0_b.xz * (h / max(-rdw0_b.y, 0.05));
+    float2 px_b = base + float2(CAUSTIC_EPS, 0.0) + rdwx_b.xz * (h / max(-rdwx_b.y, 0.05));
+    float2 pz_b = base + float2(0.0, CAUSTIC_EPS) + rdwz_b.xz * (h / max(-rdwz_b.y, 0.05));
+    float det_b = abs((px_b.x - p0_b.x) * (pz_b.y - p0_b.y) - (px_b.y - p0_b.y) * (pz_b.x - p0_b.x));
+    focusRgb.b = (CAUSTIC_EPS * CAUSTIC_EPS) / max(det_b, 1.0e-5);
+
+    focusRgb = min(focusRgb, float3(CAUSTIC_MAX));
+    float3 pattern = lerp(float3(1.0), focusRgb, fade);
+    return max(float3(0.0), lerp(float3(1.0), pattern, causticStrength));
+}
+
+public float waterCaustic(float3 exitPos, float3 lightDir, float waterDist) {
+    return waterCausticRgb(exitPos, lightDir, waterDist, 1.0).g;
 }

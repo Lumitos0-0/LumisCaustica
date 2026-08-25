@@ -108,15 +108,16 @@ Deterministic celestial visibility and a centre-weighted 3×3 filter denoise the
 froxel field before the path tracer integrates it.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
-which concentrates samples near the camera. Injection writes linear
-`{scattering.rgb, extinction}`. The filtered volume is integrated along each primary ray
-via stochastic raymarching in the indirect ray-generation pass. For each view ray, the
-march advances slice by slice with sub-slice stochastic jitter, evaluating the analytic
-Beer-Lambert segment integral and terminating early when reaching the first surface
-depth recorded in `volumeDepth` or when transmittance drops below threshold. Combining
-per-pixel spatial decorrelation with a temporal golden-ratio sequence across frames allows
-DLSS Ray Reconstruction to reconstruct temporally stable, sharp light shafts and volumetric
-shadows alongside the path-traced scene without temporal accumulation lag.
+which concentrates samples near the camera with a quadratic fast path when `exponent = 2.0`.
+Injection writes linear `{scattering.rgb, extinction}`. The filtered volume is integrated
+along each primary ray via stochastic raymarching in the indirect ray-generation pass. For
+each view ray, the march advances with adaptive step striding (full 1-slice precision in the
+near field; 2-slice stride across distant smooth media) and sub-slice stochastic jitter,
+evaluating the analytic Beer-Lambert segment integral and terminating early when reaching
+the first surface depth recorded in `volumeDepth` or when transmittance drops below threshold.
+Combining per-pixel spatial decorrelation with a temporal golden-ratio sequence across frames
+allows DLSS Ray Reconstruction to reconstruct temporally stable, sharp light shafts and
+volumetric shadows alongside the path-traced scene without temporal accumulation lag.
 
 The participating-media field itself is independent of scene depth: every froxel is
 populated and Gaussian-filtered. Pass A runs before injection so local block-emitter
@@ -126,12 +127,17 @@ radiance into its visible segment without carving empty geometry-shaped columns 
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
-records as surface path tracing. While submerged, the froxel extinction coefficient
-represents particulate out-scattering; the path tracer continues to own colored water
-absorption, so the two are not double-counted. Directional light is attenuated from the
-water surface to each froxel and modulated by the analytic wave-Jacobian caustic already
-used on underwater receivers. This projects animated focusing bands through the water
-volume while retaining TLAS shadows.
+records as surface path tracing. Directional lighting uses a dual-lobe Henyey-Greenstein
+phase function blending a sharp forward solar corona lobe with a broad back-scattering
+diffuse lobe to simulate multiple scattering in single-bounce medium injection.
+While submerged, the froxel extinction coefficient represents particulate out-scattering;
+the path tracer continues to own colored water absorption, so the two are not double-counted.
+Directional light is attenuated from the water surface to each froxel and modulated by
+analytic wave-Jacobian caustics evaluated across wavelength-dependent refractive indices
+(Red 1.331, Green 1.333, Blue 1.338) from a single shared wave gradient. This projects
+shimmering chromatic dispersion bands through the water volume while retaining TLAS shadows.
+Inter-pass synchronization uses targeted `VkImageMemoryBarrier` calls on the volume images
+rather than global pipeline flushes.
 
 Runtime controls expose enable/disable, extinction, directional light-shaft strength,
 shaft focus, and the five quality presets. Strength multiplies only sun/moon

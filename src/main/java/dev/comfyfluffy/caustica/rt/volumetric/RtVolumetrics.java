@@ -10,8 +10,10 @@ import dev.comfyfluffy.caustica.rt.gen.WorldPushData.Int4;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import java.nio.ByteBuffer;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.KHRRayTracingPipeline;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
 
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 
@@ -144,9 +146,13 @@ public final class RtVolumetrics {
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel volumetrics");
              RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, INJECT_RAYGEN);
-            barrier(cmd);
+            imageBarrier(cmd, scattering, VK10.VK_ACCESS_SHADER_WRITE_BIT, VK10.VK_ACCESS_SHADER_READ_BIT,
+                    KHRRayTracingPipeline.VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                    KHRRayTracingPipeline.VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, FILTER_RAYGEN);
-            barrier(cmd);
+            imageBarrier(cmd, filtered, VK10.VK_ACCESS_SHADER_WRITE_BIT, VK10.VK_ACCESS_SHADER_READ_BIT,
+                    KHRRayTracingPipeline.VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                    KHRRayTracingPipeline.VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
         }
     }
 
@@ -162,9 +168,23 @@ public final class RtVolumetrics {
         return grid;
     }
 
-    private static void barrier(VkCommandBuffer cmd) {
+    private static void imageBarrier(VkCommandBuffer cmd, RtImage image, int srcAccess, int dstAccess,
+                                     int srcStage, int dstStage) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, stack);
+            b.get(0).sType$Default()
+                    .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                    .newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                    .srcAccessMask(srcAccess)
+                    .dstAccessMask(dstAccess)
+                    .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .image(image.image);
+            b.get(0).subresourceRange()
+                    .aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .baseMipLevel(0).levelCount(1)
+                    .baseArrayLayer(0).layerCount(1);
+            VK10.vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, null, null, b);
         }
     }
 

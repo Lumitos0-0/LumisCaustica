@@ -41,7 +41,7 @@ public float3 evaluateVolumeLight(float3 samplePosition, float3 lightPosition, f
     }
     float3 lightDirection = toLight * rsqrt(distance2);
     float emitterCosine = max(0.0, dot(lightNormal, -lightDirection));
-    float phase = hg(dot(lightDirection, viewRay), worldPush.fogOptics.w);
+    float phase = dualLobeHg(dot(lightDirection, viewRay), worldPush.fogOptics.w, -0.15, 0.80);
     return emission * (emitterCosine * area * phase / distance2);
 }
 
@@ -119,19 +119,20 @@ public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
     float3 lightDirection = celestialLight.dir;
     VisibilityResult shadow = visibility(samplePosition, lightDirection, 10000.0);
     skyVisibility = shadow.transmittance;
-    float causticFocus = 1.0;
+    float3 causticFocus = float3(1.0);
     if (froxelUnderwater() && shadow.waterHitT > 0.0) {
         // The camera path already accounts for water absorption. This is the independent light-to-sample
         // path from the surface, attenuated through water before scattering toward the viewer.
         skyVisibility *= exp(-waterExtinction(worldPush.waterParams.xyz) * shadow.waterHitT);
         if ((worldPush.flags & 16u) != 0u && worldPush.fogLighting.z > 0.0) {
             float3 surfacePosition = samplePosition + lightDirection * shadow.waterHitT;
-            float pattern = waterCaustic(surfacePosition, lightDirection, shadow.waterHitT);
-            causticFocus = max(0.0, lerp(1.0, pattern, worldPush.fogLighting.z));
+            causticFocus = waterCausticRgb(surfacePosition, lightDirection, shadow.waterHitT, worldPush.fogLighting.z);
         }
     }
     float3 visibleIlluminance = celestialLight.illuminance * skyVisibility * causticFocus;
-    return visibleIlluminance * hg(dot(lightDirection, viewRay), worldPush.fogLighting.y);
+    float cosTheta = dot(lightDirection, viewRay);
+    float phase = dualLobeHg(cosTheta, worldPush.fogLighting.y, -0.22, 0.75);
+    return visibleIlluminance * phase;
 }
 
 public float3 froxelScatteringColor() {

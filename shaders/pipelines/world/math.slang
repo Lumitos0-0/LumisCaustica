@@ -45,6 +45,13 @@ public float hg(float cosT, float g) {
     return (1.0 - g2) / (4.0 * PI * pow(max(0.0, 1.0 + g2 - 2.0 * g * cosT), 1.5));
 }
 
+// Dual-lobe Henyey-Greenstein phase function (energy-conserving convex combination).
+// Blends a forward-scattering lobe (gForward > 0) for sun/moon corona and shafts
+// with a back-scattering / isotropic lobe (gBack) for broad atmospheric ambient haze.
+public float dualLobeHg(float cosT, float gForward, float gBack, float weight) {
+    return lerp(hg(cosT, gBack), hg(cosT, gForward), weight);
+}
+
 // NVIDIA RR guide-buffer helper: integrated/view-dependent specular reflectivity, not raw F0.
 // alpha is GGX alpha (== the linear roughness materials store), NoV is the first-hit view cosine.
 public float3 rrSpecularAlbedo(float3 specularColor, float alpha, float NoV) {
