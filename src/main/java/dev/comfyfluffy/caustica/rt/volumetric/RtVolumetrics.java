@@ -16,11 +16,11 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 
 /**
- * Owns the frustum-froxel resources and the three ray-generation passes that update them. Lighting and
- * extinction are injected into one of two history volumes, spatially filtered, then integrated
- * camera-outward into a volume of cumulative in-scattering and transmittance. The path tracer samples
- * that integrated volume before pre-exposure, so volumetrics remain scene-linear and work unchanged
- * with DLSS-RR, SDR, and HDR output.
+ * Owns the frustum-froxel resources and the ray-generation passes that update them. Lighting and
+ * extinction are injected into the scattering volume and spatially filtered. The path tracer
+ * integrates the volume via stochastic raymarching during indirect ray generation, enabling DLSS Ray
+ * Reconstruction to reconstruct temporally stable, sharp light shafts and fog boundaries without
+ * temporal accumulation lag.
  */
 public final class RtVolumetrics {
     public static final int INJECT_RAYGEN = 2;
@@ -29,11 +29,9 @@ public final class RtVolumetrics {
 
     private RtFroxelGrid grid;
     private RtImage volumeDepth;
-    private final RtImage[] scattering = new RtImage[2];
+    private RtImage scattering;
     private RtImage filtered;
     private RtImage integrated;
-    private long lastRecordedFrame = Long.MIN_VALUE;
-    private long lastOpticalSignature = Long.MIN_VALUE;
 
     /** Frame-local values serialized into {@code WorldPush}. */
     public record FrameData(Int4 gridAndFlags, Float4 distanceParams, Float4 optics,
@@ -42,7 +40,7 @@ public final class RtVolumetrics {
     }
 
     public boolean matches(int renderWidth, int renderHeight) {
-        if (grid == null || volumeDepth == null || scattering[0] == null || scattering[1] == null
+        if (grid == null || volumeDepth == null || scattering == null
                 || filtered == null || integrated == null) {
             return false;
         }
@@ -61,21 +59,18 @@ public final class RtVolumetrics {
         volumeDepth = ctx.createStorageImage(renderWidth, renderHeight, VK10.VK_FORMAT_R32_SFLOAT,
                 "volumetric first-surface depth " + renderWidth + "x" + renderHeight);
         String extent = wanted.width() + "x" + wanted.height() + "x" + wanted.depth();
-        scattering[0] = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
-                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering A " + extent);
-        scattering[1] = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
-                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering B " + extent);
+        scattering = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering " + extent);
         filtered = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel spatially filtered lighting " + extent);
         integrated = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel integrated lighting " + extent);
-        invalidateHistory();
     }
 
     /** Initialize every descriptor-ring slot after pipeline creation or image recreation. */
     public void bindAll(RtPipeline pipeline) {
         requireReady();
-        pipeline.setVolumetricImages(volumeDepth.view, scattering[0].view, scattering[1].view,
+        pipeline.setVolumetricImages(volumeDepth.view, scattering.view, scattering.view,
                 filtered.view, integrated.view);
     }
 
@@ -116,25 +111,13 @@ public final class RtVolumetrics {
         }
 
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value();
-        long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
-                albedo, anisotropy, directionalStrength, directionalFocus, causticStrength,
-                noiseAmount, noiseScale, temporalWeight, localCandidates, emitterSamples,
-                seaLevel, submerged);
-        float cameraTravel2 = cameraDeltaX * cameraDeltaX + cameraDeltaY * cameraDeltaY
-                + cameraDeltaZ * cameraDeltaZ;
-        boolean historyValid = enabled && lastRecordedFrame == frameIndex - 1
-                && lastOpticalSignature == signature
-                && cameraTravel2 < maxDistance * maxDistance * 0.25f;
         int flags = enabled ? 1 : 0;
-        if (historyValid) {
-            flags |= 2;
-        }
         if (submerged) {
             flags |= 4;
         }
         flags |= (Math.clamp(localCandidates, 0, 255) << 8);
         flags |= (Math.clamp(emitterSamples, 1, 15) << 16);
-        int writeIndex = (int) (frameIndex & 1L);
+        int writeIndex = 0;
         float baseHeightRebased = seaLevel + CausticaConfig.Rt.Volumetrics.HEIGHT_OFFSET.value() - rebaseY;
 
         return new FrameData(
@@ -145,43 +128,34 @@ public final class RtVolumetrics {
                 new Float4(wrappedWorldCoordinate(rebaseX), rebaseY,
                         wrappedWorldCoordinate(rebaseZ), timeSeconds),
                 new Float4(directionalStrength, directionalFocus, causticStrength, 0.0f),
-                enabled, writeIndex, signature, frameIndex);
+                enabled, writeIndex, 0L, frameIndex);
     }
 
     /**
-     * Bind this frame's ping-pong direction into the descriptor slot selected by {@code setTlas}, inject
-     * lighting with ray-traced visibility, then prefix-integrate each XY froxel column.
+     * Injects lighting with ray-traced visibility and spatially filters the froxel volume.
+     * The subsequent indirect raygen pass integrates the volume along camera rays via stochastic raymarching.
      */
     public void record(RtContext ctx, VkCommandBuffer cmd, RtPipeline pipeline,
                        ByteBuffer pushConstants, FrameData frame) {
         if (!frame.enabled()) {
             return;
         }
-        RtImage current = scattering[frame.writeIndex()];
-        RtImage history = scattering[1 - frame.writeIndex()];
-        pipeline.setCurrentVolumetricHistory(current.view, history.view);
+        pipeline.setCurrentVolumetricHistory(scattering.view, scattering.view);
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel volumetrics");
              RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, INJECT_RAYGEN);
             barrier(cmd);
             pipeline.trace(cmd, grid.width(), grid.height(), grid.depth(), pushConstants, FILTER_RAYGEN);
             barrier(cmd);
-            pipeline.trace(cmd, grid.width(), grid.height(), 1, pushConstants, INTEGRATE_RAYGEN);
-            barrier(cmd);
         }
-        lastRecordedFrame = frame.frameIndex();
-        lastOpticalSignature = frame.opticalSignature();
     }
 
     public void invalidateHistory() {
-        lastRecordedFrame = Long.MIN_VALUE;
-        lastOpticalSignature = Long.MIN_VALUE;
     }
 
     public void destroy() {
         destroyImages();
         grid = null;
-        invalidateHistory();
     }
 
     public RtFroxelGrid grid() {
@@ -279,7 +253,7 @@ public final class RtVolumetrics {
     }
 
     private void requireReady() {
-        if (grid == null || volumeDepth == null || scattering[0] == null || scattering[1] == null
+        if (grid == null || volumeDepth == null || scattering == null
                 || filtered == null || integrated == null) {
             throw new IllegalStateException("Froxel resources have not been created");
         }
@@ -290,11 +264,9 @@ public final class RtVolumetrics {
             volumeDepth.destroy();
             volumeDepth = null;
         }
-        for (int i = 0; i < scattering.length; i++) {
-            if (scattering[i] != null) {
-                scattering[i].destroy();
-                scattering[i] = null;
-            }
+        if (scattering != null) {
+            scattering.destroy();
+            scattering = null;
         }
         if (filtered != null) {
             filtered.destroy();

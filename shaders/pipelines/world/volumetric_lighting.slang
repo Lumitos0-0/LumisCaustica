@@ -207,19 +207,5 @@ public float4 injectFroxel(uint3 index) {
     float3 incident = ambient * skyVisibility + directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
-
-    if (froxelHistoryValid()) {
-        float4 history;
-        if (froxelReprojectHistory(samplePosition, history)) {
-            // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
-            // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
-            float3 historyCeiling = cameraVisibleSample
-                    ? current.rgb * 4.0 + float3(8.0)
-                    : current.rgb * 1.25 + float3(0.1);
-            history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
-            history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            current = lerp(current, history, worldPush.fogShape.w);
-        }
-    }
     return min(current, float4(HALF_MAX));
 }

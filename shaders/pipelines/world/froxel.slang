@@ -1,10 +1,10 @@
-// Frustum-froxel geometry, procedural density, temporal reprojection, and final volume sampling.
+// Frustum-froxel geometry, procedural density, and stochastic raymarching integration.
 //
-// The volume stores two different quantities:
-//   scattering/history = {in-scattered radiance per block, scalar extinction}
-//   integrated         = {camera-to-boundary in-scattering, scalar transmittance}
-// Keeping extinction linear until the integration pass follows the Frostbite V-buffer model and lets
-// the Beer-Lambert segment integral conserve energy even when a Z slice spans many blocks.
+// Scattering and scalar extinction are injected into the camera-aligned volume and spatially filtered.
+// The integration model uses per-pixel stochastic raymarching through the filtered volume up to the first
+// surface interface, evaluating the analytic constant-medium Beer-Lambert segment solution.
+// Sub-slice stochastic jitter converts residual discretization into high-frequency Monte Carlo noise
+// that DLSS Ray Reconstruction reconstructs with temporal stability and sharp geometry boundaries.
 
 import world_common;
 import world_core;
@@ -16,7 +16,7 @@ public bool froxelEnabled() {
 }
 
 public bool froxelHistoryValid() {
-    return (uint(worldPush.froxelGrid.w) & 2u) != 0u;
+    return false;
 }
 
 public bool froxelUnderwater() {
@@ -130,97 +130,142 @@ public float3 froxelSkyRadiance(float3 direction, SkyState state) {
     return bt709ToAcesCg(max(bt709, float3(0.0)));
 }
 
+public float4 froxelFilteredLoad(int3 p) {
+    return froxelFiltered[p];
+}
+
+public float4 froxelTrilinearFiltered(float3 coordinate) {
+    int3 dimensions = froxelDimensions();
+    float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
+    int3 lo = int3(floor(bounded));
+    int3 hi = min(lo + int3(1), dimensions - 1);
+    float3 f = frac(bounded);
+    float4 c000 = froxelFilteredLoad(int3(lo.x, lo.y, lo.z));
+    float4 c100 = froxelFilteredLoad(int3(hi.x, lo.y, lo.z));
+    float4 c010 = froxelFilteredLoad(int3(lo.x, hi.y, lo.z));
+    float4 c110 = froxelFilteredLoad(int3(hi.x, hi.y, lo.z));
+    float4 c001 = froxelFilteredLoad(int3(lo.x, lo.y, hi.z));
+    float4 c101 = froxelFilteredLoad(int3(hi.x, lo.y, hi.z));
+    float4 c011 = froxelFilteredLoad(int3(lo.x, hi.y, hi.z));
+    float4 c111 = froxelFilteredLoad(int3(hi.x, hi.y, hi.z));
+    return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
+            lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
+}
+
 public float4 froxelHistoryLoad(int3 p) {
-    return froxelHistory[p];
+    return froxelFilteredLoad(p);
 }
 
 public float4 froxelIntegratedLoad(int3 p) {
-    return froxelIntegrated[p];
+    return froxelFilteredLoad(p);
 }
 
 public float4 froxelTrilinearHistory(float3 coordinate) {
-    int3 dimensions = froxelDimensions();
-    float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
-    int3 lo = int3(floor(bounded));
-    int3 hi = min(lo + int3(1), dimensions - 1);
-    float3 f = frac(bounded);
-    float4 c000 = froxelHistoryLoad(int3(lo.x, lo.y, lo.z));
-    float4 c100 = froxelHistoryLoad(int3(hi.x, lo.y, lo.z));
-    float4 c010 = froxelHistoryLoad(int3(lo.x, hi.y, lo.z));
-    float4 c110 = froxelHistoryLoad(int3(hi.x, hi.y, lo.z));
-    float4 c001 = froxelHistoryLoad(int3(lo.x, lo.y, hi.z));
-    float4 c101 = froxelHistoryLoad(int3(hi.x, lo.y, hi.z));
-    float4 c011 = froxelHistoryLoad(int3(lo.x, hi.y, hi.z));
-    float4 c111 = froxelHistoryLoad(int3(hi.x, hi.y, hi.z));
-    return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
-            lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
+    return froxelTrilinearFiltered(coordinate);
 }
 
 public float4 froxelTrilinearIntegrated(float3 coordinate) {
-    int3 dimensions = froxelDimensions();
-    float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
-    int3 lo = int3(floor(bounded));
-    int3 hi = min(lo + int3(1), dimensions - 1);
-    float3 f = frac(bounded);
-    float4 c000 = froxelIntegratedLoad(int3(lo.x, lo.y, lo.z));
-    float4 c100 = froxelIntegratedLoad(int3(hi.x, lo.y, lo.z));
-    float4 c010 = froxelIntegratedLoad(int3(lo.x, hi.y, lo.z));
-    float4 c110 = froxelIntegratedLoad(int3(hi.x, hi.y, lo.z));
-    float4 c001 = froxelIntegratedLoad(int3(lo.x, lo.y, hi.z));
-    float4 c101 = froxelIntegratedLoad(int3(hi.x, lo.y, hi.z));
-    float4 c011 = froxelIntegratedLoad(int3(lo.x, hi.y, hi.z));
-    float4 c111 = froxelIntegratedLoad(int3(hi.x, hi.y, hi.z));
-    return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
-            lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
+    return froxelTrilinearFiltered(coordinate);
 }
 
-/** Reproject a translated-world froxel sample into the previous frame's scattering volume. */
 public bool froxelReprojectHistory(float3 position, out float4 history) {
     history = float4(0.0);
-    float3 previousCameraRelative = position - worldPush.camOffset + worldPush.camDelta;
-    float4 previousClip = mul(worldPush.prevViewProj, float4(previousCameraRelative, 1.0));
-    if (previousClip.w <= 0.0) {
-        return false;
-    }
-    float2 uv = previousClip.xy / previousClip.w * 0.5 + 0.5;
-    float previousDistance = length(previousCameraRelative);
-    float slice = froxelSliceForDistance(previousDistance);
-    if (any(uv < float2(0.0)) || any(uv > float2(1.0)) || slice <= 0.0
-            || slice >= float(worldPush.froxelGrid.z)) {
-        return false;
-    }
-    float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 0.5);
-    history = froxelTrilinearHistory(coordinate);
-    return true;
+    return false;
 }
 
-/** Cumulative fog at the first primary interface, with trilinear XY/Z reconstruction. */
+/**
+ * Stochastic raymarching through the spatially filtered participating media volume.
+ * Marches the view ray up to the first camera interface, evaluating the Beer-Lambert segment integral.
+ * Per-frame stochastic sub-slice jitter enables DLSS Ray Reconstruction to reconstruct clean, sharp
+ * light shafts and volumetric shadows without temporal accumulation lag.
+ */
+public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
+                           out float3 accumulatedScattering, out float accumulatedTransmittance) {
+    accumulatedScattering = float3(0.0);
+    accumulatedTransmittance = 1.0;
+
+    if (rayEnd <= 0.0) {
+        return;
+    }
+
+    int depthSlices = worldPush.froxelGrid.z;
+    if (depthSlices <= 0) {
+        return;
+    }
+
+    float maxDistance = worldPush.fogDistance.x;
+    float clampedEnd = min(rayEnd, maxDistance);
+
+    // Decorrelated per-pixel spatial hash combined with a temporal golden-ratio sequence across frames.
+    float spatialJitter = frac(52.9829189 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715))));
+    float temporalOffset = frac(float(worldPush.frameIndex & 1023u) * 0.61803398875);
+    float sliceJitter = frac(spatialJitter + temporalOffset) - 0.5;
+
+    float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
+    float2 gridXY = uv * float2(worldPush.froxelGrid.xy) - 0.5;
+
+    int maxSlice = min(int(ceil(froxelSliceForDistance(clampedEnd))), depthSlices);
+    float previousDistance = 0.0;
+
+    for (int z = 0; z < maxSlice; ++z) {
+        if (previousDistance >= clampedEnd) {
+            break;
+        }
+
+        float nextBoundary = float(z + 1);
+        float nextDistance = (z + 1 >= depthSlices)
+                ? maxDistance
+                : min(froxelBoundaryDistance(nextBoundary), maxDistance);
+
+        float segmentStart = previousDistance;
+        float segmentEnd = min(nextDistance, clampedEnd);
+        float segmentLength = max(segmentEnd - segmentStart, 0.0);
+
+        if (segmentLength > 1.0e-6) {
+            float zCoord = clamp(float(z) + 0.5 + sliceJitter * 0.65, 0.0, float(depthSlices - 1));
+            float3 sampleCoord = float3(gridXY, zCoord);
+            float4 medium = froxelTrilinearFiltered(sampleCoord);
+
+            float extinction = max(medium.a, 0.0);
+            float segmentTransmittance = exp(-extinction * segmentLength);
+            float sourceIntegral = (extinction > 1.0e-7)
+                    ? ((1.0 - segmentTransmittance) / extinction)
+                    : segmentLength;
+
+            accumulatedScattering += accumulatedTransmittance * max(medium.rgb, float3(0.0)) * sourceIntegral;
+            accumulatedTransmittance *= segmentTransmittance;
+
+            if (accumulatedTransmittance <= 1.0e-4) {
+                break;
+            }
+        }
+
+        previousDistance = nextDistance;
+    }
+}
+
+/** Cumulative fog at the first primary interface via stochastic raymarching. */
 public float4 froxelAtPixel(uint2 pixel, uint2 imageSize) {
     float distance = clamp(volumeDepth[int2(pixel)], 0.0, worldPush.fogDistance.x);
     if (distance <= 0.0) {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
-    float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
-    float slice = froxelSliceForDistance(distance);
-    float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 1.0);
-    float4 integrated = froxelTrilinearIntegrated(coordinate);
-    if (slice < 1.0) {
-        // Texel zero is integrated through the first boundary. Recover a partial constant-medium segment
-        // so fog begins continuously at the camera rather than popping on at the first Z slice.
-        float fraction = saturate(slice);
-        float fullTransmittance = clamp(integrated.a, 1.0e-6, 1.0);
-        float partialTransmittance = pow(fullTransmittance, fraction);
-        float fullOpacity = max(1.0 - fullTransmittance, 1.0e-6);
-        integrated.rgb *= (1.0 - partialTransmittance) / fullOpacity;
-        integrated.a = partialTransmittance;
-    }
-    return integrated;
+    float3 scattering;
+    float transmittance;
+    froxelRaymarch(pixel, imageSize, distance, scattering, transmittance);
+    return float4(min(scattering, float3(HALF_MAX)), clamp(transmittance, 0.0, 1.0));
 }
 
 public float3 applyFroxelFog(uint2 pixel, uint2 imageSize, float3 sceneRadiance) {
     if (!froxelEnabled()) {
         return sceneRadiance;
     }
-    float4 fog = froxelAtPixel(pixel, imageSize);
-    return sceneRadiance * clamp(fog.a, 0.0, 1.0) + max(fog.rgb, float3(0.0));
+    float distance = clamp(volumeDepth[int2(pixel)], 0.0, worldPush.fogDistance.x);
+    if (distance <= 0.0) {
+        return sceneRadiance;
+    }
+    float3 scattering;
+    float transmittance;
+    froxelRaymarch(pixel, imageSize, distance, scattering, transmittance);
+    return sceneRadiance * clamp(transmittance, 0.0, 1.0) + min(scattering, float3(HALF_MAX));
 }
