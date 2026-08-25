@@ -566,7 +566,7 @@ public final class CausticaConfig {
             public static final IntSetting GRID_PIXEL_SIZE =
                     clampedInt("caustica.rt.froxelGridPixelSize", "volumetrics.grid-pixel-size", 16, 4, 64);
             public static final IntSetting DEPTH_SLICES =
-                    clampedInt("caustica.rt.froxelDepthSlices", "volumetrics.depth-slices", 48, 8, 128);
+                    clampedInt("caustica.rt.froxelDepthSlices", "volumetrics.depth-slices", 48, 8, 256);
             public static final FloatSetting MAX_DISTANCE =
                     clampedFloat("caustica.rt.froxelMaxDistance", "volumetrics.max-distance", 192.0f, 8.0f, 2048.0f);
             public static final FloatSetting DEPTH_EXPONENT =

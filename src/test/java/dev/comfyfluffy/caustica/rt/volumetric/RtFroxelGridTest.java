@@ -44,10 +44,10 @@ final class RtFroxelGridTest {
             slices.set(48);
             int[][] expected = {
                     {107, 60, 44},
-                    {138, 78, 56},
-                    {192, 108, 72},
-                    {275, 155, 88},
-                    {384, 216, 112}
+                    {160, 90, 56},
+                    {240, 135, 72},
+                    {384, 216, 88},
+                    {480, 270, 112}
             };
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);

@@ -201,20 +201,25 @@ public final class RtVolumetrics {
         int quality = CausticaConfig.Rt.Volumetrics.QUALITY.value();
         int basePixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE.value();
         int baseDepthSlices = CausticaConfig.Rt.Volumetrics.DEPTH_SLICES.value();
+        // Since integration is per-pixel (cheap) and the volume is deterministic (no temporal filter /
+        // reprojection to amortize), the grid can be finer than before. The 5x5 colour-aware filter handles
+        // the residual shot noise, and a finer XY footprint + more depth slices remove the visible grid.
+        // Note: the inject pass ray-traces per froxel, so XY resolution is the main cost lever; high presets
+        // push it aggressively but keep a sane ceiling (never below ~4px, i.e. config min).
         int pixelSize = switch (quality) {
             case 0 -> Math.max(4, Math.round(basePixelSize * 1.125f));
-            case 1 -> Math.max(4, Math.round(basePixelSize * 0.875f));
-            case 2 -> Math.max(4, Math.round(basePixelSize * 0.625f));
-            case 3 -> Math.max(4, Math.round(basePixelSize * 0.4375f));
-            case 4 -> Math.max(4, Math.round(basePixelSize * 0.3125f));
+            case 1 -> Math.max(4, Math.round(basePixelSize * 0.75f));
+            case 2 -> Math.max(4, Math.round(basePixelSize * 0.5f));
+            case 3 -> Math.max(4, Math.round(basePixelSize * 0.3125f));
+            case 4 -> Math.max(4, Math.round(basePixelSize * 0.25f));
             default -> basePixelSize;
         };
         int depthSlices = switch (quality) {
             case 0 -> Math.max(8, Math.round(baseDepthSlices * (11.0f / 12.0f)));
             case 1 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 6.0f)));
-            case 2 -> Math.min(128, Math.round(baseDepthSlices * 1.5f));
-            case 3 -> Math.min(128, Math.round(baseDepthSlices * (11.0f / 6.0f)));
-            case 4 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 3.0f)));
+            case 2 -> Math.min(160, Math.round(baseDepthSlices * 1.5f));
+            case 3 -> Math.min(192, Math.round(baseDepthSlices * (11.0f / 6.0f)));
+            case 4 -> Math.min(224, Math.round(baseDepthSlices * (7.0f / 3.0f)));
             default -> baseDepthSlices;
         };
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
