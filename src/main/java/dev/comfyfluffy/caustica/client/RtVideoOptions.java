@@ -56,7 +56,8 @@ public final class RtVideoOptions {
             underwaterFog(),
             underwaterCaustics(),
             fogQuality(),
-            dlssQuality()
+            dlssQuality(),
+            dlssPreset()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
             options.add(hdrEnabled());
@@ -232,6 +233,21 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.dlssQuality.tooltip")),
             (caption, position) -> Options.genericValueLabel(caption,
                     Component.translatable("caustica.options.rt.dlssQuality." + steps.get(position))),
+            new OptionInstance.IntRange(0, steps.size() - 1),
+            initialPosition,
+            position -> setting.set(steps.get(position)));
+    }
+
+    private static OptionInstance<Integer> dlssPreset() {
+        IntSetting setting = CausticaConfig.Rt.DlssRr.PRESET;
+        List<Integer> steps = CausticaConfig.Rt.DlssRr.PRESET_STEPS;
+        int initialPreset = steps.contains(setting.value()) ? setting.value() : 0;
+        int initialPosition = steps.indexOf(initialPreset);
+        return new OptionInstance<>(
+            "caustica.options.rt.dlssPreset",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.dlssPreset.tooltip")),
+            (caption, position) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.dlssPreset." + steps.get(position))),
             new OptionInstance.IntRange(0, steps.size() - 1),
             initialPosition,
             position -> setting.set(steps.get(position)));

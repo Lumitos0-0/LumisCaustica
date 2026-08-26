@@ -73,6 +73,12 @@
 	"caustica.options.rt.dlssQuality.2": "Quality",
 	"caustica.options.rt.dlssQuality.5": "DLAA",
 
+	"caustica.options.rt.dlssPreset": "Ray Reconstruction Model",
+	"caustica.options.rt.dlssPreset.tooltip": "Selects the neural Ray Reconstruction model architecture. Default uses the driver/SDK default. DLSS 4.0 uses the 1st Gen Transformer model (Preset D), and DLSS 4.5 uses the 2nd Gen Transformer model (Preset F) with enhanced temporal stability and detail in motion.",
+	"caustica.options.rt.dlssPreset.0": "Default",
+	"caustica.options.rt.dlssPreset.4": "DLSS 4.0 (Preset D)",
+	"caustica.options.rt.dlssPreset.6": "DLSS 4.5 (Preset F - 2nd Gen)",
+
 	"caustica.options.rt.debugView": "Debug View",
 	"caustica.options.rt.debugView.tooltip": "Inspect ray-tracing buffers and exposure diagnostics after the normal frame has rendered.",
 	"caustica.options.rt.debugView.0": "Off",
