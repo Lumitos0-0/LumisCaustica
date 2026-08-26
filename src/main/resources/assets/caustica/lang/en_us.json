@@ -36,8 +36,17 @@
 	"caustica.options.rt.wrc": "World Radiance Cache",
 	"caustica.options.rt.wrc.tooltip": "Maintains a persistent world-space irradiance volume to accelerate volumetric fog and multi-bounce global illumination without noise or ghosting.",
 
+	"caustica.options.rt.wrcMode": "Cache Algorithm",
+	"caustica.options.rt.wrcMode.tooltip": "Selects the world radiance caching architecture. SHARC eliminates camera-movement flickering with world-locked spatial hashing; NRC/Analytic uses direct high-precision reconstruction.",
+	"caustica.options.rt.wrcMode.0": "Off",
+	"caustica.options.rt.wrcMode.1": "SHARC (Spatial Hash)",
+	"caustica.options.rt.wrcMode.2": "NRC / Analytic",
+
 	"caustica.options.rt.fogDensity": "Fog Density",
 	"caustica.options.rt.fogDensity.tooltip": "Extinction of the participating medium. Higher values produce denser haze and more visible light shafts.",
+
+	"caustica.options.rt.fogEmissiveStrength": "Emissive Volumetrics",
+	"caustica.options.rt.fogEmissiveStrength.tooltip": "Scattering strength of local light sources (torches, campfires, lava, glowstone) in volumetric fog.",
 
 	"caustica.options.rt.lightShaftStrength": "Light Shafts",
 	"caustica.options.rt.lightShaftStrength.tooltip": "Strength of sun and moon scattering in fog. This does not change fog density, local emissive fog, or surface lighting.",

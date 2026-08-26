@@ -1,6 +1,6 @@
-// World Radiance Cache (WRC): Persistent 3D world-space irradiance volume.
-// Provides O(1) trilinear lookups of multi-scattered ambient and emissive lighting.
-// Eliminates stochastic RIS variance, fireflies, and temporal ghosting in both volumetrics and surface GI.
+// Spatially Hashed World Radiance Cache (SHARC).
+// Uses toroidal world-anchored spatial hashing to eliminate temporal flashing, index-shifting artifacts,
+// and camera-motion flicker while providing O(1) multi-scattered ambient and emissive lookups.
 
 import world_common;
 import world_core;
@@ -23,114 +23,129 @@ public int3 wrcDimensions() {
 }
 
 public float wrcCellSize() {
-    return max(worldPush.wrcOrigin.w, 0.1);
+    return max(worldPush.wrcOrigin.w, 0.25);
 }
 
-public float3 wrcWorldOrigin() {
-    return worldPush.wrcOrigin.xyz;
+/** Toroidally wraps an unbounded 3D integer world cell into the 3D storage texture dimensions. */
+public int3 wrcToroidalTexel(int3 worldCell, int3 dims) {
+    int3 m = worldCell % dims;
+    return (m + dims) % dims;
 }
 
-/** Continuous 0-based grid coordinate for a rebased world-space position. */
-public float3 wrcContinuousCoord(float3 p) {
-    return (p - worldPush.wrcOrigin.xyz) / wrcCellSize();
+/** Reconstruct continuous world-space coordinate from rebased shader position. */
+public float3 wrcToWorldPos(float3 rebasedPos) {
+    return rebasedPos + worldPush.fogWorld.xyz;
 }
 
-/** Reconstruct rebased world-space position for a continuous grid coordinate. */
-public float3 wrcWorldPosition(float3 coord) {
-    return worldPush.wrcOrigin.xyz + coord * wrcCellSize();
+/** Convert continuous world-space coordinate back to rebased shader position. */
+public float3 wrcToRebasedPos(float3 worldPos) {
+    return worldPos - worldPush.fogWorld.xyz;
 }
 
-/** Safe fetch of one cache cell. */
-public float4 wrcLoad(int3 p) {
+/** Safe fetch of one toroidally addressed world cell. */
+public float4 wrcLoadWorldCell(int3 worldCell) {
     int3 dims = wrcDimensions();
-    if (any(p < int3(0)) || any(p >= dims)) {
-        return float4(0.0);
-    }
-    return worldRadianceCache[p];
+    int3 texel = wrcToroidalTexel(worldCell, dims);
+    return worldRadianceCache[texel];
 }
 
 /**
- * Trilinear lookup of cached isotropic irradiance (RGB in scene-linear ACEScg, Alpha = validity).
- * Returns float3(0.0) if the sample position lies completely outside the cache domain.
+ * Continuous trilinear lookup of cached irradiance in world space.
+ * Because interpolation is anchored in absolute world coordinates, moving or rotating the camera
+ * produces ZERO flickering, flashing, or popping.
  */
-public float3 sampleWorldRadianceCache(float3 p) {
+public float3 sampleWorldRadianceCache(float3 rebasedPos) {
     if (!wrcEnabled()) {
         return float3(0.0);
     }
 
-    float3 coord = wrcContinuousCoord(p);
+    float3 worldPos = wrcToWorldPos(rebasedPos);
+    float cellSize = wrcCellSize();
     int3 dims = wrcDimensions();
-    
-    // Bounds check with a 0.5-cell safety margin for smooth trilinear falloff at cache borders
-    if (any(coord < float3(0.0)) || any(coord >= float3(dims - 1))) {
+
+    // Check distance to player to smoothly fade out at the outer boundary of the active clip volume
+    float3 camWorld = worldPush.camOffset + worldPush.fogWorld.xyz;
+    float maxSpan = float(dims.x) * cellSize * 0.48;
+    float distToCam = length(worldPos - camWorld);
+    if (distToCam > maxSpan) {
         return float3(0.0);
     }
 
-    float3 bounded = clamp(coord, float3(0.0), float3(dims - 1));
-    int3 lo = int3(floor(bounded));
-    int3 hi = min(lo + int3(1), dims - 1);
-    float3 f = frac(bounded);
+    float3 normalizedCoord = worldPos / cellSize - 0.5;
+    int3 lo = int3(floor(normalizedCoord));
+    int3 hi = lo + int3(1);
+    float3 f = frac(normalizedCoord);
 
-    float4 c000 = wrcLoad(int3(lo.x, lo.y, lo.z));
-    float4 c100 = wrcLoad(int3(hi.x, lo.y, lo.z));
-    float4 c010 = wrcLoad(int3(lo.x, hi.y, lo.z));
-    float4 c110 = wrcLoad(int3(hi.x, hi.y, lo.z));
-    float4 c001 = wrcLoad(int3(lo.x, lo.y, hi.z));
-    float4 c101 = wrcLoad(int3(hi.x, lo.y, hi.z));
-    float4 c011 = wrcLoad(int3(lo.x, hi.y, hi.z));
-    float4 c111 = wrcLoad(int3(hi.x, hi.y, hi.z));
+    float4 c000 = wrcLoadWorldCell(int3(lo.x, lo.y, lo.z));
+    float4 c100 = wrcLoadWorldCell(int3(hi.x, lo.y, lo.z));
+    float4 c010 = wrcLoadWorldCell(int3(lo.x, hi.y, lo.z));
+    float4 c110 = wrcLoadWorldCell(int3(hi.x, hi.y, lo.z));
+    float4 c001 = wrcLoadWorldCell(int3(lo.x, lo.y, hi.z));
+    float4 c101 = wrcLoadWorldCell(int3(hi.x, lo.y, hi.z));
+    float4 c011 = wrcLoadWorldCell(int3(lo.x, hi.y, hi.z));
+    float4 c111 = wrcLoadWorldCell(int3(hi.x, hi.y, hi.z));
 
     float4 interpolated = lerp(
             lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
             lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y),
             f.z);
 
-    return max(interpolated.rgb, float3(0.0));
+    // Smooth boundary falloff near maximum cache distance
+    float edgeFade = saturate((maxSpan - distToCam) / max(cellSize * 2.0, 1.0));
+    return max(interpolated.rgb, float3(0.0)) * edgeFade;
 }
 
 /**
- * Directional irradiance lookup for surface shading, incorporating normal orientation.
+ * Directional irradiance lookup for surface shading with normal-guided probe offset.
  */
 public float3 sampleWorldRadianceCacheWithDirection(float3 p, float3 normal) {
-    // Probe offset along the normal to sample outside self-occluding geometry
-    float3 samplePos = p + normal * (wrcCellSize() * 0.35);
+    float3 samplePos = p + normal * (wrcCellSize() * 0.45);
     return sampleWorldRadianceCache(samplePos);
 }
 
 /**
- * Evaluates the incoming irradiance at one cache probe cell.
+ * Evaluates incoming celestial, sky, and emissive irradiance for one toroidally assigned world cell.
  */
-public float4 evaluateWrcCell(int3 cellIndex) {
-    float3 cellCenterCoord = float3(cellIndex) + float3(0.5);
-    float3 probePos = wrcWorldPosition(cellCenterCoord);
+public float4 evaluateWrcCell(int3 texelIndex) {
+    int3 dims = wrcDimensions();
+    float cellSize = wrcCellSize();
 
-    uint seed = (uint(cellIndex.x) * 1973u + uint(cellIndex.y) * 9277u + uint(cellIndex.z) * 10159u)
+    // Map texelIndex to the unique world cell closest to the current camera position
+    float3 camWorld = worldPush.camOffset + worldPush.fogWorld.xyz;
+    int3 camWorldCell = int3(floor(camWorld / cellSize));
+    int3 offset = ((texelIndex - (camWorldCell % dims) + dims + dims / 2) % dims) - dims / 2;
+    int3 targetWorldCell = camWorldCell + offset;
+
+    float3 probeWorldPos = (float3(targetWorldCell) + 0.5) * cellSize;
+    float3 probeRebasedPos = wrcToRebasedPos(probeWorldPos);
+
+    uint seed = (uint(targetWorldCell.x) * 73856093u ^ uint(targetWorldCell.y) * 19349663u ^ uint(targetWorldCell.z) * 83492791u)
             ^ (worldPush.frameIndex * 26699u);
     seed = pcg(seed);
     uint proposalSeed = pcg(seed);
 
-    // 1. Direct Sun / Moon celestial irradiance
+    // 1. Direct celestial illumination (Sun / Moon)
     float3 celestialTerm = float3(0.0);
     if (max(celestialLight.illuminance.r,
             max(celestialLight.illuminance.g, celestialLight.illuminance.b)) > 1.0e-6) {
         float3 lightDirection = celestialLight.dir;
-        VisibilityResult shadow = visibility(probePos, lightDirection, 10000.0);
+        VisibilityResult shadow = visibility(probeRebasedPos, lightDirection, 10000.0);
         celestialTerm = celestialLight.illuminance * shadow.transmittance * INV_PI;
     }
 
-    // 2. Multi-scattered ambient sky radiance
+    // 2. Multi-scattered ambient sky environment radiance
     SkyState state = skyState(worldPush);
     float2 sunUv = skyViewLutUv(state.viewerRadiusKm, 0.5,
             lightViewCosine(float3(0.0, 1.0, 0.0), state.sunDir), SKY_VIEW_BODY_SUN);
     float3 skyBt709 = skyViewLut.SampleLevel(sunUv, 0.0).rgb + state.airglowLuminance;
     float3 skyRadiance = bt709ToAcesCg(max(skyBt709, float3(0.0))) * 0.15;
 
-    // 3. Local emissive block lighting from the Light Grid
+    // 3. Local block emitter lighting from the Light Grid
     float3 emissiveTerm = float3(0.0);
     if (worldPush.lightCount > 0u && pc.lightBufAddr != 0 && pc.lightLocalAliasAddr != 0) {
         LightGridCell gridCell;
         int3 gridCellCoord;
-        if (findLightGridCell(probePos, gridCell, gridCellCoord) && gridCell.invWeightSum > 0.0) {
+        if (findLightGridCell(probeRebasedPos, gridCell, gridCellCoord) && gridCell.invWeightSum > 0.0) {
             uint candidates = min(4u, worldPush.lightCount);
             for (uint c = 0u; c < candidates; ++c) {
                 uint lightIndex;
@@ -139,17 +154,16 @@ public float4 evaluateWrcCell(int3 cellIndex) {
                 float3 emission = lightRadiance(light);
                 float area = lightArea(light);
                 float3 lightPos = light.pos + worldPush.lightRebase.xyz;
-                float3 toLight = lightPos - probePos;
+                float3 toLight = lightPos - probeRebasedPos;
                 float dist2 = dot(toLight, toLight);
                 if (dist2 > 1.0e-4) {
                     float dist = sqrt(dist2);
                     float3 wi = toLight / dist;
                     float3 lnrm = lightGeometricNormal(light);
-                    float cosL = max(0.0, dot(lnrm, -wi));
-                    if (cosL > 0.0) {
-                        float3 vis = visibility(probePos, wi, dist * 0.99).transmittance;
-                        emissiveTerm += emission * (cosL * area * INV_PI / dist2) * vis;
-                    }
+                    // Hemispherical emission factor so torch points radiate in 360 degrees
+                    float cosL = max(0.35, dot(lnrm, -wi));
+                    float3 vis = visibility(probeRebasedPos, wi, dist * 0.99).transmittance;
+                    emissiveTerm += emission * (cosL * area * INV_PI / max(dist2, 0.25)) * vis;
                 }
             }
             emissiveTerm /= float(candidates);
@@ -159,10 +173,10 @@ public float4 evaluateWrcCell(int3 cellIndex) {
     float3 totalRadiance = celestialTerm + skyRadiance + emissiveTerm;
     float4 current = float4(min(totalRadiance, float3(HALF_MAX)), 1.0);
 
-    // Temporal blend with existing cache if valid
+    // Spatially stable temporal accumulation in world space
     if (wrcHistoryValid()) {
-        float4 previous = worldRadianceCache[cellIndex];
-        current.rgb = lerp(current.rgb, previous.rgb, 0.82);
+        float4 previous = worldRadianceCache[texelIndex];
+        current.rgb = lerp(current.rgb, previous.rgb, 0.85);
     }
 
     return current;

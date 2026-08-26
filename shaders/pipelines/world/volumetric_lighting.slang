@@ -41,9 +41,11 @@ public float3 evaluateVolumeLight(float3 samplePosition, float3 lightPosition, f
         return float3(0.0);
     }
     float3 lightDirection = toLight * rsqrt(distance2);
-    float emitterCosine = max(0.0, dot(lightNormal, -lightDirection));
+    // Omnidirectional radiation factor for block emitters (torches, campfires) in participating media
+    float emitterCosine = max(0.35, dot(lightNormal, -lightDirection));
     float phase = hg(dot(lightDirection, viewRay), worldPush.fogOptics.w);
-    return emission * (emitterCosine * area * phase / distance2);
+    float emissiveBoost = max(worldPush.fogLighting.w, 1.0);
+    return emission * (emitterCosine * area * phase * emissiveBoost / max(distance2, 0.25));
 }
 
 /**
@@ -192,9 +194,10 @@ public float4 injectFroxel(uint3 index) {
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
     float3 emitter = float3(0.0);
     if (cameraVisibleSample) {
+        float emissiveBoost = max(worldPush.fogLighting.w, 1.0);
         if (wrcEnabled()) {
             // High-speed World Radiance Cache lookup: smooth, stable, zero RIS variance & fireflies
-            emitter = sampleWorldRadianceCache(samplePosition);
+            emitter = sampleWorldRadianceCache(samplePosition) * emissiveBoost;
         } else {
             // Multi-reservoir estimator over light grid candidates (fallback path)
             uint sampleCount = froxelEmitterSamples();

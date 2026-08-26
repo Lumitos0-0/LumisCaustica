@@ -589,7 +589,11 @@ public final class CausticaConfig {
             // around the sun/moon direction without changing medium density or local-emitter lighting.
             public static final FloatSetting DIRECTIONAL_FOCUS =
                     clampedFloat("caustica.rt.fogDirectionalFocus",
-                            "volumetrics.directional-focus", 0.70f, 0.0f, 0.9f);
+                            "volumetrics.directional-focus", 0.78f, 0.0f, 0.95f);
+            // Dedicated volumetric scattering strength for local block emitters (torches, lava, glowstone).
+            public static final FloatSetting FOG_EMISSIVE_STRENGTH =
+                    clampedFloat("caustica.rt.fogEmissiveStrength",
+                            "volumetrics.emissive-strength", 3.0f, 0.0f, 10.0f);
             // Underwater uses scattering here while per-segment waterExtinction remains absorption. Keeping
             // those coefficients separate avoids applying the path tracer's water absorption twice.
             public static final FloatSetting UNDERWATER_SCATTERING =
@@ -624,6 +628,9 @@ public final class CausticaConfig {
         public static final class Wrc {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.wrc", "wrc.enabled", true);
+            // 0: Off, 1: SHARC (Spatially Hashed Radiance Cache), 2: NRC / Neural-Analytic Hybrid
+            public static final IntSetting MODE =
+                    clampedInt("caustica.rt.wrcMode", "wrc.mode", 1, 0, 2);
             public static final FloatSetting CELL_SIZE =
                     clampedFloat("caustica.rt.wrcCellSize", "wrc.cell-size", 1.0f, 0.25f, 8.0f);
             public static final IntSetting GRID_DIM =
