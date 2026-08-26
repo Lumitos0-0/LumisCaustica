@@ -56,7 +56,7 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Volumetrics.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Volumetrics.ENABLED, Rt.Wrc.ENABLED,
             Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
@@ -102,6 +102,9 @@ public final class CausticaConfig {
                         + " directional-strength and directional-focus shape sun/moon shafts without changing density.\n"
                         + " underwater-scattering and underwater-caustic-strength control submerged fog and beams.\n"
                         + " extinction is Beer-Lambert attenuation per block; max-distance and height values are blocks.");
+        FILE.setComment("wrc",
+                " World Radiance Cache (WRC). Caches multi-scattered irradiance in world space to eliminate noise and temporal ghosting.\n"
+                        + " cell-size is block spacing per probe; grid-dim is cubic dimension (e.g. 48 = 48x48x48).\n");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -615,6 +618,18 @@ public final class CausticaConfig {
                     clampedInt("caustica.rt.fogLocalLightCandidates", "volumetrics.local-light-candidates", 2, 0, 8);
 
             private Volumetrics() {
+            }
+        }
+
+        public static final class Wrc {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.wrc", "wrc.enabled", true);
+            public static final FloatSetting CELL_SIZE =
+                    clampedFloat("caustica.rt.wrcCellSize", "wrc.cell-size", 1.0f, 0.25f, 8.0f);
+            public static final IntSetting GRID_DIM =
+                    clampedInt("caustica.rt.wrcGridDim", "wrc.grid-dim", 48, 16, 128);
+
+            private Wrc() {
             }
         }
 

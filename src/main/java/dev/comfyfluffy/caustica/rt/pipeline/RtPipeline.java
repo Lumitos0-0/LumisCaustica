@@ -158,7 +158,7 @@ public final class RtPipeline {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
-            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_FROXEL_INTEGRATED; binding++) {
+            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_RADIANCE_CACHE; binding++) {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
@@ -435,6 +435,11 @@ public final class RtPipeline {
         writeStorageBindingAll(WORLD_FROXEL_HISTORY, historyView);
         writeStorageBindingAll(WORLD_FROXEL_FILTERED, filteredView);
         writeStorageBindingAll(WORLD_FROXEL_INTEGRATED, integratedView);
+    }
+
+    /** Bind the World Radiance Cache volume into every ring slot. */
+    public void setWorldRadianceCache(long cacheView) {
+        writeStorageBindingAll(WORLD_RADIANCE_CACHE, cacheView);
     }
 
     /**

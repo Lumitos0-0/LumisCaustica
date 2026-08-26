@@ -30,6 +30,9 @@ import world_common;
 [[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFiltered;
 [[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
 
+// World Radiance Cache (WRC): Persistent 3D world-space irradiance volume.
+[[vk::binding(17, 0)]] [format("rgba16f")] public RWTexture3D<float4> worldRadianceCache;
+
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];

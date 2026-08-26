@@ -71,6 +71,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 import dev.comfyfluffy.caustica.rt.volumetric.RtVolumetrics;
+import dev.comfyfluffy.caustica.rt.cache.RtWorldCache;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
@@ -248,6 +249,8 @@ public final class RtComposite {
     // Camera-aligned participating-media grid. It owns first-interface depth and ping-ponged 3D images;
     // the world pipeline supplies the ray-traced lighting/visibility stages that update them.
     private final RtVolumetrics volumetrics = new RtVolumetrics();
+    // Persistent world-anchored radiance cache providing fast, noise-free ambient & emissive lookups.
+    private final RtWorldCache worldCache = new RtWorldCache();
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -725,7 +728,8 @@ public final class RtComposite {
                             RtDeviceBringup.worldRaygenShader(),
                             "volumetric_inject.rgen.spv",
                             "volumetric_filter.rgen.spv",
-                            "volumetric_integrate.rgen.spv"},
+                            "volumetric_integrate.rgen.spv",
+                            "wrc_update.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -741,6 +745,7 @@ public final class RtComposite {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
                 volumetrics.bindAll(worldPipeline);
+                worldCache.bindAll(worldPipeline);
             }
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
@@ -909,7 +914,8 @@ public final class RtComposite {
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
-                && volumetrics.matches(renderW, renderH)) {
+                && volumetrics.matches(renderW, renderH)
+                && worldCache.matches()) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -942,6 +948,7 @@ public final class RtComposite {
         renderSizeRrEnabled = rrEnabled;
         renderSizeRrQuality = rrQuality;
         volumetrics.ensure(ctx, renderW, renderH);
+        worldCache.ensure(ctx);
 
         // RT traces and DLSS-RR reconstruct scene-linear ACEScg in an HDR R16G16B16A16_SFLOAT target,
         // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
@@ -988,6 +995,7 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
             volumetrics.bindAll(worldPipeline);
+            worldCache.bindAll(worldPipeline);
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
@@ -1119,6 +1127,8 @@ public final class RtComposite {
             RtVolumetrics.FrameData fogFrame = volumetrics.prepareFrame(frameCounter,
                     terrain.blockX, terrain.blockY, terrain.blockZ, seaLevel, (flags & 1) != 0,
                     waterWaveTime, mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ);
+            RtWorldCache.FrameData wrcFrame = worldCache.prepareFrame(frameCounter,
+                    camX, camY, camZ, terrain.blockX, terrain.blockY, terrain.blockZ);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so
@@ -1177,7 +1187,9 @@ public final class RtComposite {
                     fogFrame.optics(),
                     fogFrame.shape(),
                     fogFrame.worldOffsetAndTime(),
-                    fogFrame.lighting()
+                    fogFrame.lighting(),
+                    wrcFrame.origin(),
+                    wrcFrame.dims()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1221,6 +1233,8 @@ public final class RtComposite {
                 skyLut.record(cmd, pushBuf.deviceAddress);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
+
+            worldCache.record(ctx, cmd, active, pushConstants, wrcFrame);
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -1520,6 +1534,7 @@ public final class RtComposite {
         }
         destroyGuideImages();
         volumetrics.destroy();
+        worldCache.destroy();
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();

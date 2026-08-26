@@ -33,6 +33,9 @@
 	"caustica.options.rt.volumetricFog": "Volumetric Fog",
 	"caustica.options.rt.volumetricFog.tooltip": "Enable ray-traced lighting and shadows in the camera-aligned froxel fog volume.",
 
+	"caustica.options.rt.wrc": "World Radiance Cache",
+	"caustica.options.rt.wrc.tooltip": "Maintains a persistent world-space irradiance volume to accelerate volumetric fog and multi-bounce global illumination without noise or ghosting.",
+
 	"caustica.options.rt.fogDensity": "Fog Density",
 	"caustica.options.rt.fogDensity.tooltip": "Extinction of the participating medium. Higher values produce denser haze and more visible light shafts.",
 

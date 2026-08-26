@@ -32,6 +32,7 @@ import trace_ser;
 import lighting;
 import sky;
 import bindings;
+import wrc;
 
 // Atmospheric transmittance LUT (RtSkyLut), also bound to world.rmiss at the same binding: raygen reads it
 // to colour the NEE sun/moonlight, the miss shader reads it to tint the visible discs and stars.
@@ -315,11 +316,17 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // exact, not an approximation. The SSS term is gated off past MAX_SSS_INDIRECT_DEPTH by passing
         // sss=0 there (falls back to plain front-only RIS).
         if (risOn) {
-            float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
-            Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
-                                     seed, proposalSeed);
-            L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
-                                             activeSss);
+            if (bounce >= 1 && wrcEnabled()) {
+                // Instant multi-bounce diffuse GI from World Radiance Cache (noise-free, O(1) lookup)
+                float3 indirectGi = sampleWorldRadianceCacheWithDirection(hitPos, n);
+                L += throughput * diffAlb * indirectGi * INV_PI;
+            } else {
+                float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
+                Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
+                                         seed, proposalSeed);
+                L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
+                                                 activeSss);
+            }
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the
