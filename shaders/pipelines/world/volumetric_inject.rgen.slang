@@ -1,5 +1,5 @@
 // One invocation per froxel: evaluate the participating-medium material, atmosphere and emissive-block
-// lighting, trace visibility, and temporally reproject the previous scattering field.
+// lighting, and trace visibility.
 
 import world_common;
 import world_core;

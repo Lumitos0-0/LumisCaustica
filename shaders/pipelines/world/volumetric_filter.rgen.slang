@@ -1,4 +1,4 @@
-// Low-pass the temporally accumulated scattering field in screen-froxel space before Z integration.
+// Low-pass the injected scattering field in screen-froxel space before stochastic raymarching.
 // This filter operates on the continuous volume itself, not scene geometry. Final composition samples the
 // 3D field at each pixel's exact depth. A centre-weighted kernel keeps denoising while preserving the
 // higher-frequency visibility transitions that define light-shaft edges.

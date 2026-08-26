@@ -50,7 +50,9 @@ public float froxelBoundaryDistanceFast(float boundary, float invDepth, float ma
 /** Continuous boundary coordinate for a camera-ray distance. */
 public float froxelSliceForDistance(float distance) {
     float normalized = saturate(distance / worldPush.fogDistance.x);
-    return pow(normalized, 1.0 / worldPush.fogDistance.y) * float(worldPush.froxelGrid.z);
+    float exponent = worldPush.fogDistance.y;
+    float sliceNorm = (exponent == 2.0) ? sqrt(normalized) : pow(normalized, 1.0 / exponent);
+    return sliceNorm * float(worldPush.froxelGrid.z);
 }
 
 /** Reconstruct one unjittered frustum ray from a floating froxel XY coordinate. */
@@ -234,7 +236,7 @@ public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
         float segmentLength = max(segmentEnd - segmentStart, 0.0);
 
         if (segmentLength > 1.0e-6) {
-            float zCoord = clamp(float(z) + 0.5 * float(step) + sliceJitter * 0.65, 0.0, float(depthSlices - 1));
+            float zCoord = clamp(float(z) + 0.5 * float(step - 1) + sliceJitter * 0.65, 0.0, float(depthSlices - 1));
             float3 sampleCoord = float3(gridXY, zCoord);
             float4 medium = froxelTrilinearFiltered(sampleCoord);
 

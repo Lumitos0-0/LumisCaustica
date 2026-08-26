@@ -293,7 +293,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).
             if (medium.current.water && waterWaves && shadow.waterHitT > 0.0) {
-                vis *= waterCaustic(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT);
+                vis *= waterCausticRgb(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT, 1.0);
             }
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                 float3 brdf = diffAlb * INV_PI; // Lambertian diffuse (f = albedo/PI)
@@ -335,8 +335,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
                 if (medium.current.water && waterWaves && shadowBack.waterHitT > 0.0) {
-                    visB *= waterCaustic(hitPos + lightDir * shadowBack.waterHitT,
-                                         lightDir, shadowBack.waterHitT);
+                    visB *= waterCausticRgb(hitPos + lightDir * shadowBack.waterHitT,
+                                         lightDir, shadowBack.waterHitT, 1.0);
                 }
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
