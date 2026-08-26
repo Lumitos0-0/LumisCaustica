@@ -158,10 +158,6 @@ public final class RtPipeline {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
-            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_FROXEL_INTEGRATED; binding++) {
-                binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
-            }
             binds.get(WORLD_CELESTIALS).binding(WORLD_CELESTIALS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
@@ -427,51 +423,6 @@ public final class RtPipeline {
         }
     }
 
-    /** Bind all size-dependent volumetric images into every ring slot while the device is idle. */
-    public void setVolumetricImages(long depthView, long scatteringView, long historyView,
-                                    long filteredView, long integratedView) {
-        writeStorageBindingAll(WORLD_VOLUME_DEPTH, depthView);
-        writeStorageBindingAll(WORLD_FROXEL_SCATTERING, scatteringView);
-        writeStorageBindingAll(WORLD_FROXEL_HISTORY, historyView);
-        writeStorageBindingAll(WORLD_FROXEL_FILTERED, filteredView);
-        writeStorageBindingAll(WORLD_FROXEL_INTEGRATED, integratedView);
-    }
-
-    /**
-     * Select this frame's ping-pong scattering direction. {@link #setTlas} has already waited for the
-     * current descriptor-ring slot, so only that safe slot is updated while older frames remain in flight.
-     */
-    public void setCurrentVolumetricHistory(long scatteringView, long historyView) {
-        writeStorageBindingCurrent(WORLD_FROXEL_SCATTERING, scatteringView);
-        writeStorageBindingCurrent(WORLD_FROXEL_HISTORY, historyView);
-    }
-
-    private void writeStorageBindingAll(int binding, long imageView) {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
-            info.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(RING, stack);
-            for (int i = 0; i < RING; i++) {
-                writes.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(binding)
-                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                        .pImageInfo(info);
-            }
-            VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
-        }
-    }
-
-    private void writeStorageBindingCurrent(int binding, long imageView) {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
-            info.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
-            write.get(0).sType$Default().dstSet(descriptorSets[currentSet]).dstBinding(binding)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .pImageInfo(info);
-            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
-        }
-    }
-
     /** Bind the block albedo atlas into every ring slot. */
     public void setBlockAlbedoAtlas(long imageView, long sampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -557,18 +508,8 @@ public final class RtPipeline {
      * hit regions are shared, so passes over the same scene differ only in this index.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex) {
-        trace(cmd, width, height, 1, pushConstants, raygenIndex);
-    }
-
-    /** Dispatch a selected ray-generation record over a 2D or 3D launch grid. */
-    public void trace(VkCommandBuffer cmd, int width, int height, int depth,
-                      java.nio.ByteBuffer pushConstants, int raygenIndex) {
         if (raygenIndex < 0 || raygenIndex >= raygenCount) {
             throw new IllegalArgumentException("raygen index " + raygenIndex + " out of range [0, " + raygenCount + ")");
-        }
-        if (width <= 0 || height <= 0 || depth <= 0) {
-            throw new IllegalArgumentException("trace dimensions must be positive: "
-                    + width + "x" + height + "x" + depth);
         }
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "trace rays")) {
             VK10.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
@@ -588,7 +529,7 @@ public final class RtPipeline {
             VkStridedDeviceAddressRegionKHR hit = VkStridedDeviceAddressRegionKHR.calloc(stack)
                     .deviceAddress(sbt.deviceAddress + (long) (raygenCount + missCount) * sbtStride).stride(sbtStride).size((long) hitGroupCount * sbtStride);
             VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
-            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, depth);
+            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, 1);
         }
     }
 

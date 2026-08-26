@@ -529,16 +529,6 @@ public struct CelestialLight {
 };
 
 /**
- * Artistic moonlight chromaticity in linear BT.709. Normalize to unit luminance so the look package's
- * moonIlluminanceLux remains the photometric anchor while moonlit terrain, haze, and shafts read cooler
- * than sunlight.
- */
-public float3 moonlightTintBt709() {
-    static const float3 tint = float3(0.45, 0.68, 1.35);
-    return tint / dot(tint, float3(0.2126, 0.7152, 0.0722));
-}
-
-/**
  * The single directional light NEE samples: whichever of the two bodies actually delivers more light
  * after atmospheric extinction.
  *
@@ -549,8 +539,10 @@ public float3 moonlightTintBt709() {
 public CelestialLight dominantCelestialLight(SkyState s, Sampler2D transmittanceLut) {
     float3 sunLux = s.sunIlluminance
             * transmittanceToSpace(transmittanceLut, s.viewerRadiusKm, s.sunDir, s.sunAngularRadius);
-    // Keep moon lux unchanged while giving the renderer's authored night lighting a cooler chromaticity.
-    float3 moonLux = s.moonIlluminance * moonlightTintBt709()
+    // Moonlight is sunlight reflected off a grey body: its colour is the sun's, not a cool tint. The blue
+    // cast of a moonlit night is the viewer's own scotopic response, which belongs in the look transform,
+    // not in the light's spectrum.
+    float3 moonLux = s.moonIlluminance
             * transmittanceToSpace(transmittanceLut, s.viewerRadiusKm, s.moonDir, s.moonAngularRadius);
 
     CelestialLight light;

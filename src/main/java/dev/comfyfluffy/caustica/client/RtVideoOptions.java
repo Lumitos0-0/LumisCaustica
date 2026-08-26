@@ -49,13 +49,6 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
-            volumetricFog(),
-            fogDensity(),
-            lightShaftStrength(),
-            lightShaftFocus(),
-            underwaterFog(),
-            underwaterCaustics(),
-            fogQuality(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -140,86 +133,6 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
-    }
-
-    private static OptionInstance<Boolean> volumetricFog() {
-        return bool("caustica.options.rt.volumetricFog", CausticaConfig.Rt.Volumetrics.ENABLED);
-    }
-
-    private static OptionInstance<Integer> fogDensity() {
-        FloatSetting setting = CausticaConfig.Rt.Volumetrics.EXTINCTION;
-        return new OptionInstance<>(
-            "caustica.options.rt.fogDensity",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDensity.tooltip")),
-            (caption, value) -> Options.genericValueLabel(caption,
-                    Component.literal(value + "%")),
-            new OptionInstance.IntRange(0, 100),
-            Math.clamp(Math.round(setting.value() * 10_000.0f), 0, 100),
-            value -> setting.set(value / 10_000.0f));
-    }
-
-    private static OptionInstance<Integer> lightShaftStrength() {
-        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_STRENGTH;
-        return new OptionInstance<>(
-            "caustica.options.rt.lightShaftStrength",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("caustica.options.rt.lightShaftStrength.tooltip")),
-            (caption, percent) -> Options.genericValueLabel(caption,
-                    Component.literal(percent + "%")),
-            new OptionInstance.IntRange(0, 400),
-            Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
-            percent -> setting.set(percent / 100.0f));
-    }
-
-    private static OptionInstance<Integer> lightShaftFocus() {
-        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_FOCUS;
-        return new OptionInstance<>(
-            "caustica.options.rt.lightShaftFocus",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("caustica.options.rt.lightShaftFocus.tooltip")),
-            (caption, percent) -> Options.genericValueLabel(caption,
-                    Component.literal(percent + "%")),
-            new OptionInstance.IntRange(0, 90),
-            Math.clamp(Math.round(setting.value() * 100.0f), 0, 90),
-            percent -> setting.set(percent / 100.0f));
-    }
-
-    private static OptionInstance<Integer> underwaterFog() {
-        FloatSetting setting = CausticaConfig.Rt.Volumetrics.UNDERWATER_SCATTERING;
-        return new OptionInstance<>(
-            "caustica.options.rt.underwaterFog",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("caustica.options.rt.underwaterFog.tooltip")),
-            (caption, percent) -> Options.genericValueLabel(caption,
-                    Component.literal(percent + "%")),
-            new OptionInstance.IntRange(0, 150),
-            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 150),
-            percent -> setting.set(percent / 1000.0f));
-    }
-
-    private static OptionInstance<Integer> underwaterCaustics() {
-        FloatSetting setting = CausticaConfig.Rt.Volumetrics.UNDERWATER_CAUSTIC_STRENGTH;
-        return new OptionInstance<>(
-            "caustica.options.rt.underwaterCaustics",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("caustica.options.rt.underwaterCaustics.tooltip")),
-            (caption, percent) -> Options.genericValueLabel(caption,
-                    Component.literal(percent + "%")),
-            new OptionInstance.IntRange(0, 300),
-            Math.clamp(Math.round(setting.value() * 100.0f), 0, 300),
-            percent -> setting.set(percent / 100.0f));
-    }
-
-    private static OptionInstance<Integer> fogQuality() {
-        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
-        return new OptionInstance<>(
-            "caustica.options.rt.fogQuality",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
-            (caption, value) -> Options.genericValueLabel(caption,
-                    Component.translatable("caustica.options.rt.fogQuality." + value)),
-            new OptionInstance.IntRange(0, 4),
-            Math.clamp(setting.value(), 0, 4),
-            setting::set);
     }
 
     private static OptionInstance<Integer> dlssQuality() {

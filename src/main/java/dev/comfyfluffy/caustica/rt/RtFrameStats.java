@@ -65,7 +65,6 @@ public final class RtFrameStats {
                     "frame.recordTlas",
                     "frame.trace",
                     "frame.skyLut",
-                    "frame.volumetrics",
                     // Wavefront trace and downstream debug stages.
                     "frame.tracePrimary",
                     "frame.traceIndirect",

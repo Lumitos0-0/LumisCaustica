@@ -24,7 +24,6 @@ import math;
 import medium;
 import segment;
 import water;
-import froxel;
 import trace;
 #ifdef CAUSTICA_ENABLE_EXT_SER
 import trace_ser;
@@ -432,8 +431,6 @@ void main() {
     // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.
-    float3 resolvedRadiance = frameRadiance / float(spp);
-    resolvedRadiance = applyFroxelFog(dispatchIndex, dimensions, resolvedRadiance);
-    float3 stored = resolvedRadiance * worldPush.preExposure;
+    float3 stored = frameRadiance * (worldPush.preExposure / float(spp));
     outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
 }

@@ -30,32 +30,6 @@
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 
-	"caustica.options.rt.volumetricFog": "Volumetric Fog",
-	"caustica.options.rt.volumetricFog.tooltip": "Enable ray-traced lighting and shadows in the camera-aligned froxel fog volume.",
-
-	"caustica.options.rt.fogDensity": "Fog Density",
-	"caustica.options.rt.fogDensity.tooltip": "Extinction of the participating medium. Higher values produce denser haze and more visible light shafts.",
-
-	"caustica.options.rt.lightShaftStrength": "Light Shafts",
-	"caustica.options.rt.lightShaftStrength.tooltip": "Strength of sun and moon scattering in fog. This does not change fog density, local emissive fog, or surface lighting.",
-
-	"caustica.options.rt.lightShaftFocus": "Shaft Focus",
-	"caustica.options.rt.lightShaftFocus.tooltip": "Concentrates sun and moon scattering toward their direction. Higher values make aligned light shafts more pronounced without increasing fog density.",
-
-	"caustica.options.rt.underwaterFog": "Underwater Fog",
-	"caustica.options.rt.underwaterFog.tooltip": "Particulate scattering while the camera is submerged. Water absorption and biome tint are handled separately.",
-
-	"caustica.options.rt.underwaterCaustics": "Water Caustics",
-	"caustica.options.rt.underwaterCaustics.tooltip": "Strength of animated wave-focusing patterns projected into underwater volumetric light shafts.",
-
-	"caustica.options.rt.fogQuality": "Fog Quality",
-	"caustica.options.rt.fogQuality.tooltip": "Controls true froxel XY/Z resolution and emitter samples. Higher modes prioritize a sharper grid over repeated light rays; Ultra+ remains very demanding.",
-	"caustica.options.rt.fogQuality.0": "Performance",
-	"caustica.options.rt.fogQuality.1": "Balanced",
-	"caustica.options.rt.fogQuality.2": "High",
-	"caustica.options.rt.fogQuality.3": "Ultra",
-	"caustica.options.rt.fogQuality.4": "Ultra+",
-
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",
 

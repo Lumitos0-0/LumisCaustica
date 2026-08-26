@@ -124,26 +124,13 @@ abstract class CompileShaders extends DefaultTask {
 		def compileOneSlang = { File src, File spv, List<String> extra ->
 			spv.parentFile.mkdirs()
 			def includes = [src.parentFile] + includeDirs.findAll { it != src.parentFile }
-			def diagnostics = new ByteArrayOutputStream()
-			def result = execOps.exec {
+			execOps.exec {
 				// Embed Slang source and line mappings in SPIR-V for RenderDoc/Nsight source debugging.
 				commandLine([slangc.get(), src.absolutePath, "-target", "spirv",
 						"-profile", "spirv_1_5", "-matrix-layout-column-major",
 						"-warnings-as-errors", "all", "-warnings-disable", "41012", "-g"]
 						+ includes.collectMany { ["-I", it.absolutePath] } + extra
 						+ ["-o", spv.absolutePath])
-				standardOutput = diagnostics
-				errorOutput = diagnostics
-				ignoreExitValue = true
-			}
-			if (result.exitValue != 0) {
-				def text = diagnostics.toString("UTF-8").trim()
-				logger.error(text)
-				if (System.getenv("GITHUB_ACTIONS") == "true") {
-					def escaped = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-					println("::error file=${srcDir.get().asFile.toPath().relativize(src.toPath())}::${escaped}")
-				}
-				throw new GradleException("slangc failed for ${src}")
 			}
 			validate(spv)
 		}
