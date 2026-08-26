@@ -206,11 +206,6 @@ public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
     float exponent = worldPush.fogDistance.y;
     float invDepth = 1.0 / float(depthSlices);
 
-    // Screen-stable sub-slice spatial interleaving. Neighboring pixels interleave their depth samples
-    // across slices in a high-frequency spatial pattern, breaking up depth banding without temporal
-    // boiling or motion shimmering.
-    float sliceJitter = frac(52.9829189 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715)))) - 0.5;
-
     float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
     float2 gridXY = uv * float2(worldPush.froxelGrid.xy) - 0.5;
 
@@ -232,9 +227,7 @@ public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
         float segmentLength = max(segmentEnd - segmentStart, 0.0);
 
         if (segmentLength > 1.0e-6) {
-            // Distance-scaled jitter: prevents distant thick slices from jumping across large world spans
-            float jitterScale = saturate(1.0 - (float(z) / float(depthSlices)) * 0.7);
-            float zCoord = clamp(float(z) + sliceJitter * (0.55 * jitterScale), 0.0, float(depthSlices - 1));
+            float zCoord = float(z);
             float3 sampleCoord = float3(gridXY, zCoord);
             float4 medium = froxelTrilinearFiltered(sampleCoord);
 
