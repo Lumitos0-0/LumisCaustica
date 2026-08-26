@@ -78,52 +78,9 @@ public float froxelOpaqueDistance(float2 coordinate) {
     return clamp(volumeDepth[pixel], 0.0, worldPush.fogDistance.x);
 }
 
-public float froxelHash(float3 p) {
-    p = frac(p * 0.1031);
-    p += dot(p, p.yzx + 33.33);
-    return frac((p.x + p.y) * p.z);
-}
-
-public float froxelValueNoise(float3 p) {
-    float3 cell = floor(p);
-    float3 f = frac(p);
-    float3 u = f * f * (3.0 - 2.0 * f);
-    float n000 = froxelHash(cell + float3(0.0, 0.0, 0.0));
-    float n100 = froxelHash(cell + float3(1.0, 0.0, 0.0));
-    float n010 = froxelHash(cell + float3(0.0, 1.0, 0.0));
-    float n110 = froxelHash(cell + float3(1.0, 1.0, 0.0));
-    float n001 = froxelHash(cell + float3(0.0, 0.0, 1.0));
-    float n101 = froxelHash(cell + float3(1.0, 0.0, 1.0));
-    float n011 = froxelHash(cell + float3(0.0, 1.0, 1.0));
-    float n111 = froxelHash(cell + float3(1.0, 1.0, 1.0));
-    float nx00 = lerp(n000, n100, u.x);
-    float nx10 = lerp(n010, n110, u.x);
-    float nx01 = lerp(n001, n101, u.x);
-    float nx11 = lerp(n011, n111, u.x);
-    return lerp(lerp(nx00, nx10, u.y), lerp(nx01, nx11, u.y), u.z);
-}
-
-public float froxelFbm(float3 p) {
-    float result = 0.0;
-    float amplitude = 0.5714286;
-    for (uint octave = 0u; octave < 3u; ++octave) {
-        result += amplitude * froxelValueNoise(p);
-        p = p * 2.03 + float3(17.1, 9.2, 13.7);
-        amplitude *= 0.5;
-    }
-    return result;
-}
-
-/** World-stable height fog with a slowly advected, band-limited density field. */
+/** Clean physical extinction: uniform participating media without procedural noise blotches. */
 public float froxelExtinction(float3 position) {
-    float heightMultiplier = exp(clamp((worldPush.fogShape.x - position.y)
-            * worldPush.fogDistance.w, -3.0, 3.0));
-    float3 worldPosition = position + worldPush.fogWorld.xyz;
-    float3 wind = float3(worldPush.fogWorld.w * 0.018, 0.0, worldPush.fogWorld.w * 0.009);
-    float noise = froxelFbm(worldPosition * worldPush.fogShape.z + wind);
-    float noiseMultiplier = lerp(1.0 - worldPush.fogShape.y,
-            1.0 + worldPush.fogShape.y, noise);
-    return worldPush.fogDistance.z * clamp(heightMultiplier * noiseMultiplier, 0.05, 12.0);
+    return worldPush.fogDistance.z;
 }
 
 /** Atmosphere-LUT radiance without sun/moon sprites, in the path tracer's ACEScg transport basis. */

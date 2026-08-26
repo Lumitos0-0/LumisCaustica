@@ -55,7 +55,6 @@ public final class RtVideoOptions {
             lightShaftFocus(),
             underwaterFog(),
             underwaterCaustics(),
-            fogQuality(),
             dlssQuality(),
             dlssPreset()
         ));
@@ -209,18 +208,6 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 300),
             Math.clamp(Math.round(setting.value() * 100.0f), 0, 300),
             percent -> setting.set(percent / 100.0f));
-    }
-
-    private static OptionInstance<Integer> fogQuality() {
-        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
-        return new OptionInstance<>(
-            "caustica.options.rt.fogQuality",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
-            (caption, value) -> Options.genericValueLabel(caption,
-                    Component.translatable("caustica.options.rt.fogQuality." + value)),
-            new OptionInstance.IntRange(0, 4),
-            Math.clamp(setting.value(), 0, 4),
-            setting::set);
     }
 
     private static OptionInstance<Integer> dlssQuality() {

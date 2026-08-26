@@ -176,22 +176,18 @@ public float4 injectFroxel(uint3 index) {
     if (extinction <= 1.0e-7) {
         return float4(0.0);
     }
-    SkyState state = skyState(worldPush);
-    // A cheap low-frequency approximation to the hemispherical sky integral. It deliberately has no
-    // visibility ray: terrain occlusion is supplied by the directional and local terms, while this term
-    // represents the broad multiple-scattered environment already baked into the sky LUT.
-    float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
-            + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
+
     float3 skyVisibility;
     float3 directional = worldPush.fogLighting.x
             * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
-    // The original leak came from a partially occupied Z slice choosing its one light sample behind the
-    // first surface (for example inside a lava cave) and applying that result to the visible part of the
-    // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
+
+    // Fog leak fix: suppress directional and local emitter lighting when the sample lies behind the first camera surface
+    if (!cameraVisibleSample) {
+        directional = float3(0.0);
+    }
+
     float3 emitter = float3(0.0);
     if (cameraVisibleSample) {
-        // The same multi-reservoir estimator runs in moving and stationary views. Temporal accumulation
-        // still refines it, but does not switch the renderer to a different base lighting algorithm.
         uint sampleCount = froxelEmitterSamples();
         for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
             uint emitterSeed = seed ^ (lightSample + 1u) * 0x85ebca6bu;
@@ -203,7 +199,7 @@ public float4 injectFroxel(uint3 index) {
         }
         emitter /= float(sampleCount);
     }
-    float3 incident = ambient * skyVisibility + directional + emitter;
+    float3 incident = directional + emitter;
     float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
     float4 current = float4(max(source, float3(0.0)), extinction);
     return min(current, float4(HALF_MAX));

@@ -32,73 +32,35 @@ final class RtFroxelGridTest {
     }
 
     @Test
-    void qualityPresetsScaleTheBalancedGrid() {
-        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
+    void wantedGridUsesConfiguredResolution() {
         CausticaConfig.IntSetting pixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE;
         CausticaConfig.IntSetting slices = CausticaConfig.Rt.Volumetrics.DEPTH_SLICES;
-        int oldQuality = quality.value();
         int oldPixelSize = pixelSize.value();
         int oldSlices = slices.value();
         try {
             pixelSize.set(16);
             slices.set(48);
-            int[][] expected = {
-                    {107, 60, 44},
-                    {138, 78, 56},
-                    {192, 108, 72},
-                    {275, 155, 88},
-                    {384, 216, 112}
-            };
-            for (int preset = 0; preset < expected.length; preset++) {
-                quality.set(preset);
-                RtFroxelGrid grid = RtVolumetrics.wantedGrid(1920, 1080);
-                assertEquals(expected[preset][0], grid.width());
-                assertEquals(expected[preset][1], grid.height());
-                assertEquals(expected[preset][2], grid.depth());
-            }
+            RtFroxelGrid grid = RtVolumetrics.wantedGrid(1920, 1080);
+            assertEquals(120, grid.width());
+            assertEquals(68, grid.height());
+            assertEquals(48, grid.depth());
         } finally {
-            quality.set(oldQuality);
             pixelSize.set(oldPixelSize);
             slices.set(oldSlices);
         }
     }
 
     @Test
-    void qualityPresetsIncreaseEmitterProposalsButPreserveExplicitDisable() {
-        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
+    void candidatesPreservesExplicitDisable() {
         CausticaConfig.IntSetting candidates = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES;
-        int oldQuality = quality.value();
         int oldCandidates = candidates.value();
         try {
-            candidates.set(2);
-            int[] expected = {2, 4, 6, 8, 8};
-            for (int preset = 0; preset < expected.length; preset++) {
-                quality.set(preset);
-                assertEquals(expected[preset], RtVolumetrics.effectiveLocalLightCandidates());
-            }
+            candidates.set(4);
+            assertEquals(4, RtVolumetrics.effectiveLocalLightCandidates());
             candidates.set(0);
             assertEquals(0, RtVolumetrics.effectiveLocalLightCandidates());
         } finally {
-            quality.set(oldQuality);
             candidates.set(oldCandidates);
-        }
-    }
-
-    @Test
-    void qualityPresetsScaleEmitterSamplesAndTemporalSharpness() {
-        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
-        int oldQuality = quality.value();
-        try {
-            int[] emitterSamples = {1, 1, 2, 2, 3};
-            float[] historyWeights = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f};
-            for (int preset = 0; preset < emitterSamples.length; preset++) {
-                quality.set(preset);
-                assertEquals(emitterSamples[preset], RtVolumetrics.effectiveEmitterSamples());
-                assertEquals(historyWeights[preset],
-                        RtVolumetrics.effectiveTemporalWeight(0.95f), 1.0e-6f);
-            }
-        } finally {
-            quality.set(oldQuality);
         }
     }
 

@@ -189,59 +189,22 @@ public final class RtVolumetrics {
     }
 
     static RtFroxelGrid wantedGrid(int renderWidth, int renderHeight) {
-        int quality = CausticaConfig.Rt.Volumetrics.QUALITY.value();
         int basePixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE.value();
         int baseDepthSlices = CausticaConfig.Rt.Volumetrics.DEPTH_SLICES.value();
-        int pixelSize = switch (quality) {
-            case 0 -> Math.max(4, Math.round(basePixelSize * 1.125f));
-            case 1 -> Math.max(4, Math.round(basePixelSize * 0.875f));
-            case 2 -> Math.max(4, Math.round(basePixelSize * 0.625f));
-            case 3 -> Math.max(4, Math.round(basePixelSize * 0.4375f));
-            case 4 -> Math.max(4, Math.round(basePixelSize * 0.3125f));
-            default -> basePixelSize;
-        };
-        int depthSlices = switch (quality) {
-            case 0 -> Math.max(8, Math.round(baseDepthSlices * (11.0f / 12.0f)));
-            case 1 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 6.0f)));
-            case 2 -> Math.min(128, Math.round(baseDepthSlices * 1.5f));
-            case 3 -> Math.min(128, Math.round(baseDepthSlices * (11.0f / 6.0f)));
-            case 4 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 3.0f)));
-            default -> baseDepthSlices;
-        };
-        return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
+        return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, basePixelSize, baseDepthSlices);
     }
 
     static float effectiveTemporalWeight(float configured) {
-        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 2 -> Math.min(configured, 0.90f);
-            case 3 -> Math.min(configured, 0.78f);
-            case 4 -> Math.min(configured, 0.65f);
-            default -> configured;
-        };
+        return configured;
     }
 
     static int effectiveEmitterSamples() {
-        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0, 1 -> 1;
-            case 2, 3 -> 2;
-            case 4 -> 3;
-            default -> 1;
-        };
+        return 1;
     }
 
     static int effectiveLocalLightCandidates() {
         int configured = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES.value();
-        if (configured == 0) {
-            return 0;
-        }
-        // Extra candidates are unshadowed reservoir proposals; the finalized reservoir still traces one
-        // visibility ray. This reduces emissive selection variance at modest ALU/bandwidth cost.
-        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0 -> Math.max(configured, 2);
-            case 2 -> Math.max(configured, 6);
-            case 3, 4 -> Math.max(configured, 8);
-            default -> Math.max(configured, 4);
-        };
+        return Math.max(configured, 0);
     }
 
     private static float wrappedWorldCoordinate(int coordinate) {

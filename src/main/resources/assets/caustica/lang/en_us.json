@@ -48,14 +48,6 @@
 	"caustica.options.rt.underwaterCaustics": "Water Caustics",
 	"caustica.options.rt.underwaterCaustics.tooltip": "Strength of animated wave-focusing patterns projected into underwater volumetric light shafts.",
 
-	"caustica.options.rt.fogQuality": "Fog Quality",
-	"caustica.options.rt.fogQuality.tooltip": "Controls true froxel XY/Z resolution and emitter samples. Higher modes prioritize a sharper grid over repeated light rays; Ultra+ remains very demanding.",
-	"caustica.options.rt.fogQuality.0": "Performance",
-	"caustica.options.rt.fogQuality.1": "Balanced",
-	"caustica.options.rt.fogQuality.2": "High",
-	"caustica.options.rt.fogQuality.3": "Ultra",
-	"caustica.options.rt.fogQuality.4": "Ultra+",
-
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",
 

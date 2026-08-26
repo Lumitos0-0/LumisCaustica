@@ -89,7 +89,7 @@ The fog implementation is split by responsibility:
 
 - `rt/volumetric/RtFroxelGrid` owns CPU-side grid and nonlinear depth math.
 - `rt/volumetric/RtVolumetrics` owns the first-interface depth image, the scattering
-  volume, the spatially filtered volume, and pass scheduling.
+  volume, the filtered volume, and pass scheduling.
 - `world/froxel.slang` owns frustum mapping, density, stochastic raymarching integration,
   and scene-radiance composition.
 - `world/volumetric_lighting.slang` injects sky and block-emitter lighting using
@@ -97,32 +97,24 @@ The fog implementation is split by responsibility:
 - `world/volumetric_inject.rgen.slang` and `world/volumetric_filter.rgen.slang`
   are the GPU froxel entry points.
 
-With the default `grid-pixel-size = 16` and `depth-slices = 48`, Performance,
-Balanced, High, Ultra, and Ultra+ use `/18 × 44`, `/14 × 56`, `/10 × 72`,
-`/7 × 88`, and `/5 × 112` respectively. They average 1, 1, 2, 2, and 3
-independently sampled and shadowed emitter reservoirs per froxel in both moving and
-stationary views. This shifts the quality budget away from repeated light rays and
-into real XYZ volume resolution. The advanced grid settings remain the scale baseline
-for every preset.
-Deterministic celestial visibility, cell-centered injection, and a 3D spatial filter (3×3 in XY
-plus cross-slice taps in Z) denoise the froxel field before the path tracer integrates it.
+The system evaluates raw, physically uniform participating media without procedural
+noise blobs, arbitrary quality scaling, or un-shadowed ambient glow in dark interiors.
+Deterministic celestial visibility and cell-centered injection keep the 3D media
+field temporally stable.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera with a quadratic fast path when `exponent = 2.0`.
-Injection writes linear `{scattering.rgb, extinction}`. The filtered volume is integrated
+Injection writes linear `{scattering.rgb, extinction}`. The volume is integrated
 along each primary ray via stochastic raymarching in the indirect ray-generation pass. For
-each view ray, the march advances slice by slice with screen-stable sub-slice spatial interleaving
-and distance-attenuated jitter, evaluating the analytic Beer-Lambert segment integral and terminating
-early when reaching the first surface depth recorded in `volumeDepth` or when transmittance drops
-below threshold. Screen-stable spatial interleaving eliminates temporal boiling and motion shimmering
-while allowing DLSS Ray Reconstruction to reconstruct temporally stable, sharp light shafts and
-volumetric shadows alongside the path-traced scene without temporal accumulation lag.
+each view ray, the march advances slice by slice, evaluating the analytic Beer-Lambert
+segment integral and terminating early when reaching the first surface depth recorded in
+`volumeDepth` or when transmittance drops below threshold. This eliminates temporal boiling
+and motion shimmering while allowing DLSS Ray Reconstruction to reconstruct sharp, temporally
+stable light shafts and volumetric shadows without temporal accumulation lag.
 
-The participating-media field itself is independent of scene depth: every froxel is
-populated and Gaussian-filtered. Pass A runs before injection so local block-emitter
-lighting can be suppressed when a stochastic sample lies behind the first camera surface.
-That targeted gate prevents a partially occupied slice from importing underground lava
-radiance into its visible segment without carving empty geometry-shaped columns into the volume.
+Pass A runs before injection so directional and local block-emitter lighting are suppressed
+when a sample lies behind the first camera surface. That targeted gate prevents light from
+leaking through solid walls, cave ceilings, or mountain geometry.
 
 The grid uses the same atmosphere-derived dominant celestial light, TLAS
 visibility routine, transparent-shadow handling, and emissive-block light
