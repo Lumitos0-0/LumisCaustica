@@ -56,7 +56,9 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Volumetrics.ENABLED, Rt.Wrc.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES,
+            Rt.Volumetrics.ENABLED, Rt.Volumetrics.FOG_EMISSIVE_STRENGTH,
+            Rt.Wrc.ENABLED, Rt.Wrc.MODE, Rt.Wrc.CELL_SIZE, Rt.Wrc.GRID_DIM,
             Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,

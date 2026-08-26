@@ -59,7 +59,7 @@ public final class RtWorldCache {
     public FrameData prepareFrame(long frameIndex, double camX, double camY, double camZ,
                                   int rebaseX, int rebaseY, int rebaseZ) {
         requireReady();
-        boolean enabled = CausticaConfig.Rt.Wrc.ENABLED.value();
+        boolean enabled = CausticaConfig.Rt.Wrc.ENABLED.value() && CausticaConfig.Rt.Wrc.MODE.value() > 0;
         float cellSize = CausticaConfig.Rt.Wrc.CELL_SIZE.value();
         float halfSpan = (gridDim * cellSize) * 0.5f;
 
