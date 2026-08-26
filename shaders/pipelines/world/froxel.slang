@@ -206,28 +206,24 @@ public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
     float exponent = worldPush.fogDistance.y;
     float invDepth = 1.0 / float(depthSlices);
 
-    // Decorrelated per-pixel spatial hash combined with a temporal golden-ratio sequence across frames.
-    float spatialJitter = frac(52.9829189 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715))));
-    float temporalOffset = frac(float(worldPush.frameIndex & 1023u) * 0.61803398875);
-    float sliceJitter = frac(spatialJitter + temporalOffset) - 0.5;
+    // Screen-stable sub-slice spatial interleaving. Neighboring pixels interleave their depth samples
+    // across slices in a high-frequency spatial pattern, breaking up depth banding without temporal
+    // boiling or motion shimmering.
+    float sliceJitter = frac(52.9829189 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715)))) - 0.5;
 
     float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
     float2 gridXY = uv * float2(worldPush.froxelGrid.xy) - 0.5;
 
     int maxSlice = min(int(ceil(froxelSliceForDistance(clampedEnd))), depthSlices);
     float previousDistance = 0.0;
-    static const int STRIDE_NEAR_THRESHOLD = 16;
 
-    int z = 0;
-    while (z < maxSlice) {
+    for (int z = 0; z < maxSlice; ++z) {
         if (previousDistance >= clampedEnd) {
             break;
         }
 
-        // Adaptive stride: 1 slice in the detailed near field; 2 slices in distant low-frequency air
-        int step = (z >= STRIDE_NEAR_THRESHOLD && (z + 2 <= maxSlice)) ? 2 : 1;
-        float nextBoundary = float(z + step);
-        float nextDistance = (z + step >= depthSlices)
+        float nextBoundary = float(z + 1);
+        float nextDistance = (z + 1 >= depthSlices)
                 ? maxDistance
                 : min(froxelBoundaryDistanceFast(nextBoundary, invDepth, maxDistance, exponent), maxDistance);
 
@@ -236,7 +232,9 @@ public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
         float segmentLength = max(segmentEnd - segmentStart, 0.0);
 
         if (segmentLength > 1.0e-6) {
-            float zCoord = clamp(float(z) + 0.5 * float(step - 1) + sliceJitter * 0.65, 0.0, float(depthSlices - 1));
+            // Distance-scaled jitter: prevents distant thick slices from jumping across large world spans
+            float jitterScale = saturate(1.0 - (float(z) / float(depthSlices)) * 0.7);
+            float zCoord = clamp(float(z) + sliceJitter * (0.55 * jitterScale), 0.0, float(depthSlices - 1));
             float3 sampleCoord = float3(gridXY, zCoord);
             float4 medium = froxelTrilinearFiltered(sampleCoord);
 
@@ -255,7 +253,6 @@ public void froxelRaymarch(uint2 pixel, uint2 imageSize, float rayEnd,
         }
 
         previousDistance = nextDistance;
-        z += step;
     }
 }
 

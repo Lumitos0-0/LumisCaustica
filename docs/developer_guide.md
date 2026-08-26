@@ -104,19 +104,18 @@ independently sampled and shadowed emitter reservoirs per froxel in both moving 
 stationary views. This shifts the quality budget away from repeated light rays and
 into real XYZ volume resolution. The advanced grid settings remain the scale baseline
 for every preset.
-Deterministic celestial visibility and a centre-weighted 3×3 filter denoise the
-froxel field before the path tracer integrates it.
+Deterministic celestial visibility, cell-centered injection, and a 3D spatial filter (3×3 in XY
+plus cross-slice taps in Z) denoise the froxel field before the path tracer integrates it.
 
 Depth boundaries follow `distance = maxDistance × (slice / sliceCount)^exponent`,
 which concentrates samples near the camera with a quadratic fast path when `exponent = 2.0`.
 Injection writes linear `{scattering.rgb, extinction}`. The filtered volume is integrated
 along each primary ray via stochastic raymarching in the indirect ray-generation pass. For
-each view ray, the march advances with adaptive step striding (full 1-slice precision in the
-near field; 2-slice stride across distant smooth media) and sub-slice stochastic jitter,
-evaluating the analytic Beer-Lambert segment integral and terminating early when reaching
-the first surface depth recorded in `volumeDepth` or when transmittance drops below threshold.
-Combining per-pixel spatial decorrelation with a temporal golden-ratio sequence across frames
-allows DLSS Ray Reconstruction to reconstruct temporally stable, sharp light shafts and
+each view ray, the march advances slice by slice with screen-stable sub-slice spatial interleaving
+and distance-attenuated jitter, evaluating the analytic Beer-Lambert segment integral and terminating
+early when reaching the first surface depth recorded in `volumeDepth` or when transmittance drops
+below threshold. Screen-stable spatial interleaving eliminates temporal boiling and motion shimmering
+while allowing DLSS Ray Reconstruction to reconstruct temporally stable, sharp light shafts and
 volumetric shadows alongside the path-traced scene without temporal accumulation lag.
 
 The participating-media field itself is independent of scene depth: every froxel is

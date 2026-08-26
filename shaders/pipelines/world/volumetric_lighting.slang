@@ -155,19 +155,17 @@ public float3 clampFroxelSource(float3 source) {
 }
 
 public float4 injectFroxel(uint3 index) {
-    uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u
-            ^ worldPush.frameIndex * 26699u;
+    uint seed = index.x * 1973u + index.y * 9277u + index.z * 10159u;
     seed = pcg(seed);
     uint proposalSeed = pcg(seed);
 
-    // Jitter inside the complete froxel so temporal accumulation supersamples one continuous 3D field.
-    // Scene depth must not truncate the field itself: doing so creates empty rectangular columns that make
-    // the frustum grid visible. Depth is used only below to suppress local emitters sampled behind the
-    // first camera surface.
-    float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
+    // Evaluate participating media and lighting at the deterministic cell center.
+    // This keeps the 3D participating media field temporally stable, eliminating frame-to-frame shadow
+    // flickering and procedural noise boiling.
+    float2 cellCoordinate = float2(index.xy) + 0.5;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
-    float distance = lerp(nearDistance, farDistance, rndf(seed));
+    float distance = lerp(nearDistance, farDistance, 0.5);
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
