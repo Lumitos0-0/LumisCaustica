@@ -22,10 +22,8 @@ import net.minecraft.network.chat.Component;
  *
  * <p>Only settings the renderer re-reads per-frame are exposed here — toggles that would require a device or
  * buffer-pool rebuild (worker threads, OMM, max-entity capacities, PBR material flags) are intentionally
- * left to the {@code -Dcaustica.*} startup surface. DLSS-RR quality is the exception: the render resolution
- * is queried from NGX for the chosen quality mode on every resize (see
- * {@code RtDlssRr.queryOptimalRenderSize}), and the RR feature itself is recreated live whenever
- * {@code quality} changes (see {@code RtDlssRr.ensureFeature}), so it is safe to expose here.
+ * left to the {@code -Dcaustica.*} startup surface. DLSS-RR and froxel quality are explicit exceptions:
+ * their images/features are recreated at the next safe frame boundary when the selected preset changes.
  */
 public final class RtVideoOptions {
     private RtVideoOptions() {
@@ -49,6 +47,25 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricFog(),
+            fogQuality(),
+            fogDensity(),
+            fogDistance(),
+            fogDepthDistribution(),
+            fogAlbedo(),
+            fogHeightOffset(),
+            fogHeightFalloff(),
+            fogNoiseAmount(),
+            fogNoiseScale(),
+            fogAmbientStrength(),
+            lightShaftStrength(),
+            lightShaftFocus(),
+            localFogStrength(),
+            localFogFocus(),
+            localFogCandidates(),
+            localFogSamples(),
+            localFogClamp(),
+            fogFilterEdges(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -135,6 +152,145 @@ public final class RtVideoOptions {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
     }
 
+    private static OptionInstance<Boolean> volumetricFog() {
+        return bool("caustica.options.rt.volumetricFog", CausticaConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            tooltip("caustica.options.rt.fogQuality"),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.fogQuality." + value)),
+            new OptionInstance.IntRange(0, 2),
+            Math.clamp(setting.value(), 0, 2),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.EXTINCTION;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDensity", tooltip("caustica.options.rt.fogDensity"),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.4f / block", value / 10_000.0f))),
+            new OptionInstance.IntRange(0, 500),
+            Math.clamp(Math.round(setting.value() * 10_000.0f), 0, 500),
+            value -> setting.set(value / 10_000.0f));
+    }
+
+    private static OptionInstance<Integer> fogDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDistance", tooltip("caustica.options.rt.fogDistance"),
+            (caption, blocks) -> Options.genericValueLabel(caption, Component.literal(blocks + " blocks")),
+            new OptionInstance.IntRange(16, 512),
+            Math.clamp(Math.round(setting.value()), 16, 512),
+            blocks -> setting.set(blocks.floatValue()));
+    }
+
+    private static OptionInstance<Integer> fogDepthDistribution() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DEPTH_EXPONENT;
+        return decimalHundredths("caustica.options.rt.fogDepthDistribution", setting, 100, 400);
+    }
+
+    private static OptionInstance<Integer> fogAlbedo() {
+        return percent("caustica.options.rt.fogAlbedo",
+                CausticaConfig.Rt.Volumetrics.SINGLE_SCATTERING_ALBEDO, 0, 100);
+    }
+
+    private static OptionInstance<Integer> fogHeightOffset() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.HEIGHT_OFFSET;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogHeightOffset", tooltip("caustica.options.rt.fogHeightOffset"),
+            (caption, blocks) -> Options.genericValueLabel(caption, Component.literal(blocks + " blocks")),
+            new OptionInstance.IntRange(-64, 128),
+            Math.clamp(Math.round(setting.value()), -64, 128),
+            blocks -> setting.set(blocks.floatValue()));
+    }
+
+    private static OptionInstance<Integer> fogHeightFalloff() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogHeightFalloff", tooltip("caustica.options.rt.fogHeightFalloff"),
+            (caption, thousandths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f / block", thousandths / 1000.0f))),
+            new OptionInstance.IntRange(0, 250),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 250),
+            thousandths -> setting.set(thousandths / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> fogNoiseAmount() {
+        return percent("caustica.options.rt.fogNoiseAmount",
+                CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT, 0, 100);
+    }
+
+    private static OptionInstance<Integer> fogNoiseScale() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.NOISE_SCALE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogNoiseScale", tooltip("caustica.options.rt.fogNoiseScale"),
+            (caption, thousandths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f / block", thousandths / 1000.0f))),
+            new OptionInstance.IntRange(1, 1000),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 1, 1000),
+            thousandths -> setting.set(thousandths / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> fogAmbientStrength() {
+        return percent("caustica.options.rt.fogAmbientStrength",
+                CausticaConfig.Rt.Volumetrics.AMBIENT_STRENGTH, 0, 400);
+    }
+
+    private static OptionInstance<Integer> lightShaftStrength() {
+        return percent("caustica.options.rt.lightShaftStrength",
+                CausticaConfig.Rt.Volumetrics.DIRECTIONAL_STRENGTH, 0, 400);
+    }
+
+    private static OptionInstance<Integer> lightShaftFocus() {
+        return signedPercent("caustica.options.rt.lightShaftFocus",
+                CausticaConfig.Rt.Volumetrics.DIRECTIONAL_FOCUS);
+    }
+
+    private static OptionInstance<Integer> localFogStrength() {
+        return percent("caustica.options.rt.localFogStrength",
+                CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_STRENGTH, 0, 800);
+    }
+
+    private static OptionInstance<Integer> localFogFocus() {
+        return signedPercent("caustica.options.rt.localFogFocus",
+                CausticaConfig.Rt.Volumetrics.ANISOTROPY);
+    }
+
+    private static OptionInstance<Integer> localFogCandidates() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES;
+        return integer("caustica.options.rt.localFogCandidates", setting, 0, 16);
+    }
+
+    private static OptionInstance<Integer> localFogSamples() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_SAMPLES;
+        return integer("caustica.options.rt.localFogSamples", setting, 1, 4);
+    }
+
+    private static OptionInstance<Integer> localFogClamp() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CLAMP;
+        return new OptionInstance<>(
+            "caustica.options.rt.localFogClamp", tooltip("caustica.options.rt.localFogClamp"),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(1, 512),
+            Math.clamp(Math.round(setting.value()), 1, 512),
+            value -> setting.set(value.floatValue()));
+    }
+
+    private static OptionInstance<Integer> fogFilterEdges() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.FILTER_EDGE_SHARPNESS;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogFilterEdges", tooltip("caustica.options.rt.fogFilterEdges"),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 32),
+            Math.clamp(Math.round(setting.value()), 0, 32),
+            value -> setting.set(value.floatValue()));
+    }
+
     private static OptionInstance<Integer> dlssQuality() {
         IntSetting setting = CausticaConfig.Rt.DlssRr.QUALITY;
         List<Integer> steps = CausticaConfig.Rt.DlssRr.QUALITY_STEPS;
@@ -203,6 +359,48 @@ public final class RtVideoOptions {
             new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), Codec.INT),
             Math.clamp(setting.value(), 0, 9),
             setting::set);
+    }
+
+    private static OptionInstance<Integer> percent(String key, FloatSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            key, tooltip(key),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + "%")),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value() * 100.0f), min, max),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Integer> signedPercent(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key, tooltip(key),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + "%")),
+            new OptionInstance.IntRange(-90, 90),
+            Math.clamp(Math.round(setting.value() * 100.0f), -90, 90),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Integer> decimalHundredths(
+            String key, FloatSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            key, tooltip(key),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", value / 100.0f))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value() * 100.0f), min, max),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Integer> integer(String key, IntSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            key, tooltip(key),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(setting.value(), min, max),
+            setting::set);
+    }
+
+    private static <T> OptionInstance.TooltipSupplier<T> tooltip(String key) {
+        return OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip"));
     }
 
     private static OptionInstance<Boolean> bool(String captionKey, BooleanSetting setting) {

@@ -56,7 +56,8 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Volumetrics.ENABLED,
+            Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
@@ -95,6 +96,13 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("volumetrics",
+                " Deterministic camera-frustum froxel fog. quality: 0 low (64x32x64),\n"
+                        + " 1 medium (96x48x96), 2 high (128x64x128). The volume has no temporal history.\n"
+                        + " extinction is neutral Beer-Lambert attenuation per block; max-distance and height values are blocks.\n"
+                        + " directional controls shape ray-traced sun/moon shafts. local-light controls bound coloured\n"
+                        + " block-emitter mist; local-light-clamp and filter-edge-sharpness suppress fireflies and leaks.\n"
+                        + " Atmospheric froxels are disabled while the camera is submerged.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -545,6 +553,74 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        /**
+         * Camera-frustum participating media. Coefficients are neutral RGB by design; color enters through
+         * the atmosphere and bounded area-emitter records rather than a hand-authored fog tint.
+         */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
+            // Fixed presets: low 64x32x64, medium 96x48x96, high 128x64x128.
+            public static final IntSetting QUALITY =
+                    clampedInt("caustica.rt.froxelQuality", "volumetrics.quality", 1, 0, 2);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.froxelMaxDistance", "volumetrics.max-distance",
+                            128.0f, 16.0f, 512.0f);
+            // Linear depth plus 128 slices at the default range gives one-block average longitudinal cells.
+            public static final FloatSetting DEPTH_EXPONENT =
+                    clampedFloat("caustica.rt.froxelDepthExponent", "volumetrics.depth-exponent",
+                            1.0f, 1.0f, 4.0f);
+            public static final FloatSetting EXTINCTION =
+                    clampedFloat("caustica.rt.fogExtinction", "volumetrics.extinction",
+                            0.0025f, 0.0f, 0.05f);
+            public static final FloatSetting SINGLE_SCATTERING_ALBEDO =
+                    clampedFloat("caustica.rt.fogAlbedo", "volumetrics.single-scattering-albedo",
+                            0.90f, 0.0f, 1.0f);
+            // HG anisotropy used for local emitters. Zero is a stable isotropic default.
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "volumetrics.anisotropy",
+                            0.0f, -0.90f, 0.90f);
+            public static final FloatSetting AMBIENT_STRENGTH =
+                    clampedFloat("caustica.rt.fogAmbientStrength", "volumetrics.ambient-strength",
+                            0.25f, 0.0f, 4.0f);
+            public static final FloatSetting DIRECTIONAL_STRENGTH =
+                    clampedFloat("caustica.rt.fogDirectionalStrength",
+                            "volumetrics.directional-strength", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting DIRECTIONAL_FOCUS =
+                    clampedFloat("caustica.rt.fogDirectionalFocus",
+                            "volumetrics.directional-focus", 0.65f, -0.90f, 0.90f);
+            public static final FloatSetting HEIGHT_OFFSET =
+                    finiteFloat("caustica.rt.fogHeightOffset", "volumetrics.height-offset", 16.0f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fogHeightFalloff", "volumetrics.height-falloff",
+                            0.012f, 0.0f, 0.25f);
+            public static final FloatSetting NOISE_AMOUNT =
+                    clampedFloat("caustica.rt.fogNoiseAmount", "volumetrics.noise-amount",
+                            0.30f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_SCALE =
+                    clampedFloat("caustica.rt.fogNoiseScale", "volumetrics.noise-scale",
+                            0.04f, 0.001f, 1.0f);
+            public static final FloatSetting LOCAL_LIGHT_STRENGTH =
+                    clampedFloat("caustica.rt.fogLocalLightStrength",
+                            "volumetrics.local-light-strength", 1.0f, 0.0f, 8.0f);
+            public static final IntSetting LOCAL_LIGHT_CANDIDATES =
+                    clampedInt("caustica.rt.fogLocalLightCandidates",
+                            "volumetrics.local-light-candidates", 4, 0, 16);
+            public static final IntSetting LOCAL_LIGHT_SAMPLES =
+                    clampedInt("caustica.rt.fogLocalLightSamples",
+                            "volumetrics.local-light-samples", 1, 1, 4);
+            // Ceiling on local-emitter source radiance after extinction/albedo; directional light is not clipped.
+            public static final FloatSetting LOCAL_LIGHT_CLAMP =
+                    clampedFloat("caustica.rt.fogLocalLightClamp",
+                            "volumetrics.local-light-clamp", 64.0f, 1.0f, 512.0f);
+            public static final FloatSetting FILTER_EDGE_SHARPNESS =
+                    clampedFloat("caustica.rt.fogFilterEdgeSharpness",
+                            "volumetrics.filter-edge-sharpness", 8.0f, 0.0f, 32.0f);
+
+            private Volumetrics() {
             }
         }
 

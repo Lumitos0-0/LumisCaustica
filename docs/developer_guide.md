@@ -62,6 +62,39 @@ cmake -S native/ngx_shim -B build/cmake/ngx_shim/release -DCMAKE_BUILD_TYPE=Rele
 cmake --build build/cmake/ngx_shim/release
 ```
 
+## Volumetric frame graph
+
+Atmospheric fog uses a camera-frustum froxel grid with fixed `64 x 32 x 64`,
+`96 x 48 x 96`, and `128 x 64 x 128` quality presets. The default 128-block
+range and linear 128-slice High preset provide one-block average longitudinal
+resolution. The grid is rebuilt in full every frame and owns only three 3D
+images: source/extinction, bilateral-filtered source/extinction, and cumulative
+in-scattering/transmittance. There is no temporal volume history or
+reprojection.
+
+The world frame records these stages in order:
+
+1. the primary trace writes the first-interface `volumeDepth` independently of
+   the transmitted DLSS depth guide;
+2. froxel injection evaluates static world-space fBm density, atmosphere-LUT
+   ambient light, one deterministic TLAS visibility ray for the active sun or
+   moon, and bounded proposals from the local coloured area-emitter hierarchy;
+3. a deterministic 3x3x3 extinction-aware filter rejects geometry/density
+   boundaries;
+4. each XY column is prefix-integrated with the analytic constant-medium
+   Beer-Lambert solution;
+5. the indirect surface trace and DLSS Ray Reconstruction (or fallback upscale)
+   produce the display-resolution scene;
+6. a dedicated display-resolution raygen reconstructs the integrated volume
+   trilinearly and composites into `rrOutput` before exposure and bloom.
+
+The existing GPU light hierarchy is the technically available stable source for
+block-local fog lighting. Minecraft's scalar 0-15 block-light field is not
+currently uploaded as a GPU volume, so froxels do not perform an unavailable
+scalar lookup. Coloured emitter use is local-only, finite-area, source-clamped,
+first-interface-clipped, and spatially edge-filtered to avoid singular weights,
+fireflies, and fog leaks. Atmospheric froxels are disabled while submerged.
+
 ## Native Bundling
 
 Gradle bundles NGX natives for the current host platform by default:

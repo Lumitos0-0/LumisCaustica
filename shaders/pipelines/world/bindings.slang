@@ -20,6 +20,17 @@ import world_common;
 [[vk::binding(10, 0)]] public Sampler2D skyViewLut;
 [[vk::binding(11, 0)]] public Sampler2D transmittanceLut;
 
+// Camera-frustum participating media. volumeDepth stores the first primary interface distance so
+// atmospheric fog cannot leak through terrain, glass, or water. The volume stores an unfiltered
+// source field, its spatially filtered form, and cumulative {in-scattering, transmittance}. The final
+// target is the display-resolution scene produced by DLSS-RR (or the fallback upscale), allowing fog
+// to composite after reconstruction without feeding surface guides to RR for a volumetric feature.
+[[vk::binding(12, 0)]] [format("r32f")] public RWTexture2D<float> volumeDepth;
+[[vk::binding(13, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelScattering;
+[[vk::binding(14, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFiltered;
+[[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
+[[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture2D<float4> froxelCompositeOutput;
+
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];
