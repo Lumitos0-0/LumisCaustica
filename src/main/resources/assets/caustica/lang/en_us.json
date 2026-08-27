@@ -31,13 +31,14 @@
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 
 	"caustica.options.rt.volumetricFog": "Atmospheric Volume",
-	"caustica.options.rt.volumetricFog.tooltip": "Enable deterministic, ray-traced camera-frustum fog. It is rebuilt every frame without temporal history and disabled while submerged.",
+	"caustica.options.rt.volumetricFog.tooltip": "Enable ray-traced camera-frustum fog with deterministic injection, explicit geometry-depth filtering, and subtle depth-validated temporal stabilization. Disabled while submerged.",
 
 	"caustica.options.rt.fogQuality": "Fog Grid",
-	"caustica.options.rt.fogQuality.tooltip": "Froxel resolution. High is exactly 128 x 64 x 128; Medium and Low cover the same frustum with fewer cells.",
+	"caustica.options.rt.fogQuality.tooltip": "Froxel quality. High reaches the 128 x 64 x 128 spatial cap; Ultra keeps that cap and spends more work on stable emissive-light estimates.",
 	"caustica.options.rt.fogQuality.0": "Low (64 x 32 x 64)",
 	"caustica.options.rt.fogQuality.1": "Medium (96 x 48 x 96)",
 	"caustica.options.rt.fogQuality.2": "High (128 x 64 x 128)",
+	"caustica.options.rt.fogQuality.3": "Ultra (128 x 64 x 128, 2x Light)",
 
 	"caustica.options.rt.fogDensity": "Fog Extinction",
 	"caustica.options.rt.fogDensity.tooltip": "Neutral Beer-Lambert extinction per block. Higher values attenuate distant surfaces and make in-scattering denser.",
@@ -73,8 +74,10 @@
 	"caustica.options.rt.localFogSamples.tooltip": "Independent deterministic local-light estimates per froxel. Higher values improve colored mist stability and are demanding.",
 	"caustica.options.rt.localFogClamp": "Emissive Clamp",
 	"caustica.options.rt.localFogClamp.tooltip": "Maximum local-emitter source luminance stored in a froxel. Lower values suppress isolated fireflies more aggressively.",
-	"caustica.options.rt.fogFilterEdges": "Fog Edge Rejection",
-	"caustica.options.rt.fogFilterEdges.tooltip": "How strongly the spatial filter rejects different extinction values. Higher values preserve density edges and reduce light leaking.",
+	"caustica.options.rt.fogDepthTolerance": "Fog Depth Tolerance",
+	"caustica.options.rt.fogDepthTolerance.tooltip": "Smooth geometry-depth tolerance used by spatial filtering and temporal disocclusion checks. Raise it if block silhouettes look too hard; lower it if light crosses geometry.",
+	"caustica.options.rt.fogTemporalWeight": "Fog Temporal Weight",
+	"caustica.options.rt.fogTemporalWeight.tooltip": "Subtle depth-validated history blend for movement noise. It is capped at 35% to prevent trails and block-edge ghosting.",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",

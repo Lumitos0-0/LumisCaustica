@@ -91,7 +91,8 @@ public struct WorldPush {
 
     // ---- Camera-frustum participating media.
     // xyz dimensions; w bit 0 enables atmospheric fog, bit 1 marks a submerged camera (fog is disabled),
-    // bits 8..15 are local-emitter RIS candidates, and bits 16..19 are independent emitter estimates.
+    // bit 2 validates the low-weight temporal sample, bits 8..15 are local-emitter RIS candidates,
+    // and bits 16..19 are independent emitter estimates.
     public int4     froxelGrid;
     // x maximum camera-ray distance (blocks), y depth-distribution exponent,
     // z extinction at the reference height (1/block), w exponential height falloff (1/block).
@@ -103,8 +104,10 @@ public struct WorldPush {
     // xyz restores world-stable coordinates after terrain rebases; w scales local emissive lighting.
     public float4   fogWorld;
     // x directional strength, y sun/moon HG anisotropy, z firefly luminance ceiling,
-    // w spatial filter edge sharpness.
+    // w geometry-depth tolerance for spatial and temporal rejection (blocks).
     public float4   fogLighting;
+    // x temporal history weight (intentionally capped at 0.35), yzw reserved.
+    public float4   fogTemporal;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

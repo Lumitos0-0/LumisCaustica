@@ -1,9 +1,9 @@
 // Frustum-froxel geometry, static world-space density, and continuous volume reconstruction.
 //
 // froxelScattering/froxelFiltered store {single-scattering source radiance per block, extinction}.
-// froxelIntegrated stores cumulative {camera-to-boundary in-scattering, transmittance}. The volume has
-// no temporal history: every frame is rebuilt from stable cell centres, spatially filtered, and integrated
-// with the analytic Beer-Lambert solution before it is sampled after DLSS Ray Reconstruction.
+// froxelIntegrated stores cumulative {camera-to-boundary in-scattering, transmittance}. Every frame is
+// rebuilt from stable cell centres, spatially filtered using explicit geometry depth, stabilized with a
+// low-weight depth-validated history sample, and analytically integrated before post-RR reconstruction.
 
 import world_common;
 import world_core;
@@ -12,6 +12,10 @@ import sky;
 
 public bool froxelEnabled() {
     return (uint(worldPush.froxelGrid.w) & 1u) != 0u;
+}
+
+public bool froxelHistoryValid() {
+    return (uint(worldPush.froxelGrid.w) & 4u) != 0u;
 }
 
 public uint froxelLocalLightCandidates() {
@@ -119,6 +123,48 @@ public float3 froxelSkyRadiance(float3 direction, SkyState state) {
             + skyViewLut.SampleLevel(moonUv, 0.0).rgb
             + state.airglowLuminance;
     return bt709ToAcesCg(max(bt709, float3(0.0)));
+}
+
+public bool froxelCoordinateValid(float3 coordinate) {
+    return all(coordinate >= float3(-0.5))
+            && all(coordinate <= float3(froxelDimensions()) - 0.5);
+}
+
+/** Trilinear history fetch used after world-position reprojection. */
+public float4 froxelTrilinearHistory(float3 coordinate) {
+    int3 dimensions = froxelDimensions();
+    float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
+    int3 lo = int3(floor(bounded));
+    int3 hi = min(lo + int3(1), dimensions - 1);
+    float3 f = frac(bounded);
+    float4 c000 = froxelHistory[int3(lo.x, lo.y, lo.z)];
+    float4 c100 = froxelHistory[int3(hi.x, lo.y, lo.z)];
+    float4 c010 = froxelHistory[int3(lo.x, hi.y, lo.z)];
+    float4 c110 = froxelHistory[int3(hi.x, hi.y, lo.z)];
+    float4 c001 = froxelHistory[int3(lo.x, lo.y, hi.z)];
+    float4 c101 = froxelHistory[int3(hi.x, lo.y, hi.z)];
+    float4 c011 = froxelHistory[int3(lo.x, hi.y, hi.z)];
+    float4 c111 = froxelHistory[int3(hi.x, hi.y, hi.z)];
+    return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
+            lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
+}
+
+public float froxelTrilinearHistoryDepth(float3 coordinate) {
+    int3 dimensions = froxelDimensions();
+    float3 bounded = clamp(coordinate, float3(0.0), float3(dimensions - 1));
+    int3 lo = int3(floor(bounded));
+    int3 hi = min(lo + int3(1), dimensions - 1);
+    float3 f = frac(bounded);
+    float c000 = froxelHistoryDepth[int3(lo.x, lo.y, lo.z)];
+    float c100 = froxelHistoryDepth[int3(hi.x, lo.y, lo.z)];
+    float c010 = froxelHistoryDepth[int3(lo.x, hi.y, lo.z)];
+    float c110 = froxelHistoryDepth[int3(hi.x, hi.y, lo.z)];
+    float c001 = froxelHistoryDepth[int3(lo.x, lo.y, hi.z)];
+    float c101 = froxelHistoryDepth[int3(hi.x, lo.y, hi.z)];
+    float c011 = froxelHistoryDepth[int3(lo.x, hi.y, hi.z)];
+    float c111 = froxelHistoryDepth[int3(hi.x, hi.y, hi.z)];
+    return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
+            lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
 }
 
 public float4 froxelTrilinearIntegrated(float3 coordinate) {

@@ -16,6 +16,8 @@ final class RtFroxelGridTest {
                 RtFroxelGrid.dimensions(RtFroxelGrid.Quality.MEDIUM));
         assertEquals(new RtFroxelGrid.Dimensions(128, 64, 128),
                 RtFroxelGrid.dimensions(RtFroxelGrid.Quality.HIGH));
+        assertEquals(new RtFroxelGrid.Dimensions(128, 64, 128),
+                RtFroxelGrid.dimensions(RtFroxelGrid.Quality.ULTRA));
 
         for (RtFroxelGrid.Quality quality : RtFroxelGrid.Quality.values()) {
             RtFroxelGrid.Dimensions dimensions = RtFroxelGrid.dimensions(quality);
@@ -41,6 +43,7 @@ final class RtFroxelGridTest {
             RtFroxelGrid.Dimensions[] expected = {
                     new RtFroxelGrid.Dimensions(64, 32, 64),
                     new RtFroxelGrid.Dimensions(96, 48, 96),
+                    new RtFroxelGrid.Dimensions(128, 64, 128),
                     new RtFroxelGrid.Dimensions(128, 64, 128)
             };
             for (int preset = 0; preset < expected.length; ++preset) {
@@ -49,6 +52,41 @@ final class RtFroxelGridTest {
             }
         } finally {
             quality.set(previous);
+        }
+    }
+
+    @Test
+    void ultraRaisesLightingQualityWithoutRaisingSpatialCap() {
+        CausticaConfig.IntSetting candidates = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES;
+        CausticaConfig.IntSetting samples = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_SAMPLES;
+        int oldCandidates = candidates.value();
+        int oldSamples = samples.value();
+        try {
+            candidates.set(4);
+            samples.set(1);
+            assertEquals(4, RtVolumetrics.effectiveLocalLightCandidates(2));
+            assertEquals(1, RtVolumetrics.effectiveEmitterSamples(2));
+            assertEquals(8, RtVolumetrics.effectiveLocalLightCandidates(3));
+            assertEquals(2, RtVolumetrics.effectiveEmitterSamples(3));
+            candidates.set(0);
+            assertEquals(0, RtVolumetrics.effectiveLocalLightCandidates(3));
+        } finally {
+            candidates.set(oldCandidates);
+            samples.set(oldSamples);
+        }
+    }
+
+    @Test
+    void temporalWeightIsSanitizedToSubtleRange() {
+        CausticaConfig.FloatSetting temporal = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT;
+        float previous = temporal.value();
+        try {
+            temporal.set(1.0f);
+            assertEquals(0.35f, temporal.value(), 0.0f);
+            temporal.set(-1.0f);
+            assertEquals(0.0f, temporal.value(), 0.0f);
+        } finally {
+            temporal.set(previous);
         }
     }
 

@@ -17,5 +17,7 @@ void main() {
 
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
+    float2 cellCoordinate = float2(index.xy) + 0.5;
+    froxelDepth[int3(index)] = froxelOpaqueDistance(cellCoordinate);
     froxelScattering[int3(index)] = injectFroxel(index);
 }

@@ -1,4 +1,4 @@
-// Stage 4: display-resolution post-reconstruction composition. Java binds the DLSS-RR output (or the
+// Stage 5: display-resolution post-reconstruction composition. Java binds the DLSS-RR output (or the
 // fallback upscaled image) as froxelCompositeOutput, so this pass runs before exposure/bloom while never
 // feeding temporally reconstructed surface guides with volumetric radiance.
 

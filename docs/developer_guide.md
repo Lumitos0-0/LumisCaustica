@@ -65,12 +65,13 @@ cmake --build build/cmake/ngx_shim/release
 ## Volumetric frame graph
 
 Atmospheric fog uses a camera-frustum froxel grid with fixed `64 x 32 x 64`,
-`96 x 48 x 96`, and `128 x 64 x 128` quality presets. The default 128-block
-range and linear 128-slice High preset provide one-block average longitudinal
-resolution. The grid is rebuilt in full every frame and owns only three 3D
-images: source/extinction, bilateral-filtered source/extinction, and cumulative
-in-scattering/transmittance. There is no temporal volume history or
-reprojection.
+`96 x 48 x 96`, and capped `128 x 64 x 128` spatial presets. Ultra retains the
+same cap and raises bounded emitter proposal/estimate counts. The default
+128-block range and linear 128-slice High preset provide one-block average
+longitudinal resolution. Injection is rebuilt from deterministic world-space
+samples every frame. Resolved lighting and explicit first-interface depth use
+two-volume ping-pong only for a subtle temporal blend (15% by default, hard
+maximum 35%).
 
 The world frame records these stages in order:
 
@@ -78,21 +79,24 @@ The world frame records these stages in order:
    the transmitted DLSS depth guide;
 2. froxel injection evaluates static world-space fBm density, atmosphere-LUT
    ambient light, one deterministic TLAS visibility ray for the active sun or
-   moon, and bounded proposals from the local coloured area-emitter hierarchy;
-3. a deterministic 3x3x3 extinction-aware filter rejects geometry/density
-   boundaries;
-4. each XY column is prefix-integrated with the analytic constant-medium
+   moon, bounded local coloured area emitters, and a 3D geometry-depth volume;
+3. a deterministic 3x3x3 filter uses smooth first-interface depth differences,
+   not extinction differences, so fBm does not outline block edges;
+4. the current field is reprojected into the previous frustum, sampled
+   trilinearly, neighborhood-clamped, and rejected where previous depth reports
+   an occlusion or disocclusion;
+5. each XY column is prefix-integrated with the analytic constant-medium
    Beer-Lambert solution;
-5. the indirect surface trace and DLSS Ray Reconstruction (or fallback upscale)
+6. the indirect surface trace and DLSS Ray Reconstruction (or fallback upscale)
    produce the display-resolution scene;
-6. a dedicated display-resolution raygen reconstructs the integrated volume
+7. a dedicated display-resolution raygen reconstructs the integrated volume
    trilinearly and composites into `rrOutput` before exposure and bloom.
 
 The existing GPU light hierarchy is the technically available stable source for
 block-local fog lighting. Minecraft's scalar 0-15 block-light field is not
 currently uploaded as a GPU volume, so froxels do not perform an unavailable
 scalar lookup. Coloured emitter use is local-only, finite-area, source-clamped,
-first-interface-clipped, and spatially edge-filtered to avoid singular weights,
+first-interface-clipped, and geometry-depth-filtered to avoid singular weights,
 fireflies, and fog leaks. Atmospheric froxels are disabled while submerged.
 
 ## Native Bundling

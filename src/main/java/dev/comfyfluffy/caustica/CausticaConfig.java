@@ -97,11 +97,11 @@ public final class CausticaConfig {
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
         FILE.setComment("volumetrics",
-                " Deterministic camera-frustum froxel fog. quality: 0 low (64x32x64),\n"
-                        + " 1 medium (96x48x96), 2 high (128x64x128). The volume has no temporal history.\n"
+                " Camera-frustum froxel fog. quality: 0 low (64x32x64), 1 medium (96x48x96),\n"
+                        + " 2 high (128x64x128), 3 ultra (same spatial cap with more emitter estimates).\n"
                         + " extinction is neutral Beer-Lambert attenuation per block; max-distance and height values are blocks.\n"
-                        + " directional controls shape ray-traced sun/moon shafts. local-light controls bound coloured\n"
-                        + " block-emitter mist; local-light-clamp and filter-edge-sharpness suppress fireflies and leaks.\n"
+                        + " depth-tolerance guides filtering with explicit first-interface depth instead of density edges.\n"
+                        + " temporal-weight is depth-validated and capped at 0.35 to avoid trails and block-edge ghosts.\n"
                         + " Atmospheric froxels are disabled while the camera is submerged.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
@@ -563,9 +563,9 @@ public final class CausticaConfig {
         public static final class Volumetrics {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
-            // Fixed presets: low 64x32x64, medium 96x48x96, high 128x64x128.
+            // Fixed spatial presets. Ultra retains the 128x64x128 cap and raises lighting estimates.
             public static final IntSetting QUALITY =
-                    clampedInt("caustica.rt.froxelQuality", "volumetrics.quality", 1, 0, 2);
+                    clampedInt("caustica.rt.froxelQuality", "volumetrics.quality", 1, 0, 3);
             public static final FloatSetting MAX_DISTANCE =
                     clampedFloat("caustica.rt.froxelMaxDistance", "volumetrics.max-distance",
                             128.0f, 16.0f, 512.0f);
@@ -616,9 +616,13 @@ public final class CausticaConfig {
             public static final FloatSetting LOCAL_LIGHT_CLAMP =
                     clampedFloat("caustica.rt.fogLocalLightClamp",
                             "volumetrics.local-light-clamp", 64.0f, 1.0f, 512.0f);
-            public static final FloatSetting FILTER_EDGE_SHARPNESS =
-                    clampedFloat("caustica.rt.fogFilterEdgeSharpness",
-                            "volumetrics.filter-edge-sharpness", 8.0f, 0.0f, 32.0f);
+            public static final FloatSetting DEPTH_TOLERANCE =
+                    clampedFloat("caustica.rt.fogDepthTolerance",
+                            "volumetrics.depth-tolerance", 0.75f, 0.05f, 8.0f);
+            // Deliberately low feedback: enough to calm movement noise, never enough to create long trails.
+            public static final FloatSetting TEMPORAL_WEIGHT =
+                    clampedFloat("caustica.rt.fogTemporalWeight",
+                            "volumetrics.temporal-weight", 0.15f, 0.0f, 0.35f);
 
             private Volumetrics() {
             }

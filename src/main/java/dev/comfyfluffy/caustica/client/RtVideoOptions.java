@@ -65,7 +65,8 @@ public final class RtVideoOptions {
             localFogCandidates(),
             localFogSamples(),
             localFogClamp(),
-            fogFilterEdges(),
+            fogDepthTolerance(),
+            fogTemporalWeight(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -163,8 +164,8 @@ public final class RtVideoOptions {
             tooltip("caustica.options.rt.fogQuality"),
             (caption, value) -> Options.genericValueLabel(caption,
                     Component.translatable("caustica.options.rt.fogQuality." + value)),
-            new OptionInstance.IntRange(0, 2),
-            Math.clamp(setting.value(), 0, 2),
+            new OptionInstance.IntRange(0, 3),
+            Math.clamp(setting.value(), 0, 3),
             setting::set);
     }
 
@@ -281,14 +282,20 @@ public final class RtVideoOptions {
             value -> setting.set(value.floatValue()));
     }
 
-    private static OptionInstance<Integer> fogFilterEdges() {
-        FloatSetting setting = CausticaConfig.Rt.Volumetrics.FILTER_EDGE_SHARPNESS;
+    private static OptionInstance<Integer> fogDepthTolerance() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DEPTH_TOLERANCE;
         return new OptionInstance<>(
-            "caustica.options.rt.fogFilterEdges", tooltip("caustica.options.rt.fogFilterEdges"),
-            (caption, value) -> Options.genericValueLabel(caption, value),
-            new OptionInstance.IntRange(0, 32),
-            Math.clamp(Math.round(setting.value()), 0, 32),
-            value -> setting.set(value.floatValue()));
+            "caustica.options.rt.fogDepthTolerance", tooltip("caustica.options.rt.fogDepthTolerance"),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f blocks", hundredths / 100.0f))),
+            new OptionInstance.IntRange(5, 800),
+            Math.clamp(Math.round(setting.value() * 100.0f), 5, 800),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogTemporalWeight() {
+        return percent("caustica.options.rt.fogTemporalWeight",
+                CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT, 0, 35);
     }
 
     private static OptionInstance<Integer> dlssQuality() {

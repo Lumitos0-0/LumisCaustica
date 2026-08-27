@@ -21,15 +21,18 @@ import world_common;
 [[vk::binding(11, 0)]] public Sampler2D transmittanceLut;
 
 // Camera-frustum participating media. volumeDepth stores the first primary interface distance so
-// atmospheric fog cannot leak through terrain, glass, or water. The volume stores an unfiltered
-// source field, its spatially filtered form, and cumulative {in-scattering, transmittance}. The final
-// target is the display-resolution scene produced by DLSS-RR (or the fallback upscale), allowing fog
-// to composite after reconstruction without feeding surface guides to RR for a volumetric feature.
+// atmospheric fog cannot leak through terrain, glass, or water. The 3D depth pair repeats that distance
+// through each current/previous froxel column; it drives geometry-aware spatial filtering and disocclusion
+// rejection. Resolved lighting and depth ping-pong only for a deliberately low temporal blend.
 [[vk::binding(12, 0)]] [format("r32f")] public RWTexture2D<float> volumeDepth;
 [[vk::binding(13, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelScattering;
 [[vk::binding(14, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFiltered;
 [[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
 [[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture2D<float4> froxelCompositeOutput;
+[[vk::binding(17, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelResolved;
+[[vk::binding(18, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelHistory;
+[[vk::binding(19, 0)]] [format("r32f")] public RWTexture3D<float> froxelDepth;
+[[vk::binding(20, 0)]] [format("r32f")] public RWTexture3D<float> froxelHistoryDepth;
 
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];

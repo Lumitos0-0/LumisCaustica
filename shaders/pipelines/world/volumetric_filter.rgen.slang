@@ -1,6 +1,7 @@
-// Stage 2: one deterministic bilateral 3x3x3 pass over the current frame's source field. Density and
-// first-interface rejection prevent emissive energy crossing terrain/fog boundaries; no temporal input,
-// reprojection, or frame-varying kernel is involved.
+// Stage 2: deterministic 3x3x3 spatial reconstruction guided by the explicit froxel depth volume.
+// Extinction is no longer used as an edge classifier: doing so outlined Minecraft block boundaries when
+// world-space fBm changed rapidly. First-interface depth instead prevents light crossing actual geometry,
+// while a smooth tolerance avoids turning block silhouettes into hard filtering seams.
 
 import world_common;
 import world_core;
@@ -23,6 +24,8 @@ void main() {
         return;
     }
 
+    float centerDepth = froxelDepth[centerCoordinate];
+    float depthTolerance = max(worldPush.fogLighting.w, 0.05);
     float4 sum = float4(0.0);
     float weightSum = 0.0;
     for (int dz = -1; dz <= 1; ++dz) {
@@ -33,14 +36,17 @@ void main() {
                     continue;
                 }
                 float4 sampleValue = froxelScattering[coordinate];
-                if (sampleValue.a <= 1.0e-7) {
+                float sampleDepth = froxelDepth[coordinate];
+                float sampleNear = froxelBoundaryDistance(float(coordinate.z));
+                // Never pull a value from behind that neighboring camera ray's first interface.
+                if (sampleValue.a <= 1.0e-7 || sampleNear >= sampleDepth) {
                     continue;
                 }
-                float relativeExtinctionDifference = abs(sampleValue.a - center.a)
-                        / max(max(sampleValue.a, center.a), 1.0e-5);
-                float bilateralWeight = exp(-relativeExtinctionDifference * worldPush.fogLighting.w);
+                float depthDifference = abs(sampleDepth - centerDepth);
+                float normalizedDifference = depthDifference / depthTolerance;
+                float geometryWeight = 1.0 / (1.0 + normalizedDifference * normalizedDifference);
                 float spatialWeight = exp(-0.5 * float(dx * dx + dy * dy + dz * dz));
-                float weight = bilateralWeight * spatialWeight;
+                float weight = geometryWeight * spatialWeight;
                 sum += sampleValue * weight;
                 weightSum += weight;
             }

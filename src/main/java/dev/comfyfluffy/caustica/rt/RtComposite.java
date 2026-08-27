@@ -245,8 +245,8 @@ public final class RtComposite {
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
-    // Camera-frustum participating-media grid. It owns first-interface depth and three history-free 3D
-    // images; the world pipeline rebuilds them deterministically and composites only after DLSS-RR.
+    // Camera-frustum participating-media grid. It owns explicit geometry-depth and low-weight temporal
+    // ping-pong volumes; injection remains deterministic and composition runs only after DLSS-RR.
     private final RtVolumetrics volumetrics = new RtVolumetrics();
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
@@ -725,6 +725,7 @@ public final class RtComposite {
                             RtDeviceBringup.worldRaygenShader(),
                             "volumetric_inject.rgen.spv",
                             "volumetric_filter.rgen.spv",
+                            "volumetric_temporal.rgen.spv",
                             "volumetric_integrate.rgen.spv",
                             "volumetric_composite.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
@@ -1119,8 +1120,9 @@ public final class RtComposite {
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
                     terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, 0f);
             int seaLevel = level != null ? level.getSeaLevel() : 63;
-            RtVolumetrics.FrameData fogFrame = volumetrics.prepareFrame(
-                    terrain.blockX, terrain.blockY, terrain.blockZ, seaLevel, (flags & 1) != 0);
+            RtVolumetrics.FrameData fogFrame = volumetrics.prepareFrame(frameCounter,
+                    terrain.blockX, terrain.blockY, terrain.blockZ, seaLevel, (flags & 1) != 0,
+                    mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so
@@ -1179,7 +1181,8 @@ public final class RtComposite {
                     fogFrame.optics(),
                     fogFrame.shape(),
                     fogFrame.worldOffsetAndStrength(),
-                    fogFrame.lighting()
+                    fogFrame.lighting(),
+                    fogFrame.temporal()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

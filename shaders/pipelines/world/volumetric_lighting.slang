@@ -1,7 +1,8 @@
 // Deterministic single-scattering injection for the frustum-froxel grid. Sun/moon visibility is traced
 // through the frame TLAS. Colored block emissives reuse Caustica's existing area-light hierarchy; local
 // proposals are restricted to the five-section neighborhood and clamped before storage so a low-PDF or
-// near-emitter sample cannot become a firefly. No volume history or frame-varying random sequence exists.
+// near-emitter sample cannot become a firefly. Injection has no frame-varying random sequence; a later
+// pass may apply only a low, depth-validated temporal weight.
 
 import world_common;
 import world_core;

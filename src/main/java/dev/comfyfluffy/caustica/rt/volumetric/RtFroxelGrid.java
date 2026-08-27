@@ -3,10 +3,10 @@ package dev.comfyfluffy.caustica.rt.volumetric;
 /**
  * Fixed camera-frustum froxel quality presets.
  *
- * <p>The maximum preset is exactly 128 x 64 x 128. At the default 128-block range and a linear depth
- * distribution its 128 longitudinal slices average one block each. Lower presets cover the same physical
- * frustum and reduce all axes together; dimensions never depend on display or ray-tracing resolution, so a
- * dynamic-resolution change cannot invalidate or reproject hidden temporal state.</p>
+ * <p>The maximum spatial preset is exactly 128 x 64 x 128. At the default 128-block range and a linear
+ * depth distribution its 128 longitudinal slices average one block each. Ultra keeps that cap and raises
+ * lighting sample quality instead. Lower presets cover the same physical frustum and reduce all axes
+ * together; dimensions never depend on display or ray-tracing resolution.</p>
  */
 public final class RtFroxelGrid {
     public static final int MAX_WIDTH = 128;
@@ -16,7 +16,9 @@ public final class RtFroxelGrid {
     public enum Quality {
         LOW(64, 32, 64),
         MEDIUM(96, 48, 96),
-        HIGH(MAX_WIDTH, MAX_HEIGHT, MAX_DEPTH);
+        HIGH(MAX_WIDTH, MAX_HEIGHT, MAX_DEPTH),
+        // Same spatial cap as High; spends quality on additional bounded emitter estimates/proposals.
+        ULTRA(MAX_WIDTH, MAX_HEIGHT, MAX_DEPTH);
 
         private final int width;
         private final int height;

@@ -158,7 +158,7 @@ public final class RtPipeline {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
-            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_FROXEL_COMPOSITE_OUTPUT; binding++) {
+            for (int binding = WORLD_VOLUME_DEPTH; binding <= WORLD_FROXEL_HISTORY_DEPTH; binding++) {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
@@ -428,13 +428,28 @@ public final class RtPipeline {
         }
     }
 
-    /** Bind all history-free, size-dependent volumetric images into every ring slot while idle. */
-    public void setVolumetricImages(long depthView, long scatteringView,
-                                    long filteredView, long integratedView) {
-        writeStorageBindingAll(WORLD_VOLUME_DEPTH, depthView);
+    /** Bind size-dependent volumetric images into every ring slot while the device is idle. */
+    public void setVolumetricImages(long volumeDepthView, long scatteringView,
+                                    long filteredView, long integratedView,
+                                    long resolvedView, long historyView,
+                                    long depthView, long historyDepthView) {
+        writeStorageBindingAll(WORLD_VOLUME_DEPTH, volumeDepthView);
         writeStorageBindingAll(WORLD_FROXEL_SCATTERING, scatteringView);
         writeStorageBindingAll(WORLD_FROXEL_FILTERED, filteredView);
         writeStorageBindingAll(WORLD_FROXEL_INTEGRATED, integratedView);
+        writeStorageBindingAll(WORLD_FROXEL_RESOLVED, resolvedView);
+        writeStorageBindingAll(WORLD_FROXEL_HISTORY, historyView);
+        writeStorageBindingAll(WORLD_FROXEL_DEPTH, depthView);
+        writeStorageBindingAll(WORLD_FROXEL_HISTORY_DEPTH, historyDepthView);
+    }
+
+    /** Select the safe descriptor-ring slot's current/history ping-pong direction for this frame. */
+    public void setCurrentVolumetricImages(long resolvedView, long historyView,
+                                           long depthView, long historyDepthView) {
+        writeStorageBindingCurrent(WORLD_FROXEL_RESOLVED, resolvedView);
+        writeStorageBindingCurrent(WORLD_FROXEL_HISTORY, historyView);
+        writeStorageBindingCurrent(WORLD_FROXEL_DEPTH, depthView);
+        writeStorageBindingCurrent(WORLD_FROXEL_HISTORY_DEPTH, historyDepthView);
     }
 
     /** Bind the display-resolution DLSS-RR/fallback target used by the final in-place composite. */
@@ -453,6 +468,18 @@ public final class RtPipeline {
                         .pImageInfo(info);
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
+        }
+    }
+
+    private void writeStorageBindingCurrent(int binding, long imageView) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
+            info.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
+            write.get(0).sType$Default().dstSet(descriptorSets[currentSet]).dstBinding(binding)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .pImageInfo(info);
+            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
         }
     }
 

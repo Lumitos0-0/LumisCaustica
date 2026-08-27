@@ -1,4 +1,4 @@
-// Stage 3: deterministic front-to-back prefix integration. Each segment uses the closed-form solution
+// Stage 4: deterministic front-to-back prefix integration. Each segment uses the closed-form solution
 // for a constant medium, avoiding stochastic ray marching and preserving exact Beer-Lambert opacity.
 
 import world_common;
@@ -24,7 +24,7 @@ void main() {
         float segmentNear = froxelBoundaryDistance(float(z));
         float segmentFar = min(froxelBoundaryDistance(float(z + 1)), opaqueDistance);
         float segmentLength = max(0.0, segmentFar - segmentNear);
-        float4 medium = froxelFiltered[int3(xy, z)];
+        float4 medium = froxelResolved[int3(xy, z)];
         float extinction = max(0.0, medium.a);
         if (segmentLength > 0.0 && extinction > 1.0e-7) {
             float segmentTransmittance = exp(-extinction * segmentLength);
