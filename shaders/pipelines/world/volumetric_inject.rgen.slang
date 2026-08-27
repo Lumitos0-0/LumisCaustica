@@ -4,6 +4,7 @@ import world_common;
 import world_core;
 import bindings;
 import sky;
+import froxel;
 import volumetric_lighting;
 
 [shader("raygeneration")]
