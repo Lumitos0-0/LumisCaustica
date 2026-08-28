@@ -13,6 +13,14 @@ import lighting;
 import water;
 import froxel;
 
+// R3 low-discrepancy additive recurrence (Roberts): the three-dimensional generalized golden-ratio
+// vector, built from the real root of x^4 = x + 1. Advancing a point by this vector each frame fills a
+// cell far more evenly than re-drawing an independent sample.
+public static const float3 R3_ALPHA = float3(0.8191725134, 0.6710436067, 0.5497004779);
+// Long enough that a wrap never falls inside one temporal history window, short enough to keep the
+// recurrence's integer part exactly representable in float32.
+public static const uint JITTER_CYCLE = 4096u;
+
 public struct VolumeReservoir {
     public float3 samplePosition;
     public float3 contribution;
@@ -144,6 +152,13 @@ public float3 froxelScatteringColor() {
     return lerp(float3(0.25, 0.65, 1.0), biomeTint, 0.35);
 }
 
+// Per-block-of-travel decay of the temporal blend weight. The configured weight assumes the camera is
+// roughly where it was, but RtVolumetrics only invalidates history on teleport-sized jumps, so ordinary
+// fast movement would otherwise blend a full-weight stale field. 0.7 halves the weight at one block per
+// frame (60 blocks/s at 60fps), which leaves walking and sprinting essentially untouched and pulls
+// elytra flight back to something responsive.
+public static const float MOTION_FALLOFF = 0.7;
+
 // How much of the celestial shadow ray the ambient sky term inherits. `skyVisibility` is the sun/moon
 // shadow, so it doubles as a crude enclosure test, but at 1.0 it blacks out fog that is merely in the
 // sun's shadow under open sky: the shaded side of a hill, under a tree, the north face of a building.
@@ -179,10 +194,26 @@ public float4 injectFroxel(uint3 index) {
     // Scene depth must not truncate the field itself: doing so creates empty rectangular columns that make
     // the frustum grid visible. Depth is used only below to suppress local emitters sampled behind the
     // first camera surface.
-    float2 cellCoordinate = float2(index.xy) + float2(rndf(seed), rndf(seed));
+    //
+    // Each froxel walks its own low-discrepancy path through its cell rather than re-drawing an
+    // independent point every frame: an R3 additive recurrence offset per froxel by a Cranley-Patterson
+    // rotation. Over the ~20 frames the exponential history actually keeps, that covers the cell far more
+    // evenly than a hash, so the blend converges on the froxel's true average instead of random-walking
+    // around it. The per-froxel offset keeps neighbouring cells from swimming in lockstep, which the
+    // spatial filter depends on. The emitter seeds above stay per-frame random on purpose: they select
+    // from a discrete light list, and temporal averaging is what refines that choice.
+    uint jitterSeed = index.x * 1973u + index.y * 9277u + index.z * 10159u;
+    jitterSeed = pcg(jitterSeed);
+    float3 jitterOffset; // one statement per component: rndf advances the seed, and argument
+    jitterOffset.x = rndf(jitterSeed); // evaluation order is not specified within one expression
+    jitterOffset.y = rndf(jitterSeed);
+    jitterOffset.z = rndf(jitterSeed);
+    float3 jitter = frac(jitterOffset + float(worldPush.frameIndex % JITTER_CYCLE) * R3_ALPHA);
+
+    float2 cellCoordinate = float2(index.xy) + jitter.xy;
     float nearDistance = froxelBoundaryDistance(float(index.z));
     float farDistance = froxelBoundaryDistance(float(index.z + 1u));
-    float distance = lerp(nearDistance, farDistance, rndf(seed));
+    float distance = lerp(nearDistance, farDistance, jitter.z);
     float3 rayOrigin;
     float3 viewRay;
     froxelRay(cellCoordinate, rayOrigin, viewRay);
@@ -225,6 +256,8 @@ public float4 injectFroxel(uint3 index) {
     float3 source = extinction * froxelScatteringColor() * incident;
     float4 current = float4(max(source, float3(0.0)), extinction);
 
+    float historyWeight = worldPush.fogShape.w
+            * exp(-length(worldPush.camDelta) * MOTION_FALLOFF);
     if (froxelHistoryValid()) {
         float4 history;
         if (froxelReprojectHistory(samplePosition, history)) {
@@ -235,7 +268,7 @@ public float4 injectFroxel(uint3 index) {
                     : current.rgb * 1.25 + float3(0.1);
             history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
             history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            current = lerp(current, history, worldPush.fogShape.w);
+            current = lerp(current, history, historyWeight);
         }
     }
     return min(current, float4(HALF_MAX));

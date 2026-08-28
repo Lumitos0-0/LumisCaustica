@@ -647,6 +647,7 @@ public final class RtComposite {
                 }
             }
             ensureOutput(ctx, width, height);
+            ensureVolumetrics(ctx);
             // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
@@ -908,8 +909,7 @@ public final class RtComposite {
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
-                && volumetrics.matches(renderW, renderH)) {
+                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -941,7 +941,6 @@ public final class RtComposite {
         renderH = optimal != null ? optimal[1] : height;
         renderSizeRrEnabled = rrEnabled;
         renderSizeRrQuality = rrQuality;
-        volumetrics.ensure(ctx, renderW, renderH);
 
         // RT traces and DLSS-RR reconstruct scene-linear ACEScg in an HDR R16G16B16A16_SFLOAT target,
         // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
@@ -987,7 +986,6 @@ public final class RtComposite {
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
-            volumetrics.bindAll(worldPipeline);
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
@@ -997,6 +995,27 @@ public final class RtComposite {
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                 exposure.stateBuffer());
+    }
+
+    /**
+     * Recreate the fog volumes when the froxel grid itself changed. Deliberately separate from
+     * {@link #ensureOutput}: the grid depends on the Fog Quality preset and the Advanced grid settings
+     * as well as on render size, and rebuilding it must not tear down the display image, the bloom
+     * pyramid, the DLSS guides, or the path continuation queue, nor reset motion-vector and wave
+     * history, all of which are unrelated to fog. Runs after {@link #ensureOutput} so the render size
+     * it derives the grid from is already current.
+     */
+    private void ensureVolumetrics(RtContext ctx) {
+        // matches() derives the wanted grid from the render size, so it must not run while that size is
+        // degenerate; unlike ensureOutput's guard this runs after renderW/renderH were updated.
+        if (renderW <= 0 || renderH <= 0 || volumetrics.matches(renderW, renderH)) {
+            return;
+        }
+        ctx.waitIdle(); // no in-flight frame may read the old volumes
+        volumetrics.ensure(ctx, renderW, renderH);
+        if (worldPipeline != null) {
+            volumetrics.bindAll(worldPipeline);
+        }
     }
 
     private void destroyBloomLevels() {
