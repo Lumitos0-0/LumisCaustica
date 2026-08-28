@@ -258,8 +258,9 @@ public float4 injectFroxel(uint3 index) {
     float3 source = extinction * froxelScatteringColor() * incident;
     float4 current = float4(max(source, float3(0.0)), extinction);
 
-    // Shed temporal weight as the camera moves; froxel.slang's filter pass takes the slack up spatially
-    // using the same froxelMotionLoss(), so movement costs responsiveness rather than adding noise.
+    // Shed temporal weight as the camera moves. The filter pass takes the slack up spatially so movement
+    // costs responsiveness rather than adding noise; see FROXEL_MOTION_FALLOFF for why this curve is
+    // gentle and the filter's is not.
     float historyWeight = worldPush.fogShape.w * (1.0 - froxelMotionLoss());
     if (froxelHistoryValid()) {
         float4 history;

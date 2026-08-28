@@ -6,7 +6,6 @@
 import world_common;
 import world_core;
 import bindings;
-import froxel;
 
 [shader("raygeneration")]
 void main() {
@@ -22,10 +21,13 @@ void main() {
     float4 filtered = float4(0.0);
     float weightSum = 0.0;
     // The inject pass sheds temporal weight as the camera moves. Take that slack up here rather than
-    // letting it reach the image: the centre weight falls from 4 (parked, sharp) to 1 (moving, full box
-    // average), which is worth about 2.25x more variance reduction from the same nine taps. The tap
-    // count is fixed, so moving never costs bandwidth.
-    float centerWeight = lerp(4.0, 1.0, froxelMotionLoss());
+    // letting it reach the image: the centre weight falls from 4 (parked, sharp) to 1 (full box average
+    // at a block per frame), worth ~2.25x more variance reduction from the same nine taps. The ramp is
+    // linear in camera travel and much steeper than froxelMotionLoss(), because nine taps are a weak
+    // substitute for a ~20-frame history and have to give up sharpness quickly to keep up. Tap count is
+    // fixed, so moving never costs bandwidth.
+    static const float FULL_BLUR_TRAVEL = 1.0; // blocks per frame
+    float centerWeight = lerp(4.0, 1.0, saturate(length(worldPush.camDelta) / FULL_BLUR_TRAVEL));
     for (int y = -1; y <= 1; ++y) {
         float wy = y == 0 ? centerWeight : 1.0;
         for (int x = -1; x <= 1; ++x) {
