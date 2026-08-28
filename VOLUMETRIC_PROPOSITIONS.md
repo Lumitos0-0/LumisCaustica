@@ -245,7 +245,7 @@ This minimal combined approach delivers a true volumetric emission + scattering 
 
 ---
 
-## APPENDIX — EXPLICIT HIGH-QUALITY 3D VOLUME SPECIFICATION
+## APPENDIX A — EXPLICIT HIGH-QUALITY 3D VOLUME SPECIFICATION
 
 > Added explicitly per clarification request: light scattering / sun beams, exponential height falloff FBM, true 3D (not screen-space), no noise / no ghosting / no pixelation, no "fake" fog.
 
