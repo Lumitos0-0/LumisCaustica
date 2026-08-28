@@ -16,16 +16,22 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 
 /**
- * Owns the frustum-froxel resources and the three ray-generation passes that update them. Lighting and
- * extinction are injected into one of two history volumes, spatially filtered, then integrated
- * camera-outward into a volume of cumulative in-scattering and transmittance. The path tracer samples
- * that integrated volume before pre-exposure, so volumetrics remain scene-linear and work unchanged
- * with DLSS-RR, SDR, and HDR output.
+ * Owns the frustum-froxel resources and the four ray-generation passes that update and apply them.
+ * Lighting and extinction are injected into one of two history volumes, spatially filtered, then
+ * integrated camera-outward into a volume of cumulative in-scattering and transmittance.
+ *
+ * <p>Composition happens after DLSS-RR upscaling (volumetric_compose raygen), at display resolution
+ * and inside the pre-exposed space the display mapper divides back out: composed = scene·T + I·preExposure
+ * equals scene-linear (L·T + I) exactly. DLSS-RR therefore only ever sees the surface path integral —
+ * near-camera in-scattering has almost no parallax, so pre-RR composition dragged fog along first-surface
+ * motion vectors (ghost shafts) and let the denoiser's neighborhood clamp pulse it. SDR, HDR, bloom, and
+ * screenshot paths all consume the composed image unchanged.
  */
 public final class RtVolumetrics {
     public static final int INJECT_RAYGEN = 2;
     public static final int FILTER_RAYGEN = 3;
     public static final int INTEGRATE_RAYGEN = 4;
+    public static final int COMPOSE_RAYGEN = 5;
 
     private RtFroxelGrid grid;
     private RtImage volumeDepth;
@@ -116,9 +122,12 @@ public final class RtVolumetrics {
         }
 
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value();
+        // Every field that shapes the scattering field must join the signature: a stale-history blend of
+        // two different media converges through dozens of visibly smeared frames instead of one reset.
         long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
                 albedo, anisotropy, directionalStrength, directionalFocus, causticStrength,
-                noiseAmount, noiseScale, temporalWeight, localCandidates, emitterSamples,
+                noiseAmount, noiseScale, temporalWeight,
+                CausticaConfig.Rt.Volumetrics.HEIGHT_OFFSET.value(), localCandidates, emitterSamples,
                 seaLevel, submerged);
         float cameraTravel2 = cameraDeltaX * cameraDeltaX + cameraDeltaY * cameraDeltaY
                 + cameraDeltaZ * cameraDeltaZ;
@@ -173,6 +182,19 @@ public final class RtVolumetrics {
         lastOpticalSignature = frame.opticalSignature();
     }
 
+    /**
+     * Composite the integrated volume over the post-RR display-resolution image. Runs unconditionally —
+     * even with the medium disabled the raygen still copies the scene through, because every downstream
+     * stage reads the composed image rather than the raw reconstruction.
+     */
+    public void recordCompose(RtContext ctx, VkCommandBuffer cmd, RtPipeline pipeline,
+                              ByteBuffer pushConstants, int width, int height) {
+        try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel volumetric compose");
+             RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricCompose")) {
+            pipeline.trace(cmd, width, height, pushConstants, COMPOSE_RAYGEN);
+        }
+    }
+
     public void invalidateHistory() {
         lastRecordedFrame = Long.MIN_VALUE;
         lastOpticalSignature = Long.MIN_VALUE;
@@ -204,6 +226,9 @@ public final class RtVolumetrics {
             case 2 -> Math.max(4, Math.round(basePixelSize * 0.625f));
             case 3 -> Math.max(4, Math.round(basePixelSize * 0.4375f));
             case 4 -> Math.max(4, Math.round(basePixelSize * 0.3125f));
+            // Cinematic keeps XY near Balanced and spends the whole step on depth slices: shafts and
+            // haze gradients are lowest-frequency along Z, so that is where extra cells buy the most.
+            case 5 -> Math.max(4, Math.round(basePixelSize * 0.9375f));
             default -> basePixelSize;
         };
         int depthSlices = switch (quality) {
@@ -212,6 +237,7 @@ public final class RtVolumetrics {
             case 2 -> Math.min(128, Math.round(baseDepthSlices * 1.5f));
             case 3 -> Math.min(128, Math.round(baseDepthSlices * (11.0f / 6.0f)));
             case 4 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 3.0f)));
+            case 5 -> Math.min(128, Math.round(baseDepthSlices * (8.0f / 3.0f)));
             default -> baseDepthSlices;
         };
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
@@ -222,6 +248,9 @@ public final class RtVolumetrics {
             case 2 -> Math.min(configured, 0.90f);
             case 3 -> Math.min(configured, 0.78f);
             case 4 -> Math.min(configured, 0.65f);
+            // Cinematic adds slices along the low-frequency depth axis, not noisy XY cells, so it
+            // tolerates more history than Ultra+ without visible smearing.
+            case 5 -> Math.min(configured, 0.85f);
             default -> configured;
         };
     }
@@ -230,7 +259,7 @@ public final class RtVolumetrics {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
             case 0, 1 -> 1;
             case 2, 3 -> 2;
-            case 4 -> 3;
+            case 4, 5 -> 3;
             default -> 1;
         };
     }
@@ -245,7 +274,7 @@ public final class RtVolumetrics {
         return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
             case 0 -> Math.max(configured, 2);
             case 2 -> Math.max(configured, 6);
-            case 3, 4 -> Math.max(configured, 8);
+            case 3, 4, 5 -> Math.max(configured, 8);
             default -> Math.max(configured, 4);
         };
     }
@@ -267,11 +296,11 @@ public final class RtVolumetrics {
                                          float heightFalloff, float albedo, float anisotropy,
                                          float directionalStrength, float directionalFocus, float causticStrength,
                                          float noiseAmount, float noiseScale, float temporalWeight,
-                                         int localCandidates, int emitterSamples,
+                                         float heightOffset, int localCandidates, int emitterSamples,
                                          int seaLevel, boolean submerged) {
         long hash = opticalSignature(maxDistance, distribution, extinction, heightFalloff, albedo,
                 anisotropy, directionalStrength, directionalFocus, causticStrength,
-                noiseAmount, noiseScale, temporalWeight);
+                noiseAmount, noiseScale, temporalWeight, heightOffset);
         hash = (hash ^ Integer.toUnsignedLong(localCandidates)) * 0x100000001b3L;
         hash = (hash ^ Integer.toUnsignedLong(emitterSamples)) * 0x100000001b3L;
         hash = (hash ^ Integer.toUnsignedLong(seaLevel)) * 0x100000001b3L;

@@ -251,6 +251,10 @@ public final class RtComposite {
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
+    // rrOutput with volumetric fog composited on top (volumetric_compose raygen, display res, same
+    // pre-exposed linear space). The single scene source for display mapping, bloom, debug present and
+    // screenshot readback; rrOutput itself stays un-fogged so exposure metering ignores fog brightness.
+    private RtImage rrFogged;
     private final RtExposure exposure = new RtExposure();
 
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
@@ -353,7 +357,7 @@ public final class RtComposite {
     public boolean exportLatestResidualExposureExr(Path outputPath) throws java.io.IOException {
         RenderSystem.assertOnRenderThread();
         RtContext ctx = RtContext.currentOrNull();
-        if (!enabled() || failed || ctx == null || rrOutput == null || exposure.image() == null
+        if (!enabled() || failed || ctx == null || rrFogged == null || exposure.image() == null
                 || displayW <= 0 || displayH <= 0 || pendingGraphicsUse != null) {
             return false;
         }
@@ -367,7 +371,8 @@ public final class RtComposite {
         }
 
         // All ordinary frame commands have been submitted before the F2 key is handled. Drain them before
-        // a private one-shot copy so rrOutput and the exposure image describe the same completed frame.
+        // a private one-shot copy so rrFogged (the fog-composited scene) and the exposure image describe
+        // the same completed frame.
         ctx.waitIdle();
         RtBuffer readback = ctx.createReadbackBuffer(totalBytes, "residual-exposure EXR readback");
         try {
@@ -417,7 +422,7 @@ public final class RtComposite {
                     .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
                     .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
                     .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
-                    .image(rrOutput.image);
+                    .image(rrFogged.image);
             imageBarriers.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                     .levelCount(1).layerCount(1);
             imageBarriers.get(1).sType$Default()
@@ -436,7 +441,7 @@ public final class RtComposite {
             sceneCopy.get(0).bufferOffset(0L);
             sceneCopy.get(0).imageSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).layerCount(1);
             sceneCopy.get(0).imageExtent().set(displayW, displayH, 1);
-            VK10.vkCmdCopyImageToBuffer(cmd, rrOutput.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+            VK10.vkCmdCopyImageToBuffer(cmd, rrFogged.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
                     readback.handle, sceneCopy);
 
             VkBufferImageCopy.Buffer exposureCopy = VkBufferImageCopy.calloc(1, stack);
@@ -652,12 +657,12 @@ public final class RtComposite {
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
             RtToneLut boundLookLut = lookLut;
-            displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
+            displayPipeline.setImages(displayImage.view, rrFogged.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
-            bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
+            bloomPipeline.setImages(rrFogged.view, exposure.image().view, bloomLevels);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrFogged.view, exposure.image().view,
                     exposure.stateBuffer());
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
@@ -725,7 +730,8 @@ public final class RtComposite {
                             RtDeviceBringup.worldRaygenShader(),
                             "volumetric_inject.rgen.spv",
                             "volumetric_filter.rgen.spv",
-                            "volumetric_integrate.rgen.spv"},
+                            "volumetric_integrate.rgen.spv",
+                            "volumetric_compose.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -741,6 +747,7 @@ public final class RtComposite {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
                 volumetrics.bindAll(worldPipeline);
+                worldPipeline.setComposeImages(rrOutput.view, rrFogged.view);
             }
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
@@ -896,6 +903,10 @@ public final class RtComposite {
             rrOutput.destroy();
             rrOutput = null;
         }
+        if (rrFogged != null) {
+            rrFogged.destroy();
+            rrFogged = null;
+        }
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
@@ -905,7 +916,7 @@ public final class RtComposite {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
         if (output != null && continuationQueue != null
-                && displayImage != null && hdrDisplayImage != null && rrOutput != null
+                && displayImage != null && hdrDisplayImage != null && rrOutput != null && rrFogged != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
@@ -980,6 +991,9 @@ public final class RtComposite {
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        // Fog-composited twin of rrOutput, written by the volumetric_compose raygen every RT frame.
+        rrFogged = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "volumetric-composited scene " + width + "x" + height);
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
@@ -988,14 +1002,15 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
             volumetrics.bindAll(worldPipeline);
+            worldPipeline.setComposeImages(rrOutput.view, rrFogged.view);
         }
         RtToneLut boundLookLut = lookLut;
-        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
+        displayPipeline.setImages(displayImage.view, rrFogged.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                 boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
-        bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
+        bloomPipeline.setImages(rrFogged.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrFogged.view, exposure.image().view,
                 exposure.stateBuffer());
     }
 
@@ -1258,7 +1273,15 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram and compose
+
+            // Fog compositing happens here, not in Pass B: near-camera in-scattering has almost no
+            // parallax, so reprojecting it with RR's first-surface guides ghosted shafts on camera moves,
+            // and the denoiser's neighborhood clamp treated the stochastic froxel estimate as path noise.
+            // rrOutput stays un-fogged (exposure meters the scene without fog glow); display, bloom, debug
+            // and screenshots read rrFogged. With the medium disabled the raygen degrades to a copy.
+            volumetrics.recordCompose(ctx, cmd, active, pushConstants, displayW, displayH);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // composed scene visible to display/bloom/debug
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore

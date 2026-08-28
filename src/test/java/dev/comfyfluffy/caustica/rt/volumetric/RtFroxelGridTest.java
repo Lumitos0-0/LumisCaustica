@@ -47,7 +47,8 @@ final class RtFroxelGridTest {
                     {138, 78, 56},
                     {192, 108, 72},
                     {275, 155, 88},
-                    {384, 216, 112}
+                    {384, 216, 112},
+                    {128, 72, 128}
             };
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
@@ -71,7 +72,7 @@ final class RtFroxelGridTest {
         int oldCandidates = candidates.value();
         try {
             candidates.set(2);
-            int[] expected = {2, 4, 6, 8, 8};
+            int[] expected = {2, 4, 6, 8, 8, 8};
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
                 assertEquals(expected[preset], RtVolumetrics.effectiveLocalLightCandidates());
@@ -89,8 +90,8 @@ final class RtFroxelGridTest {
         CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
         int oldQuality = quality.value();
         try {
-            int[] emitterSamples = {1, 1, 2, 2, 3};
-            float[] historyWeights = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f};
+            int[] emitterSamples = {1, 1, 2, 2, 3, 3};
+            float[] historyWeights = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f, 0.85f};
             for (int preset = 0; preset < emitterSamples.length; preset++) {
                 quality.set(preset);
                 assertEquals(emitterSamples[preset], RtVolumetrics.effectiveEmitterSamples());

@@ -194,13 +194,10 @@ public bool froxelReprojectHistory(float3 position, out float4 history) {
     return true;
 }
 
-/** Cumulative fog at the first primary interface, with trilinear XY/Z reconstruction. */
-public float4 froxelAtPixel(uint2 pixel, uint2 imageSize) {
-    float distance = clamp(volumeDepth[int2(pixel)], 0.0, worldPush.fogDistance.x);
-    if (distance <= 0.0) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-    float2 uv = (float2(pixel) + 0.5 + worldPush.jitter) / float2(imageSize);
+/** Cumulative fog along a frustum ray: uv is normalized frustum space; distance is the camera-ray
+ * distance of the first interface the fog must stop at. Trilinear XY/Z reconstruction of the
+ * integrated volume. */
+public float4 froxelIntegratedAtUv(float2 uv, float distance) {
     float slice = froxelSliceForDistance(distance);
     float3 coordinate = float3(uv * float2(worldPush.froxelGrid.xy) - 0.5, slice - 1.0);
     float4 integrated = froxelTrilinearIntegrated(coordinate);
@@ -215,12 +212,4 @@ public float4 froxelAtPixel(uint2 pixel, uint2 imageSize) {
         integrated.a = partialTransmittance;
     }
     return integrated;
-}
-
-public float3 applyFroxelFog(uint2 pixel, uint2 imageSize, float3 sceneRadiance) {
-    if (!froxelEnabled()) {
-        return sceneRadiance;
-    }
-    float4 fog = froxelAtPixel(pixel, imageSize);
-    return sceneRadiance * clamp(fog.a, 0.0, 1.0) + max(fog.rgb, float3(0.0));
 }

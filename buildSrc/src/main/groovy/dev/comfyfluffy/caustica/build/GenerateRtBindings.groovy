@@ -35,6 +35,7 @@ abstract class GenerateRtBindings extends DefaultTask {
                     VOLUME_DEPTH: "volumeDepth", FROXEL_SCATTERING: "froxelScattering",
                     FROXEL_HISTORY: "froxelHistory", FROXEL_FILTERED: "froxelFiltered",
                     FROXEL_INTEGRATED: "froxelIntegrated",
+                    RR_INPUT: "rtSceneInput", RR_FOGGED: "foggedScene",
                     ENTITY_ALBEDO: "entityAlbedoTex", MATERIAL_SURFACE0: "materialSurface0Tex",
                     MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],
             [prefix: "DISPLAY", source: "pipelines/display/main.comp.slang", resources: [
@@ -126,7 +127,9 @@ abstract class GenerateRtBindings extends DefaultTask {
                 def volumeImages = ordinary.findAll { suffix, ignored ->
                     suffix == "VOLUME_DEPTH" || (suffix as String).startsWith("FROXEL_")
                 }
-                def storageImages = guides + volumeImages + ordinary.findAll { suffix, ignored -> suffix == "OUTPUT" }
+                def storageImages = guides + volumeImages + ordinary.findAll { suffix, ignored ->
+                    suffix == "OUTPUT" || (suffix as String).startsWith("RR_")
+                }
                 def samplers = ordinary.findAll { suffix, ignored -> suffix != "TLAS" && !storageImages.containsKey(suffix) }
                 constants.WORLD_GUIDE_COUNT = guides.size()
                 constants.WORLD_SET_BINDING_COUNT = ordinary.values()*.index.max() + 1

@@ -35,6 +35,8 @@
 
 	"caustica.options.rt.fogDensity": "Fog Density",
 	"caustica.options.rt.fogDensity.tooltip": "Extinction of the participating medium. Higher values produce denser haze and more visible light shafts.",
+	"caustica.options.rt.fogDistance": "Fog Distance",
+	"caustica.options.rt.fogDistance.tooltip": "Distance in blocks at which the fog volume ends. Longer ranges spread the same depth slices over more blocks; pair long distances with a high Fog Quality preset to keep nearby shafts defined.",
 
 	"caustica.options.rt.lightShaftStrength": "Light Shafts",
 	"caustica.options.rt.lightShaftStrength.tooltip": "Strength of sun and moon scattering in fog. This does not change fog density, local emissive fog, or surface lighting.",
@@ -44,17 +46,20 @@
 
 	"caustica.options.rt.underwaterFog": "Underwater Fog",
 	"caustica.options.rt.underwaterFog.tooltip": "Particulate scattering while the camera is submerged. Water absorption and biome tint are handled separately.",
+	"caustica.options.rt.underwaterFogDistance": "Underwater Fog Distance",
+	"caustica.options.rt.underwaterFogDistance.tooltip": "Distance in blocks the underwater fog volume covers while submerged. Shorter ranges thicken the local medium; longer ranges fade the view into distant haze.",
 
 	"caustica.options.rt.underwaterCaustics": "Water Caustics",
 	"caustica.options.rt.underwaterCaustics.tooltip": "Strength of animated wave-focusing patterns projected into underwater volumetric light shafts.",
 
 	"caustica.options.rt.fogQuality": "Fog Quality",
-	"caustica.options.rt.fogQuality.tooltip": "Controls true froxel XY/Z resolution and emitter samples. Higher modes prioritize a sharper grid over repeated light rays; Ultra+ remains very demanding.",
+	"caustica.options.rt.fogQuality.tooltip": "Controls true froxel XY/Z resolution and emitter samples. Higher modes prioritize a sharper grid over repeated light rays; Cinematic maximizes depth slices (128) for long, smooth shafts. Ultra+ and Cinematic remain very demanding.",
 	"caustica.options.rt.fogQuality.0": "Performance",
 	"caustica.options.rt.fogQuality.1": "Balanced",
 	"caustica.options.rt.fogQuality.2": "High",
 	"caustica.options.rt.fogQuality.3": "Ultra",
 	"caustica.options.rt.fogQuality.4": "Ultra+",
+	"caustica.options.rt.fogQuality.5": "Cinematic",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",

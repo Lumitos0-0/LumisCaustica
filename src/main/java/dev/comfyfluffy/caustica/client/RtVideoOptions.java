@@ -51,9 +51,11 @@ public final class RtVideoOptions {
             waterWaves(),
             volumetricFog(),
             fogDensity(),
+            fogDistance(),
             lightShaftStrength(),
             lightShaftFocus(),
             underwaterFog(),
+            underwaterFogDistance(),
             underwaterCaustics(),
             fogQuality(),
             dlssQuality()
@@ -158,6 +160,18 @@ public final class RtVideoOptions {
             value -> setting.set(value / 10_000.0f));
     }
 
+    private static OptionInstance<Integer> fogDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDistance.tooltip")),
+            (caption, blocks) -> Options.genericValueLabel(caption,
+                    Component.literal(blocks + " blocks")),
+            new OptionInstance.IntRange(32, 1024),
+            Math.clamp(Math.round(setting.value()), 32, 1024),
+            blocks -> setting.set((float) blocks));
+    }
+
     private static OptionInstance<Integer> lightShaftStrength() {
         FloatSetting setting = CausticaConfig.Rt.Volumetrics.DIRECTIONAL_STRENGTH;
         return new OptionInstance<>(
@@ -197,6 +211,19 @@ public final class RtVideoOptions {
             percent -> setting.set(percent / 1000.0f));
     }
 
+    private static OptionInstance<Integer> underwaterFogDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.UNDERWATER_MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.underwaterFogDistance",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.underwaterFogDistance.tooltip")),
+            (caption, blocks) -> Options.genericValueLabel(caption,
+                    Component.literal(blocks + " blocks")),
+            new OptionInstance.IntRange(8, 256),
+            Math.clamp(Math.round(setting.value()), 8, 256),
+            blocks -> setting.set((float) blocks));
+    }
+
     private static OptionInstance<Integer> underwaterCaustics() {
         FloatSetting setting = CausticaConfig.Rt.Volumetrics.UNDERWATER_CAUSTIC_STRENGTH;
         return new OptionInstance<>(
@@ -217,8 +244,8 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
             (caption, value) -> Options.genericValueLabel(caption,
                     Component.translatable("caustica.options.rt.fogQuality." + value)),
-            new OptionInstance.IntRange(0, 4),
-            Math.clamp(setting.value(), 0, 4),
+            new OptionInstance.IntRange(0, 5),
+            Math.clamp(setting.value(), 0, 5),
             setting::set);
     }
 

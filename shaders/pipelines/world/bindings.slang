@@ -30,6 +30,12 @@ import world_common;
 [[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFiltered;
 [[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
 
+// Post-reconstruction scene composition at display resolution (volumetric_compose): the denoised,
+// upscaled, still pre-exposed render goes in, the fog-composited image every downstream stage
+// (display mapping, bloom, debug present, screenshot readback) consumes comes out.
+[[vk::binding(17, 0)]] [format("rgba16f")] public RWTexture2D<float4> rtSceneInput;
+[[vk::binding(18, 0)]] [format("rgba16f")] public RWTexture2D<float4> foggedScene;
+
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];

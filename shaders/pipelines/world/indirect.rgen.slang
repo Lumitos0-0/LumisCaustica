@@ -24,7 +24,6 @@ import math;
 import medium;
 import segment;
 import water;
-import froxel;
 import trace;
 #ifdef CAUSTICA_ENABLE_EXT_SER
 import trace_ser;
@@ -426,14 +425,15 @@ void main() {
         recordIndex = packed.nextRecord;
     }
     // Pre-exposure is applied here and nowhere else: the entire path-traced result above is in absolute
-    // scene units, and only the fp16 store is normalized.
+    // scene units, and only the fp16 store is normalized. Volumetric fog is intentionally absent from
+    // this image — the volumetric_compose raygen adds it after DLSS-RR at display resolution, so the
+    // denoiser never reprojects or clamps a fogged radiance against first-surface guides.
     //
     // outImage is rgba16f, so anything over 65504 would round to +inf and propagate as NaN
     // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.
     float3 resolvedRadiance = frameRadiance / float(spp);
-    resolvedRadiance = applyFroxelFog(dispatchIndex, dimensions, resolvedRadiance);
     float3 stored = resolvedRadiance * worldPush.preExposure;
     outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
 }
