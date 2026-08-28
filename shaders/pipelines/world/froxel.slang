@@ -35,23 +35,6 @@ public int3 froxelDimensions() {
     return worldPush.froxelGrid.xyz;
 }
 
-// Temporal confidence lost to camera motion: 0 when the camera is parked, approaching 1 at high speed.
-// The fog field is static in world space and reprojection is geometrically exact, so motion does not
-// misplace history the way it does in screen-space temporal filters. What it actually costs is that the
-// camera frustum slides over newly revealed regions whose stored history is stale, and that is a small
-// fraction of the grid, so the falloff is deliberately gentle: at walking and sprinting speeds the
-// blend weight stays within a few percent of the configured value.
-//
-// Deliberately not shared with the filter pass. That pass needs a curve steep enough to reach full blur
-// by sprint-flying speed, because a 3x3 kernel only reaches ~9x variance reduction against the ~20x the
-// temporal blend provides when parked — it has to give up sharpness quickly once motion starts costing
-// weight. Same input, different job, so it maps camDelta with its own constant.
-public static const float FROXEL_MOTION_FALLOFF = 0.08;
-
-public float froxelMotionLoss() {
-    return 1.0 - exp(-length(worldPush.camDelta) * FROXEL_MOTION_FALLOFF);
-}
-
 /** Camera-ray distance at one nonlinear Z boundary. */
 public float froxelBoundaryDistance(float boundary) {
     float normalized = saturate(boundary / float(worldPush.froxelGrid.z));

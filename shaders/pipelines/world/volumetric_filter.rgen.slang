@@ -34,12 +34,12 @@ public static const float HISTORY_CLIP_SIGMAS = 1.5;
 // nothing when the nine taps happen to agree, which would otherwise throw away a valid history.
 public static const float MIN_SPREAD_FRACTION = 0.05;
 
-// The temporal blend sheds weight as the camera moves; see FROXEL_MOTION_FALLOFF. Take that slack up
-// here instead of letting it reach the image: the centre weight falls from 4 (parked, sharp) to 1 (full
-// box average at a block per frame), worth about 2.25x more variance reduction from the same nine taps.
-// The ramp is linear in camera travel and much steeper than froxelMotionLoss(), because nine taps are a
-// weak substitute for a ~20-frame history and have to give up sharpness quickly to keep up.
-public static const float FULL_BLUR_TRAVEL = 1.0; // blocks per frame
+// Centre weight of the 3x3 kernel against the eight neighbours at 1. Keeps denoising while preserving
+// the higher-frequency visibility transitions that define light-shaft edges. Previously this fell with
+// camera speed to compensate for a motion-adaptive temporal weight; the variance clip below now keeps
+// stale history in check on its own, and a speed-dependent blur cost more in smeared depth than it
+// returned in noise.
+public static const float KERNEL_CENTER_WEIGHT = 4.0;
 
 [shader("raygeneration")]
 void main() {
@@ -53,14 +53,13 @@ void main() {
     int3 dimensions = worldPush.froxelGrid.xyz;
     int3 center = int3(index);
 
-    float centerWeight = lerp(4.0, 1.0, saturate(length(worldPush.camDelta) / FULL_BLUR_TRAVEL));
     float4 sum = float4(0.0);
     float4 sumSquares = float4(0.0);
     float weightSum = 0.0;
     for (int y = -1; y <= 1; ++y) {
-        float wy = y == 0 ? centerWeight : 1.0;
+        float wy = y == 0 ? KERNEL_CENTER_WEIGHT : 1.0;
         for (int x = -1; x <= 1; ++x) {
-            float wx = x == 0 ? centerWeight : 1.0;
+            float wx = x == 0 ? KERNEL_CENTER_WEIGHT : 1.0;
             int3 samplePosition = clamp(center + int3(x, y, 0), int3(0), dimensions - 1);
             float4 value = max(froxelScattering[samplePosition], float4(0.0));
             float weight = wx * wy;
@@ -89,7 +88,7 @@ void main() {
         float4 history;
         if (froxelReprojectHistory(samplePosition, history)) {
             float4 clipped = clamp(history, mean - spread, mean + spread);
-            resolved = lerp(mean, clipped, worldPush.fogShape.w * (1.0 - froxelMotionLoss()));
+            resolved = lerp(mean, clipped, worldPush.fogShape.w);
         }
     }
     froxelFiltered[center] = min(max(resolved, float4(0.0)), float4(HALF_MAX));
