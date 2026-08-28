@@ -35,6 +35,19 @@ public int3 froxelDimensions() {
     return worldPush.froxelGrid.xyz;
 }
 
+// Temporal confidence lost to camera motion: 0 when the camera is parked, approaching 1 at high speed.
+// The fog field is static in world space and reprojection is geometrically exact, so motion does not
+// misplace history the way it does in screen-space temporal filters. What it actually costs is that the
+// camera frustum slides over newly revealed regions whose stored history is stale. This is the shared
+// measure of that loss: the inject pass sheds temporal weight by it and the filter pass takes the slack
+// up spatially, so total variance reduction stays roughly flat instead of collapsing to one sample per
+// froxel whenever the player moves.
+public static const float FROXEL_MOTION_FALLOFF = 0.25;
+
+public float froxelMotionLoss() {
+    return 1.0 - exp(-length(worldPush.camDelta) * FROXEL_MOTION_FALLOFF);
+}
+
 /** Camera-ray distance at one nonlinear Z boundary. */
 public float froxelBoundaryDistance(float boundary) {
     float normalized = saturate(boundary / float(worldPush.froxelGrid.z));

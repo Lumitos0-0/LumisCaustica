@@ -152,13 +152,6 @@ public float3 froxelScatteringColor() {
     return lerp(float3(0.25, 0.65, 1.0), biomeTint, 0.35);
 }
 
-// Per-block-of-travel decay of the temporal blend weight. The configured weight assumes the camera is
-// roughly where it was, but RtVolumetrics only invalidates history on teleport-sized jumps, so ordinary
-// fast movement would otherwise blend a full-weight stale field. 0.7 halves the weight at one block per
-// frame (60 blocks/s at 60fps), which leaves walking and sprinting essentially untouched and pulls
-// elytra flight back to something responsive.
-public static const float MOTION_FALLOFF = 0.7;
-
 // How much of the celestial shadow ray the ambient sky term inherits. `skyVisibility` is the sun/moon
 // shadow, so it doubles as a crude enclosure test, but at 1.0 it blacks out fog that is merely in the
 // sun's shadow under open sky: the shaded side of a hill, under a tree, the north face of a building.
@@ -230,9 +223,18 @@ public float4 injectFroxel(uint3 index) {
     // LUT, and it borrows the celestial shadow ray below as a partial enclosure term.
     float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
-    float3 skyVisibility;
-    float3 directional = worldPush.fogLighting.x
-            * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
+    // Occluded samples get no celestial light, for the same reason the emitter term below is gated: a
+    // shadow ray born inside or behind geometry culls back faces, so it can escape to the sky and report
+    // full visibility, and that radiance reaches visible pixels through the XY filter and through the
+    // trilinear Z reconstruction, which deliberately reaches one cell past the first surface. Gating
+    // also stops every froxel behind the world from tracing a full-length shadow ray. The cell stays
+    // populated with extinction and residual ambient so the field remains continuous and filterable.
+    float3 skyVisibility = float3(0.0);
+    float3 directional = float3(0.0);
+    if (cameraVisibleSample) {
+        directional = worldPush.fogLighting.x
+                * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
+    }
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
@@ -256,8 +258,9 @@ public float4 injectFroxel(uint3 index) {
     float3 source = extinction * froxelScatteringColor() * incident;
     float4 current = float4(max(source, float3(0.0)), extinction);
 
-    float historyWeight = worldPush.fogShape.w
-            * exp(-length(worldPush.camDelta) * MOTION_FALLOFF);
+    // Shed temporal weight as the camera moves; froxel.slang's filter pass takes the slack up spatially
+    // using the same froxelMotionLoss(), so movement costs responsiveness rather than adding noise.
+    float historyWeight = worldPush.fogShape.w * (1.0 - froxelMotionLoss());
     if (froxelHistoryValid()) {
         float4 history;
         if (froxelReprojectHistory(samplePosition, history)) {
