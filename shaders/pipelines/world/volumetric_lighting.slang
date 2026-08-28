@@ -256,24 +256,8 @@ public float4 injectFroxel(uint3 index) {
     float3 ambientTerm = ambient * lerp(float3(1.0), skyVisibility, AMBIENT_OCCLUSION);
     float3 incident = ambientTerm + directional + clampFroxelEmitter(emitter);
     float3 source = extinction * froxelScatteringColor() * incident;
-    float4 current = float4(max(source, float3(0.0)), extinction);
-
-    // Shed temporal weight as the camera moves. The filter pass takes the slack up spatially so movement
-    // costs responsiveness rather than adding noise; see FROXEL_MOTION_FALLOFF for why this curve is
-    // gentle and the filter's is not.
-    float historyWeight = worldPush.fogShape.w * (1.0 - froxelMotionLoss());
-    if (froxelHistoryValid()) {
-        float4 history;
-        if (froxelReprojectHistory(samplePosition, history)) {
-            // Bound stale moving-light/shadow history while retaining enough range for stochastic emitter
-            // samples. Extinction gets a tighter multiplicative clamp because its world field is smooth.
-            float3 historyCeiling = cameraVisibleSample
-                    ? current.rgb * 4.0 + float3(8.0)
-                    : current.rgb * 1.25 + float3(0.1);
-            history.rgb = min(max(history.rgb, float3(0.0)), historyCeiling);
-            history.a = clamp(history.a, current.a * 0.5, current.a * 2.0 + 1.0e-6);
-            current = lerp(current, history, historyWeight);
-        }
-    }
-    return min(current, float4(HALF_MAX));
+    // One raw stochastic sample of this froxel's slice. The resolve that owns the spatial gather, the
+    // reprojection, the history clip and the blend lives in volumetric_filter.rgen.slang, which can see
+    // the neighbouring froxels this pass cannot.
+    return min(float4(max(source, float3(0.0)), extinction), float4(HALF_MAX));
 }

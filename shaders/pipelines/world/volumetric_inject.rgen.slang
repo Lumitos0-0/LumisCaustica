@@ -1,5 +1,8 @@
 // One invocation per froxel: evaluate the participating-medium material, atmosphere and emissive-block
-// lighting, trace visibility, and temporally reproject the previous scattering field.
+// lighting and trace visibility, writing one raw stochastic sample of the froxel's slice.
+//
+// The spatiotemporal resolve is a separate pass (volumetric_filter.rgen.slang): it needs the current
+// frame's neighbouring froxels to clip history against, which a scatter pass like this one cannot see.
 //
 // RtVolumetrics.record skips this dispatch entirely when volumetrics are disabled, so the enable bit in
 // froxelGrid.w is always set here and the pass never has to clear a stale volume.

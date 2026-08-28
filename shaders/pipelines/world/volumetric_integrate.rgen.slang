@@ -1,5 +1,6 @@
 // One invocation per XY column. Prefix-integrate scattering and extinction from the camera through all
-// nonlinear depth slices using the analytic constant-medium Beer-Lambert segment solution.
+// nonlinear depth slices using the analytic constant-medium Beer-Lambert segment solution, and return
+// the resolved field to the scattering volume that becomes the next frame's history.
 
 import world_common;
 import world_core;
@@ -31,6 +32,13 @@ void main() {
         froxelIntegrated[int3(int2(column), z)] = float4(
                 min(accumulatedScattering, float3(HALF_MAX)),
                 clamp(accumulatedTransmittance, 0.0, 1.0));
+        // Hand the resolved value back into this frame's scattering volume, which is next frame's
+        // history. The filter pass cannot do this itself: it gathers its neighbourhood from that very
+        // image, so writing it there would race with its own reads. This pass is column-local and each
+        // thread owns exactly one column, so the writes are disjoint and this is the safe place to
+        // close the loop. Without it the ping-pong history would hold the inject pass's raw, single
+        // sample instead of the resolved field.
+        froxelScattering[int3(int2(column), z)] = cell;
         previousDistance = farDistance;
     }
 }
