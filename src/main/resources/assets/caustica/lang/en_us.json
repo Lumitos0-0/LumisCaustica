@@ -36,6 +36,36 @@
 	"caustica.options.rt.fogDensity": "Fog Density",
 	"caustica.options.rt.fogDensity.tooltip": "Extinction of the participating medium. Higher values produce denser haze and more visible light shafts.",
 
+	"caustica.options.rt.fogHeight": "Fog Base Height",
+	"caustica.options.rt.fogHeight.tooltip": "Altitude of the fog layer's base, as an offset from sea level. Lower values pool fog into valleys; raise it to lift the layer above the terrain.",
+
+	"caustica.options.rt.fogHeightFalloff": "Fog Height Falloff",
+	"caustica.options.rt.fogHeightFalloff.tooltip": "Exponential decay rate of fog density with altitude. 0 spreads fog evenly at every height; higher values confine it to a low, flat layer.",
+
+	"caustica.options.rt.fogMaxDistance": "Fog Distance",
+	"caustica.options.rt.fogMaxDistance.tooltip": "How far the fog volume reaches from the camera in blocks. Beyond this distance fog is not simulated at all.",
+
+	"caustica.options.rt.fogAnisotropy": "Fog Anisotropy",
+	"caustica.options.rt.fogAnisotropy.tooltip": "Direction of scattering in the air. Positive scatters forward and brightens fog when you face away from the sun; negative scatters backward.",
+
+	"caustica.options.rt.fogAlbedo": "Fog Albedo",
+	"caustica.options.rt.fogAlbedo.tooltip": "Fraction of light the fog scatters instead of absorbing. Below 100% the fog reads darker and less milky.",
+
+	"caustica.options.rt.fogNoiseAmount": "Fog Noise Amount",
+	"caustica.options.rt.fogNoiseAmount.tooltip": "Strength of the density variation that breaks fog into wisps. 0 gives perfectly smooth fog.",
+
+	"caustica.options.rt.fogNoiseScale": "Fog Noise Scale",
+	"caustica.options.rt.fogNoiseScale.tooltip": "Spatial frequency of the fog noise field. Higher values give finer, busier wisps; lower values give large soft banks.",
+
+	"caustica.options.rt.fogTemporalWeight": "Fog Stability",
+	"caustica.options.rt.fogTemporalWeight.tooltip": "How much of the previous frame's resolved fog carries over. Higher is smoother and less noisy but slower to react. Fog Quality caps this value.",
+
+	"caustica.options.rt.fogLocalLights": "Fog Light Samples",
+	"caustica.options.rt.fogLocalLights.tooltip": "Candidate emissive lights considered per froxel before tracing one shadow ray. More samples reduce flicker around torches and lava at some cost. Fog Quality raises the minimum.",
+
+	"caustica.options.rt.fogUnderwaterDistance": "Underwater Fog Distance",
+	"caustica.options.rt.fogUnderwaterDistance.tooltip": "How far the fog volume reaches while the camera is submerged, in blocks.",
+
 	"caustica.options.rt.lightShaftStrength": "Light Shafts",
 	"caustica.options.rt.lightShaftStrength.tooltip": "Strength of sun and moon scattering in fog. This does not change fog density, local emissive fog, or surface lighting.",
 

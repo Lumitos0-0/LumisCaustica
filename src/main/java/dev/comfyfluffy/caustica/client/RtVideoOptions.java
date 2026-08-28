@@ -51,10 +51,20 @@ public final class RtVideoOptions {
             waterWaves(),
             volumetricFog(),
             fogDensity(),
+            fogHeight(),
+            fogHeightFalloff(),
+            fogMaxDistance(),
+            fogAnisotropy(),
+            fogAlbedo(),
+            fogNoiseAmount(),
+            fogNoiseScale(),
             lightShaftStrength(),
             lightShaftFocus(),
+            fogTemporalWeight(),
+            fogLocalLights(),
             underwaterFog(),
             underwaterCaustics(),
+            fogUnderwaterDistance(),
             fogQuality(),
             dlssQuality()
         ));
@@ -156,6 +166,75 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round(setting.value() * 10_000.0f), 0, 100),
             value -> setting.set(value / 10_000.0f));
+    }
+
+    // Fog medium shaping. Every setting below is read per frame by RtVolumetrics.prepareFrame and is
+    // part of the optical signature, so changing one invalidates froxel history rather than ghosting.
+
+    /** Altitude of the fog layer's base, as an offset from sea level in blocks. */
+    private static OptionInstance<Integer> fogHeight() {
+        return floatSlider("caustica.options.rt.fogHeight",
+                CausticaConfig.Rt.Volumetrics.HEIGHT_OFFSET, -64, 128, 1.0f, "");
+    }
+
+    /** Exponential decay rate of fog density with altitude, x1000. 0 spreads fog evenly at all heights. */
+    private static OptionInstance<Integer> fogHeightFalloff() {
+        return floatSlider("caustica.options.rt.fogHeightFalloff",
+                CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF, 0, 120, 1000.0f, "");
+    }
+
+    /** How far the froxel volume reaches in blocks. Beyond this the fog is not simulated. */
+    private static OptionInstance<Integer> fogMaxDistance() {
+        return floatSlider("caustica.options.rt.fogMaxDistance",
+                CausticaConfig.Rt.Volumetrics.MAX_DISTANCE, 8, 2048, 1.0f, "");
+    }
+
+    /** Scattering phase anisotropy of the air medium, x100. Negative values scatter backward. */
+    private static OptionInstance<Integer> fogAnisotropy() {
+        return floatSlider("caustica.options.rt.fogAnisotropy",
+                CausticaConfig.Rt.Volumetrics.ANISOTROPY, -95, 95, 100.0f, "");
+    }
+
+    /** Fraction of light the medium scatters rather than absorbs. Below 100% the fog reads darker. */
+    private static OptionInstance<Integer> fogAlbedo() {
+        return floatSlider("caustica.options.rt.fogAlbedo",
+                CausticaConfig.Rt.Volumetrics.SINGLE_SCATTERING_ALBEDO, 0, 100, 100.0f, "%");
+    }
+
+    /** Strength of the density variation that breaks fog into wisps. */
+    private static OptionInstance<Integer> fogNoiseAmount() {
+        return floatSlider("caustica.options.rt.fogNoiseAmount",
+                CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT, 0, 100, 100.0f, "%");
+    }
+
+    /** Spatial frequency of the fog noise field, x1000. Higher values give finer, busier wisps. */
+    private static OptionInstance<Integer> fogNoiseScale() {
+        return floatSlider("caustica.options.rt.fogNoiseScale",
+                CausticaConfig.Rt.Volumetrics.NOISE_SCALE, 1, 200, 1000.0f, "");
+    }
+
+    /**
+     * How much of the previous frame's resolved fog carries over. Higher is smoother but slower to
+     * react; Fog Quality caps this, so the top of the range may be unreachable on High and above.
+     */
+    private static OptionInstance<Integer> fogTemporalWeight() {
+        return floatSlider("caustica.options.rt.fogTemporalWeight",
+                CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT, 0, 99, 100.0f, "%");
+    }
+
+    /**
+     * Unshadowed reservoir proposals per froxel when picking an emissive light. More candidates cut
+     * selection noise; Fog Quality raises the floor above the configured value.
+     */
+    private static OptionInstance<Integer> fogLocalLights() {
+        return intSlider("caustica.options.rt.fogLocalLights",
+                CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES, 0, 8);
+    }
+
+    /** How far the froxel volume reaches while the camera is submerged, in blocks. */
+    private static OptionInstance<Integer> fogUnderwaterDistance() {
+        return floatSlider("caustica.options.rt.fogUnderwaterDistance",
+                CausticaConfig.Rt.Volumetrics.UNDERWATER_MAX_DISTANCE, 8, 256, 1.0f, "");
     }
 
     private static OptionInstance<Integer> lightShaftStrength() {
@@ -298,5 +377,38 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
             setting.value(),
             setting::set);
+    }
+
+    /** Integer slider over an integer setting, shown as the raw value. */
+    private static OptionInstance<Integer> intSlider(String captionKey, IntSetting setting,
+            int min, int max) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(setting.value(), min, max),
+            setting::set);
+    }
+
+    /**
+     * Integer slider over a float setting. Widget position {@code p} maps to {@code p / scale}, so
+     * {@code scale} sets both the precision and the displayed magnitude. {@code unit} is appended to the
+     * number: "%" for a percentage, "" for a bare value.
+     *
+     * <p>The range is intentionally a useful subset of what the backing setting clamps to — the full
+     * range stays reachable from the TOML, and a slider spanning every legal value would leave the
+     * interesting ones in the first pixel.
+     */
+    private static OptionInstance<Integer> floatSlider(String captionKey, FloatSetting setting,
+            int min, int max, float scale, String unit) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal(unit.isEmpty() ? String.valueOf(value) : value + unit)),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value() * scale), min, max),
+            value -> setting.set(value / scale));
     }
 }
