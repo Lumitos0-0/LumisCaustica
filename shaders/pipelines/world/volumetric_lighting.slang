@@ -195,18 +195,9 @@ public float4 injectFroxel(uint3 index) {
     // LUT, and it borrows the celestial shadow ray below as a partial enclosure term.
     float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
-    // Occluded samples get no celestial light, for the same reason the emitter term below is gated: a
-    // shadow ray born inside or behind geometry culls back faces, so it can escape to the sky and report
-    // full visibility, and that radiance reaches visible pixels through the XY filter and through the
-    // trilinear Z reconstruction, which deliberately reaches one cell past the first surface. Gating
-    // also stops every froxel behind the world from tracing a full-length shadow ray. The cell stays
-    // populated with extinction and residual ambient so the field remains continuous and filterable.
-    float3 skyVisibility = float3(0.0);
-    float3 directional = float3(0.0);
-    if (cameraVisibleSample) {
-        directional = worldPush.fogLighting.x
-                * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
-    }
+    float3 skyVisibility;
+    float3 directional = worldPush.fogLighting.x
+            * froxelDirectionalLighting(samplePosition, viewRay, skyVisibility);
     // The original leak came from a partially occupied Z slice choosing its one light sample behind the
     // first surface (for example inside a lava cave) and applying that result to the visible part of the
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
