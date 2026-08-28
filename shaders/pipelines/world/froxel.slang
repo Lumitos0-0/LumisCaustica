@@ -111,8 +111,12 @@ public float froxelExtinction(float3 position) {
     float heightMultiplier = exp(clamp((worldPush.fogShape.x - position.y)
             * worldPush.fogDistance.w, -3.0, 3.0));
     float3 worldPosition = position + worldPush.fogWorld.xyz;
-    float3 wind = float3(worldPush.fogWorld.w * 0.018, 0.0, worldPush.fogWorld.w * 0.009);
-    float noise = froxelFbm(worldPosition * worldPush.fogShape.z + wind);
+    // Advect in world space and scale into the noise domain together with the position. Adding the wind
+    // after the multiply made the apparent drift speed scale as 1/noise-scale, so the field raced at low
+    // frequencies and froze at high ones. These are blocks/second, retuned from the old constants so the
+    // drift speed at the default noise scale is unchanged (0.018 / 0.035 and 0.009 / 0.035).
+    float3 wind = worldPush.fogWorld.w * float3(0.5, 0.0, 0.25);
+    float noise = froxelFbm((worldPosition + wind) * worldPush.fogShape.z);
     float noiseMultiplier = lerp(1.0 - worldPush.fogShape.y,
             1.0 + worldPush.fogShape.y, noise);
     return worldPush.fogDistance.z * clamp(heightMultiplier * noiseMultiplier, 0.05, 12.0);

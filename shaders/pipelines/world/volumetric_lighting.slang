@@ -144,13 +144,29 @@ public float3 froxelScatteringColor() {
     return lerp(float3(0.25, 0.65, 1.0), biomeTint, 0.35);
 }
 
-public float3 clampFroxelSource(float3 source) {
-    // Keeps an isolated emitter sample below the range that becomes a visible dot after temporal reuse;
-    // direct forward-scattered noon sunlight remains well below this ceiling.
-    static const float MAX_SOURCE_LUMINANCE = 250.0;
-    float sourceLuminance = luminance(source);
-    return sourceLuminance > MAX_SOURCE_LUMINANCE
-            ? source * (MAX_SOURCE_LUMINANCE / sourceLuminance) : source;
+// How much of the celestial shadow ray the ambient sky term inherits. `skyVisibility` is the sun/moon
+// shadow, so it doubles as a crude enclosure test, but at 1.0 it blacks out fog that is merely in the
+// sun's shadow under open sky: the shaded side of a hill, under a tree, the north face of a building.
+// 0.75 keeps enclosed volumes falling off without losing ambient entirely.
+public static const float AMBIENT_OCCLUSION = 0.75;
+
+// Bounds the STOCHASTIC emitter term only, in scene radiance. A reservoir can carry a very large
+// inverse-PDF weight, and one such sample survives temporal reuse as a visible dot.
+//
+// The celestial term must not share this ceiling. It is deterministic (one fixed shadow ray), so it
+// produces no outliers, and clamping the combined `extinction * albedo * incident` instead made the
+// integrated radiance approach `ceiling / extinction`: sun shafts got DIMMER as fog density rose, and
+// directional-strength stopped working because it is applied before the clamp. Clamping incident
+// radiance keeps the result monotone in extinction and leaves sun glare to exposure, bloom, and the
+// display transform, which is what they are there for.
+//
+// 70000 keeps the previous emitter appearance at the default extinction: the old ceiling was 250 on
+// `extinction * albedo * incident`, i.e. ~70000 on incident at extinction 0.0035, albedo 0.92.
+public float3 clampFroxelEmitter(float3 emitter) {
+    static const float MAX_EMITTER_LUMINANCE = 70000.0;
+    float emitterLuminance = luminance(emitter);
+    return emitterLuminance > MAX_EMITTER_LUMINANCE
+            ? emitter * (MAX_EMITTER_LUMINANCE / emitterLuminance) : emitter;
 }
 
 public float4 injectFroxel(uint3 index) {
@@ -178,9 +194,9 @@ public float4 injectFroxel(uint3 index) {
         return float4(0.0);
     }
     SkyState state = skyState(worldPush);
-    // A cheap low-frequency approximation to the hemispherical sky integral. It deliberately has no
-    // visibility ray: terrain occlusion is supplied by the directional and local terms, while this term
-    // represents the broad multiple-scattered environment already baked into the sky LUT.
+    // A cheap low-frequency approximation to the hemispherical sky integral. It has no visibility ray of
+    // its own; this term represents the broad multiple-scattered environment already baked into the sky
+    // LUT, and it borrows the celestial shadow ray below as a partial enclosure term.
     float3 ambient = 0.12 * (0.5 * froxelSkyRadiance(viewRay, state)
             + 0.5 * froxelSkyRadiance(float3(0.0, 1.0, 0.0), state));
     float3 skyVisibility;
@@ -204,8 +220,9 @@ public float4 injectFroxel(uint3 index) {
         }
         emitter /= float(sampleCount);
     }
-    float3 incident = ambient * skyVisibility + directional + emitter;
-    float3 source = clampFroxelSource(extinction * froxelScatteringColor() * incident);
+    float3 ambientTerm = ambient * lerp(float3(1.0), skyVisibility, AMBIENT_OCCLUSION);
+    float3 incident = ambientTerm + directional + clampFroxelEmitter(emitter);
+    float3 source = extinction * froxelScatteringColor() * incident;
     float4 current = float4(max(source, float3(0.0)), extinction);
 
     if (froxelHistoryValid()) {

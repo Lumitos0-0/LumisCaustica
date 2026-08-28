@@ -4,6 +4,12 @@ package dev.comfyfluffy.caustica.rt.volumetric;
  * Immutable dimensions and depth mapping for the camera-aligned fog volume. The XY cells cover square
  * blocks of render pixels; Z boundaries follow a power distribution so nearby participating media gets
  * more samples than distant haze.
+ *
+ * <p>{@link #forRenderSize} and {@link #cellCount} size the GPU volumes and run every frame. The two
+ * depth-mapping methods below are the CPU reference for the curve and are exercised only by tests:
+ * {@code froxel.slang} carries its own copies ({@code froxelBoundaryDistance},
+ * {@code froxelSliceForDistance}) because the inject and composition passes evaluate them per froxel on
+ * the device. Changing the curve means changing both.
  */
 public record RtFroxelGrid(int width, int height, int depth, int pixelSize) {
     public RtFroxelGrid {

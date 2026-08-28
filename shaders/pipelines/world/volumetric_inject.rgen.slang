@@ -1,5 +1,8 @@
 // One invocation per froxel: evaluate the participating-medium material, atmosphere and emissive-block
 // lighting, trace visibility, and temporally reproject the previous scattering field.
+//
+// RtVolumetrics.record skips this dispatch entirely when volumetrics are disabled, so the enable bit in
+// froxelGrid.w is always set here and the pass never has to clear a stale volume.
 
 import world_common;
 import world_core;
@@ -16,11 +19,6 @@ void main() {
     if (any(index >= dimensions)) {
         return;
     }
-    if (!froxelEnabled()) {
-        froxelScattering[int3(index)] = float4(0.0);
-        return;
-    }
-
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
     froxelScattering[int3(index)] = injectFroxel(index);
