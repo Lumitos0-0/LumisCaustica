@@ -250,7 +250,7 @@ public final class RtVideoOptions {
             (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + " blocks")),
             new OptionInstance.IntRange(0, 200),
             Math.clamp(Math.round(setting.value()), 0, 200),
-            setting::set);
+            value -> setting.set(value.floatValue()));
     }
 
     private static OptionInstance<Integer> volumeHeightScale() {
@@ -261,7 +261,7 @@ public final class RtVideoOptions {
             (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + " blocks")),
             new OptionInstance.IntRange(1, 100),
             Math.clamp(Math.round(setting.value()), 1, 100),
-            setting::set);
+            value -> setting.set(value.floatValue()));
     }
 
     private static OptionInstance<Integer> volumeScattering() {
