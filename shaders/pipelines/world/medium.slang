@@ -42,7 +42,11 @@ public float3 volumeExtinction(float3 tint, float transmission) {
 public struct Medium {
     public float ior;
     public float3 extinction;
-    public bool water; // drives the wave-refraction caustic on submerged receivers; nothing else is water-specific
+    public float3 scattering; // scattering coefficient (sigma_s) for in-scattering integrals; zero = pure attenuation
+    public float phaseGF;     // forward HG asymmetry (positive); default 0 = isotropic
+    public float phaseGB;     // backward HG asymmetry (negative); default 0 = isotropic
+    public float phaseWF;     // forward weight [0..1]; default 1.0 = pure forward
+    public bool water;
 };
 
 public struct MediumStack {
@@ -54,6 +58,10 @@ public Medium airMedium() {
     Medium m;
     m.ior = 1.0;
     m.extinction = float3(0.0, 0.0, 0.0);
+    m.scattering = float3(0.0, 0.0, 0.0);
+    m.phaseGF = 0.0;  // isotropic by default
+    m.phaseGB = 0.0;
+    m.phaseWF = 1.0;  // pure forward weight (neutral when no scattering)
     m.water = false;
     return m;
 }
@@ -81,6 +89,10 @@ public Medium makeDielectricMedium(bool isWater, float ior, float3 tint, float t
     Medium m;
     m.ior = ior;
     m.extinction = isWater ? waterExtinction(tint) : volumeExtinction(tint, transmission);
+    m.scattering = float3(0.0, 0.0, 0.0); // pure attenuation by default; enabled by material feature or density field
+    m.phaseGF = 0.6;  // forward scatter (like cloud/water forward peak)
+    m.phaseGB = -0.2; // backward scatter (halo/glow)
+    m.phaseWF = 0.8;  // 80% forward, 20% backward weight
     m.water = isWater;
     return m;
 }

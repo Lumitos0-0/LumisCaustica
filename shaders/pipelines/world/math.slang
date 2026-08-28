@@ -45,6 +45,13 @@ public float hg(float cosT, float g) {
     return (1.0 - g2) / (4.0 * PI * pow(max(0.0, 1.0 + g2 - 2.0 * g * cosT), 1.5));
 }
 
+// Dual-lobe Henyey-Greenstein: forward (g_f > 0) + backward (g_b < 0) scattering.
+// Energy-conserving: w_f + w_b = 1, both hg() terms integrate to 1 over the sphere.
+public float hg_dual(float cosT, float gf, float gb, float wf) {
+    float wb = 1.0 - wf;
+    return wf * hg(cosT, gf) + wb * hg(cosT, gb);
+}
+
 // NVIDIA RR guide-buffer helper: integrated/view-dependent specular reflectivity, not raw F0.
 // alpha is GGX alpha (== the linear roughness materials store), NoV is the first-hit view cosine.
 public float3 rrSpecularAlbedo(float3 specularColor, float alpha, float NoV) {
@@ -175,4 +182,51 @@ public float3 sampleGGXVNDF(float3 n, float3 ve, float alpha, inout uint s) {
     float3 Nh = p1 * T1 + p2 * T2 + sqrt(max(0.0, 1.0 - p1 * p1 - p2 * p2)) * Vh;
     float3 Ne = normalize(float3(a * Nh.x, a * Nh.y, max(0.0, Nh.z))); // microfacet normal, tangent space
     return normalize(Ne.x * t + Ne.y * b + Ne.z * n);                 // -> world space
+}
+
+// ---- 3D procedural density: FBM + exponential height falloff (Prop C / Appendix A) ----
+// Deterministic hash-based 3D noise (no texture binding, register-safe).
+public float hash3d(float3 p) {
+    float3 p3 = fract(p * float3(0.1031, 0.11369, 0.13787));
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+public float noise3d(float3 p) {
+    float3 i = floor(p);
+    float3 f = fract(p);
+    float3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = hash3d(i + float3(0.0, 0.0, 0.0));
+    float n100 = hash3d(i + float3(1.0, 0.0, 0.0));
+    float n010 = hash3d(i + float3(0.0, 1.0, 0.0));
+    float n110 = hash3d(i + float3(1.0, 1.0, 0.0));
+    float n001 = hash3d(i + float3(0.0, 0.0, 1.0));
+    float n101 = hash3d(i + float3(1.0, 0.0, 1.0));
+    float n011 = hash3d(i + float3(0.0, 1.0, 1.0));
+    float n111 = hash3d(i + float3(1.0, 1.0, 1.0));
+    return lerp(
+        lerp(lerp(n000, n100, u.x), lerp(n010, n110, u.x), u.y),
+        lerp(lerp(n001, n101, u.x), lerp(n011, n111, u.x), u.y),
+        u.z);
+}
+
+// Fractal Brownian Motion: 4 octaves for clean, no-banding volume patterns.
+public float fbm3d(float3 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        value += amplitude * noise3d(p * frequency);
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    return value;
+}
+
+// Exponential height falloff FBM density field (world-space, continuous, anti-aliased by ray cone).
+public float densityField(float3 worldPos, float baseHeight, float scaleHeight) {
+    float height = worldPos.y;
+    float baseDensity = fbm3d(worldPos * 0.05); // ~20-block feature size, smooth
+    float falloff = exp(-max(height - baseHeight, 0.0) / max(scaleHeight, 0.01));
+    return clamp(baseDensity * falloff, 0.0, 1.0);
 }

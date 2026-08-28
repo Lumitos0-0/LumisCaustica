@@ -130,10 +130,20 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     current.ior = iors.x;
     current.extinction = unpackRgb9e5(p.currentExtinction);
     current.water = (p.pathFlags & (1u << 9u)) != 0u;
+    // Default scattering / dual-lobe profile: safe for unpacked segments (scattering=0 disables integral)
+    current.scattering = float3(0.0, 0.0, 0.0);
+    current.phaseGF = 0.6;  // forward peak
+    current.phaseGB = -0.2; // backward halo
+    current.phaseWF = 0.8;  // 80% forward weight
     Medium outer;
     outer.ior = iors.y;
     outer.extinction = unpackRgb9e5(p.outerExtinction);
     outer.water = (p.pathFlags & (1u << 10u)) != 0u;
+    // Default scattering / dual-lobe profile for outer medium
+    outer.scattering = float3(0.0, 0.0, 0.0);
+    outer.phaseGF = 0.6;
+    outer.phaseGB = -0.2;
+    outer.phaseWF = 0.8;
     MediumStack medium;
     medium.current = current;
     medium.outer = outer;

@@ -105,16 +105,50 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             break;
         }
 
-        // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
-        // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
-        // lies within it), shifting the transmitted radiance with distance. Air's extinction is zero, so
-        // the ordinary case costs one comparison.
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
+        // Beer-Lambert: attenuate along the segment just travelled by the medium it lay inside.
+        // For 3D procedural volumes, extinction is scaled by density at hitPos.
+        float3 hitPos = ro + rd * payload.hitT; // moved up for density evaluation
+        float attenuationDensity = max(densityField(hitPos, 68.0, 15.0), 0.001);
+        float3 sigma_t_scaled = medium.current.extinction * attenuationDensity;
+        if (any(sigma_t_scaled > 0.0)) {
+            throughput *= exp(-sigma_t_scaled * payload.hitT);
+        }
+
+        // ---- Volumetric in-scattering + emission integration (Prop A + Prop B + dual-lobe HG).
+        // Closed-form analytic integral over the homogeneous segment: exact, no loop divergence,
+        // register-safe. Uses the medium's scattering coefficient (sigma_s), emission density,
+        // and dual-lobe HG phase (Prop A / Appendix B) for directional light and volume emission.
+        float segmentDist = payload.hitT;
+        float3 sigma_t = medium.current.extinction * attenuationDensity;
+        float sigma_t_mag = max(dot(sigma_t, float3(1.0, 1.0, 1.0)) / 3.0, 1.0e-6);
+        float expFactor = exp(-sigma_t_mag * segmentDist);
+        float integralFactor = (1.0 - expFactor) / max(sigma_t_mag, 1.0e-6);
+
+        // Scattering: in-scattered celestial light (sun beams / god rays) using dual-lobe HG.
+        // Density is evaluated at world-space hitPos via FBM + exponential height falloff (Prop C / Appendix A).
+        float density = densityField(hitPos, 68.0, 15.0); // base height ~68 blocks, scale ~15 blocks
+        float3 sigma_s = medium.current.scattering * density;
+        float3 sigma_t_local = medium.current.extinction * density;
+        if (any(sigma_s > 0.0) && segmentDist > 0.0) {
+            float3 lightDir = celestialLight.dir;
+            float cosTheta = max(0.0, dot(normalize(rd), lightDir));
+            float phase = hg_dual(cosTheta, medium.current.phaseGF,
+                                  medium.current.phaseGB, medium.current.phaseWF);
+            float3 integratedScat = sigma_s * celestialLight.illuminance * phase * integralFactor;
+            L += throughput * integratedScat;
+        }
+
+        // Volumetric emission density (Prop B): continuous emission integrated over segment,
+        // scaled by procedural 3D density (FBM + height falloff).
+        float emissionValue = payloadEmission();
+        bool volumeEmit = (payload.flags & PAYLOAD_EMISSION_SOURCE_MASK) == EMISSION_SOURCE_UNIFORM
+                || emissionValue > 0.0;
+        if (volumeEmit && emissionValue > 0.0 && segmentDist > 0.0) {
+            float integratedLe = emissionValue * density * integralFactor;
+            L += throughput * payloadAlbedo() * float3(integratedLe);
         }
 
         float3 n = payloadNormal(); // oriented toward the incoming ray by the closest-hit
-        float3 hitPos = ro + rd * payload.hitT;
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
         int hitDepth = indirectDepth++;
@@ -265,13 +299,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // never NEE-sampled, so they always gather — bit-identical to the no-NEE path, no energy lost.
         // Emission is already the full HDR luminance (look-package baseline or absolute cd/m² override
         // multiplier baked in Java at material-compile time — see MaterialHeader.features packing).
-        float emission = payloadEmission();
+        float surfaceEmission = payloadEmission();
         // One gate drives both the RIS call below and the direct-hit emission suppression here. They must
         // agree: gateEmitter exists only because RIS already accounted for this emitter, so a bounce where
         // RIS is skipped must also gather emission directly or that light is lost outright.
         bool gateEmitter = risOn && payloadEmitterInList();
-        if (emission > 0.0 && (!gateEmitter || showCelestial)) {
-            L += throughput * albedo * emission;
+        if (surfaceEmission > 0.0 && (!gateEmitter || showCelestial)) {
+            L += throughput * albedo * surfaceEmission;
         }
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert
