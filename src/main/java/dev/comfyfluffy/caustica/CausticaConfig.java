@@ -611,8 +611,6 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.fogNoiseScale", "volumetrics.noise-scale", 0.035f, 0.0001f, 2.0f);
             public static final FloatSetting TEMPORAL_WEIGHT =
                     clampedFloat("caustica.rt.fogTemporalWeight", "volumetrics.temporal-weight", 0.95f, 0.0f, 0.99f);
-            public static final IntSetting LOCAL_LIGHT_CANDIDATES =
-                    clampedInt("caustica.rt.fogLocalLightCandidates", "volumetrics.local-light-candidates", 2, 0, 8);
 
             private Volumetrics() {
             }

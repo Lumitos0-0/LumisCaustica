@@ -35,10 +35,9 @@ public static const float HISTORY_CLIP_SIGMAS = 1.5;
 public static const float MIN_SPREAD_FRACTION = 0.05;
 
 // Centre weight of the 3x3 kernel against the eight neighbours at 1. Keeps denoising while preserving
-// the higher-frequency visibility transitions that define light-shaft edges. Previously this fell with
-// camera speed to compensate for a motion-adaptive temporal weight; the variance clip below now keeps
-// stale history in check on its own, and a speed-dependent blur cost more in smeared depth than it
-// returned in noise.
+// the higher-frequency visibility transitions that define light-shaft edges. The variance clip is what
+// keeps stale history in check, so the weight has no reason to move with camera speed — and a
+// speed-dependent blur costs more in smeared depth than it returns in noise.
 public static const float KERNEL_CENTER_WEIGHT = 4.0;
 
 [shader("raygeneration")]

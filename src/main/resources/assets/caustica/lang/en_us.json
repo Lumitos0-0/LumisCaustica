@@ -60,9 +60,6 @@
 	"caustica.options.rt.fogTemporalWeight": "Fog Stability",
 	"caustica.options.rt.fogTemporalWeight.tooltip": "How much of the previous frame's resolved fog carries over. Higher is smoother and less noisy but slower to react. Fog Quality caps this value.",
 
-	"caustica.options.rt.fogLocalLights": "Fog Light Samples",
-	"caustica.options.rt.fogLocalLights.tooltip": "Candidate emissive lights considered per froxel before tracing one shadow ray. More samples reduce flicker around torches and lava at some cost. Fog Quality raises the minimum.",
-
 	"caustica.options.rt.fogUnderwaterDistance": "Underwater Fog Distance",
 	"caustica.options.rt.fogUnderwaterDistance.tooltip": "How far the fog volume reaches while the camera is submerged, in blocks.",
 

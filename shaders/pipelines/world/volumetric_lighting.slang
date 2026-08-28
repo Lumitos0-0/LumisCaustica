@@ -21,23 +21,7 @@ public static const float3 R3_ALPHA = float3(0.8191725134, 0.6710436067, 0.54970
 // recurrence's integer part exactly representable in float32.
 public static const uint JITTER_CYCLE = 4096u;
 
-public struct VolumeReservoir {
-    public float3 samplePosition;
-    public float3 contribution;
-    public float weightSum;
-    public float target;
-    public float weight;
-};
 
-public VolumeReservoir emptyVolumeReservoir() {
-    VolumeReservoir reservoir;
-    reservoir.samplePosition = float3(0.0);
-    reservoir.contribution = float3(0.0);
-    reservoir.weightSum = 0.0;
-    reservoir.target = 0.0;
-    reservoir.weight = 0.0;
-    return reservoir;
-}
 
 /** Unoccluded incoming radiance from one uniformly sampled emitter rectangle. */
 public float3 evaluateVolumeLight(float3 samplePosition, float3 lightPosition, float3 lightNormal,
@@ -54,16 +38,20 @@ public float3 evaluateVolumeLight(float3 samplePosition, float3 lightPosition, f
 }
 
 /**
- * RIS estimate of nearby block-emitter radiance scattered toward the camera, with one visibility ray.
- * Volumetric emitters deliberately use only the light-grid neighborhood: a distant global proposal has
- * vanishing contribution but a very large inverse-PDF weight, which appears as isolated outdoor fireflies
- * at one sample per froxel. The five-section local span covers every emitter that can visibly illuminate
- * Minecraft-scale fog while giving the estimator a bounded, stable domain.
+ * Single-sample NEE estimate of nearby block-emitter radiance scattered toward the camera, with one
+ * visibility ray. Volumetric emitters deliberately use only the light-grid neighborhood: a distant global
+ * proposal has vanishing contribution but a very large inverse-PDF weight, which appears as isolated
+ * outdoor fireflies at one sample per froxel. The five-section local span covers every emitter that can
+ * visibly illuminate Minecraft-scale fog while giving the estimator a bounded, stable domain.
+ *
+ * <p>One proposal, not resampled. Every candidate costs a light fetch plus an alias-table lookup on a
+ * grid that runs to millions of cells, and selecting among them by luminance buys little here: the rare
+ * bright pick that would suppress variance is also the one that lands as a firefly until the temporal
+ * window averages it out. Plain NEE against the grid's own proposal PDF is the estimator without that.
  */
 public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
                                     inout uint sampleSeed, inout uint proposalSeed) {
-    uint candidateCount = min(froxelLocalLightCandidates(), worldPush.lightCount);
-    if (candidateCount == 0u || pc.lightBufAddr == 0 || pc.lightLocalAliasAddr == 0) {
+    if (worldPush.lightCount == 0u || pc.lightBufAddr == 0 || pc.lightLocalAliasAddr == 0) {
         return float3(0.0);
     }
 
@@ -73,45 +61,29 @@ public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay,
             || gridCell.invWeightSum <= 0.0) {
         return float3(0.0);
     }
-    VolumeReservoir reservoir = emptyVolumeReservoir();
 
-    for (uint candidate = 0u; candidate < candidateCount; ++candidate) {
-        uint lightIndex;
-        selectLightGridSpanLight(gridCell, proposalSeed, lightIndex);
-        Light light = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
-        float3 emission = lightRadiance(light);
-        float area = lightArea(light);
-        float3 rectanglePoint = light.pos + worldPush.lightRebase.xyz
-                + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfU(light)
-                + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfV(light);
-        float3 contribution = evaluateVolumeLight(samplePosition, rectanglePoint,
-                lightGeometricNormal(light), emission, area, viewRay);
-        float target = luminance(contribution);
-        if (target <= 0.0) {
-            continue;
-        }
-        // localProbability=1 reconstructs the exact weighted neighborhood proposal PDF.
-        float sourcePdf = proposalPdf(light, emission, gridCell, gridCellCoord, 1.0);
-        float candidateWeight = target / max(sourcePdf, 1.0e-20);
-        reservoir.weightSum += candidateWeight;
-        if (rndf(sampleSeed) * reservoir.weightSum < candidateWeight) {
-            reservoir.samplePosition = rectanglePoint;
-            reservoir.contribution = contribution;
-            reservoir.target = target;
-        }
-    }
-
-    if (reservoir.target <= 0.0) {
+    uint lightIndex;
+    selectLightGridSpanLight(gridCell, proposalSeed, lightIndex);
+    Light light = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
+    float3 emission = lightRadiance(light);
+    float3 rectanglePoint = light.pos + worldPush.lightRebase.xyz
+            + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfU(light)
+            + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfV(light);
+    float3 contribution = evaluateVolumeLight(samplePosition, rectanglePoint,
+            lightGeometricNormal(light), emission, lightArea(light), viewRay);
+    if (luminance(contribution) <= 0.0) {
         return float3(0.0);
     }
-    reservoir.weight = reservoir.weightSum / (float(candidateCount) * reservoir.target);
-    float3 toLight = reservoir.samplePosition - samplePosition;
+    // localProbability=1 reconstructs the exact weighted neighborhood proposal PDF. With a single sample
+    // the RIS weight collapses to the ordinary Monte Carlo estimator, contribution / pdf.
+    float sourcePdf = proposalPdf(light, emission, gridCell, gridCellCoord, 1.0);
+    float3 toLight = rectanglePoint - samplePosition;
     float distance = length(toLight);
     if (distance <= RAY_TMIN) {
         return float3(0.0);
     }
-    float3 visibilityToLight = visibility(samplePosition, toLight / distance, distance * 0.999).transmittance;
-    return reservoir.contribution * reservoir.weight * visibilityToLight;
+    return contribution / max(sourcePdf, 1.0e-20)
+            * visibility(samplePosition, toLight / distance, distance * 0.999).transmittance;
 }
 
 public float3 froxelDirectionalLighting(float3 samplePosition, float3 viewRay,
@@ -158,8 +130,8 @@ public float3 froxelScatteringColor() {
 // 0.75 keeps enclosed volumes falling off without losing ambient entirely.
 public static const float AMBIENT_OCCLUSION = 0.75;
 
-// Bounds the STOCHASTIC emitter term only, in scene radiance. A reservoir can carry a very large
-// inverse-PDF weight, and one such sample survives temporal reuse as a visible dot.
+// Bounds the STOCHASTIC emitter term only, in scene radiance. A single light sample can draw a very
+// large inverse-PDF weight, and one such sample survives temporal reuse as a visible dot.
 //
 // The celestial term must not share this ceiling. It is deterministic (one fixed shadow ray), so it
 // produces no outliers, and clamping the combined `extinction * albedo * incident` instead made the
@@ -240,18 +212,7 @@ public float4 injectFroxel(uint3 index) {
     // slice. Suppress only that local-emitter term; keep the volume populated and continuously filterable.
     float3 emitter = float3(0.0);
     if (cameraVisibleSample) {
-        // The same multi-reservoir estimator runs in moving and stationary views. Temporal accumulation
-        // still refines it, but does not switch the renderer to a different base lighting algorithm.
-        uint sampleCount = froxelEmitterSamples();
-        for (uint lightSample = 0u; lightSample < sampleCount; ++lightSample) {
-            uint emitterSeed = seed ^ (lightSample + 1u) * 0x85ebca6bu;
-            uint emitterProposalSeed = proposalSeed ^ (lightSample + 1u) * 0xc2b2ae35u;
-            emitterSeed = pcg(emitterSeed);
-            emitterProposalSeed = pcg(emitterProposalSeed);
-            emitter += froxelEmitterLighting(
-                    samplePosition, viewRay, emitterSeed, emitterProposalSeed);
-        }
-        emitter /= float(sampleCount);
+        emitter = froxelEmitterLighting(samplePosition, viewRay, seed, proposalSeed);
     }
     float3 ambientTerm = ambient * lerp(float3(1.0), skyVisibility, AMBIENT_OCCLUSION);
     float3 incident = ambientTerm + directional + clampFroxelEmitter(emitter);

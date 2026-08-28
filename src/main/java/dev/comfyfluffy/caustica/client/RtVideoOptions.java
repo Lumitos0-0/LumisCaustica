@@ -61,7 +61,6 @@ public final class RtVideoOptions {
             lightShaftStrength(),
             lightShaftFocus(),
             fogTemporalWeight(),
-            fogLocalLights(),
             underwaterFog(),
             underwaterCaustics(),
             fogUnderwaterDistance(),
@@ -220,15 +219,6 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> fogTemporalWeight() {
         return floatSlider("caustica.options.rt.fogTemporalWeight",
                 CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT, 0, 99, 100.0f, "%");
-    }
-
-    /**
-     * Unshadowed reservoir proposals per froxel when picking an emissive light. More candidates cut
-     * selection noise; Fog Quality raises the floor above the configured value.
-     */
-    private static OptionInstance<Integer> fogLocalLights() {
-        return intSlider("caustica.options.rt.fogLocalLights",
-                CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES, 0, 8);
     }
 
     /** How far the froxel volume reaches while the camera is submerged, in blocks. */

@@ -42,12 +42,14 @@ final class RtFroxelGridTest {
         try {
             pixelSize.set(16);
             slices.set(48);
+            // Depth floors at 128 for every preset, and the pixel-size floor of 15 lifts Performance
+            // from 107x60 to 128x72. Cells stay square, so a 16:9 render gives 128x72 rather than 128x64.
             int[][] expected = {
-                    {107, 60, 44},
-                    {138, 78, 56},
-                    {192, 108, 72},
-                    {275, 155, 88},
-                    {384, 216, 112}
+                    {128, 72, 128},
+                    {138, 78, 128},
+                    {192, 108, 128},
+                    {275, 155, 128},
+                    {384, 216, 128}
             };
             for (int preset = 0; preset < expected.length; preset++) {
                 quality.set(preset);
@@ -64,36 +66,13 @@ final class RtFroxelGridTest {
     }
 
     @Test
-    void qualityPresetsIncreaseEmitterProposalsButPreserveExplicitDisable() {
-        CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
-        CausticaConfig.IntSetting candidates = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES;
-        int oldQuality = quality.value();
-        int oldCandidates = candidates.value();
-        try {
-            candidates.set(2);
-            int[] expected = {2, 4, 6, 8, 8};
-            for (int preset = 0; preset < expected.length; preset++) {
-                quality.set(preset);
-                assertEquals(expected[preset], RtVolumetrics.effectiveLocalLightCandidates());
-            }
-            candidates.set(0);
-            assertEquals(0, RtVolumetrics.effectiveLocalLightCandidates());
-        } finally {
-            quality.set(oldQuality);
-            candidates.set(oldCandidates);
-        }
-    }
-
-    @Test
-    void qualityPresetsScaleEmitterSamplesAndTemporalSharpness() {
+    void qualityPresetsCapTemporalSharpness() {
         CausticaConfig.IntSetting quality = CausticaConfig.Rt.Volumetrics.QUALITY;
         int oldQuality = quality.value();
         try {
-            int[] emitterSamples = {1, 1, 2, 2, 3};
             float[] historyWeights = {0.95f, 0.95f, 0.90f, 0.78f, 0.65f};
-            for (int preset = 0; preset < emitterSamples.length; preset++) {
+            for (int preset = 0; preset < historyWeights.length; preset++) {
                 quality.set(preset);
-                assertEquals(emitterSamples[preset], RtVolumetrics.effectiveEmitterSamples());
                 assertEquals(historyWeights[preset],
                         RtVolumetrics.effectiveTemporalWeight(0.95f), 1.0e-6f);
             }

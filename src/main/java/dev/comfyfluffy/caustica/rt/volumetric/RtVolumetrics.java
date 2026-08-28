@@ -101,8 +101,6 @@ public final class RtVolumetrics {
         float heightOffset = CausticaConfig.Rt.Volumetrics.HEIGHT_OFFSET.value();
         float temporalWeight = effectiveTemporalWeight(
                 CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value());
-        int localCandidates = effectiveLocalLightCandidates();
-        int emitterSamples = effectiveEmitterSamples();
 
         if (submerged) {
             maxDistance = CausticaConfig.Rt.Volumetrics.UNDERWATER_MAX_DISTANCE.value();
@@ -119,8 +117,7 @@ public final class RtVolumetrics {
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value();
         long signature = opticalSignature(maxDistance, distribution, extinction, heightFalloff,
                 albedo, anisotropy, directionalStrength, directionalFocus, causticStrength,
-                noiseAmount, noiseScale, temporalWeight, heightOffset, localCandidates,
-                emitterSamples, seaLevel, submerged);
+                noiseAmount, noiseScale, temporalWeight, heightOffset, seaLevel, submerged);
         float cameraTravel2 = cameraDeltaX * cameraDeltaX + cameraDeltaY * cameraDeltaY
                 + cameraDeltaZ * cameraDeltaZ;
         boolean historyValid = enabled && lastRecordedFrame == frameIndex - 1
@@ -133,8 +130,6 @@ public final class RtVolumetrics {
         if (submerged) {
             flags |= 4;
         }
-        flags |= (Math.clamp(localCandidates, 0, 255) << 8);
-        flags |= (Math.clamp(emitterSamples, 1, 15) << 16);
         int writeIndex = (int) (frameIndex & 1L);
         float baseHeightRebased = seaLevel + heightOffset - rebaseY;
 
@@ -195,6 +190,14 @@ public final class RtVolumetrics {
         }
     }
 
+    // The volume never gets coarser than this, whatever the quality preset or render resolution asks for.
+    // Below roughly 128x64 cells the light shafts the fog exists for stop being resolvable: the shafts
+    // live in the XY plane, and 64 slices is where the near-field depth distribution stops banding.
+    // Higher presets still scale above these, so the floor only raises the bottom of the range.
+    private static final int MIN_GRID_WIDTH = 128;
+    private static final int MIN_GRID_HEIGHT = 64;
+    private static final int MIN_DEPTH_SLICES = 128;
+
     static RtFroxelGrid wantedGrid(int renderWidth, int renderHeight) {
         int quality = CausticaConfig.Rt.Volumetrics.QUALITY.value();
         int basePixelSize = CausticaConfig.Rt.Volumetrics.GRID_PIXEL_SIZE.value();
@@ -215,6 +218,12 @@ public final class RtVolumetrics {
             case 4 -> Math.min(128, Math.round(baseDepthSlices * (7.0f / 3.0f)));
             default -> baseDepthSlices;
         };
+        // Meet the floor by shrinking the pixel size rather than clamping the cell counts afterwards, so
+        // the grid stays square-celled and the recorded pixelSize still describes it.
+        int floorPixelSize = Math.max(1,
+                Math.min(renderWidth / MIN_GRID_WIDTH, renderHeight / MIN_GRID_HEIGHT));
+        pixelSize = Math.min(pixelSize, floorPixelSize);
+        depthSlices = Math.max(depthSlices, MIN_DEPTH_SLICES);
         return RtFroxelGrid.forRenderSize(renderWidth, renderHeight, pixelSize, depthSlices);
     }
 
@@ -227,29 +236,6 @@ public final class RtVolumetrics {
         };
     }
 
-    static int effectiveEmitterSamples() {
-        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0, 1 -> 1;
-            case 2, 3 -> 2;
-            case 4 -> 3;
-            default -> 1;
-        };
-    }
-
-    static int effectiveLocalLightCandidates() {
-        int configured = CausticaConfig.Rt.Volumetrics.LOCAL_LIGHT_CANDIDATES.value();
-        if (configured == 0) {
-            return 0;
-        }
-        // Extra candidates are unshadowed reservoir proposals; the finalized reservoir still traces one
-        // visibility ray. This reduces emissive selection variance at modest ALU/bandwidth cost.
-        return switch (CausticaConfig.Rt.Volumetrics.QUALITY.value()) {
-            case 0 -> Math.max(configured, 2);
-            case 2 -> Math.max(configured, 6);
-            case 3, 4 -> Math.max(configured, 8);
-            default -> Math.max(configured, 4);
-        };
-    }
 
     private static float wrappedWorldCoordinate(int coordinate) {
         return Math.floorMod(coordinate, 65536);

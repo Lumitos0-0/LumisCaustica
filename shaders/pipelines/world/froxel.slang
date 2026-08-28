@@ -23,13 +23,7 @@ public bool froxelUnderwater() {
     return (uint(worldPush.froxelGrid.w) & 4u) != 0u;
 }
 
-public uint froxelLocalLightCandidates() {
-    return (uint(worldPush.froxelGrid.w) >> 8u) & 0xffu;
-}
 
-public uint froxelEmitterSamples() {
-    return max(1u, (uint(worldPush.froxelGrid.w) >> 16u) & 0x0fu);
-}
 
 public int3 froxelDimensions() {
     return worldPush.froxelGrid.xyz;
