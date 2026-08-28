@@ -254,13 +254,10 @@ public final class RtVolumetrics {
                                          float heightFalloff, float albedo, float anisotropy,
                                          float directionalStrength, float directionalFocus, float causticStrength,
                                          float noiseAmount, float noiseScale, float temporalWeight,
-                                         float heightOffset, int localCandidates, int emitterSamples,
-                                         int seaLevel, boolean submerged) {
+                                         float heightOffset, int seaLevel, boolean submerged) {
         long hash = opticalSignature(maxDistance, distribution, extinction, heightFalloff, albedo,
                 anisotropy, directionalStrength, directionalFocus, causticStrength,
                 noiseAmount, noiseScale, temporalWeight, heightOffset);
-        hash = (hash ^ Integer.toUnsignedLong(localCandidates)) * 0x100000001b3L;
-        hash = (hash ^ Integer.toUnsignedLong(emitterSamples)) * 0x100000001b3L;
         hash = (hash ^ Integer.toUnsignedLong(seaLevel)) * 0x100000001b3L;
         return (hash ^ (submerged ? 1L : 0L)) * 0x100000001b3L;
     }
