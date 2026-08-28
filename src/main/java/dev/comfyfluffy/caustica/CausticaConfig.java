@@ -59,7 +59,8 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.Volume.ENABLED, Rt.Volume.DENSITY, Rt.Volume.HEIGHT_BASE,
+            Rt.Volume.HEIGHT_SCALE, Rt.Volume.SCATTERING, Rt.Volume.PHASE_FORWARD, Rt.Volume.EMISSION_MULTIPLIER, Ngx.PATH,
         };
     }
 
@@ -569,6 +570,28 @@ public final class CausticaConfig {
         }
 
         /** RIS block-emitter lights. {@code ris-candidates = 0} disables everything. */
+        public static final class Volume {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.volume", "volume.enabled", true);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.volume.density", "volume.density", 0.5f, 0.0f, 2.0f);
+            public static final FloatSetting HEIGHT_BASE =
+                    clampedFloat("caustica.rt.volume.heightBase", "volume.height.base", 68.0f, 0.0f, 200.0f);
+            public static final FloatSetting HEIGHT_SCALE =
+                    clampedFloat("caustica.rt.volume.heightScale", "volume.height.scale", 15.0f, 1.0f, 100.0f);
+            public static final FloatSetting SCATTERING =
+                    clampedFloat("caustica.rt.volume.scattering", "volume.scattering", 0.8f, 0.0f, 2.0f);
+            public static final FloatSetting PHASE_FORWARD =
+                    clampedFloat("caustica.rt.volume.phaseForward", "volume.phase.forward", 0.8f, 0.0f, 2.0f);
+            public static final FloatSetting PHASE_BACKWARD =
+                    clampedFloat("caustica.rt.volume.phaseBackward", "volume.phase.backward", -0.2f, -1.0f, 1.0f);
+            public static final FloatSetting EMISSION_MULTIPLIER =
+                    clampedFloat("caustica.rt.volume.emissionMultiplier", "volume.emission.multiplier", 1.0f, 0.0f, 10.0f);
+
+            private Volume() {
+            }
+        }
+
         public static final class Lights {
             public static final IntSetting RIS_CANDIDATES =
                     intAtLeast("caustica.rt.risCandidates", "lights.ris-candidates", 8, 0);

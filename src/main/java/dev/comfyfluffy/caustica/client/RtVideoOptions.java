@@ -49,6 +49,13 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumeEnabled(),
+            volumeDensity(),
+            volumeHeightBase(),
+            volumeHeightScale(),
+            volumeScattering(),
+            volumePhaseForward(),
+            volumeEmission(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -211,5 +218,85 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
             setting.value(),
             setting::set);
+    }
+
+    // Volume / fog sliders (Prop C / Appendix A)
+    private static OptionInstance<Boolean> volumeEnabled() {
+        BooleanSetting setting = CausticaConfig.Rt.Volume.ENABLED;
+        return OptionInstance.createBoolean(
+            "caustica.options.rt.volumeEnabled",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumeEnabled.tooltip")),
+            setting.value(),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> volumeDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Volume.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumeDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumeDensity.tooltip")),
+            (caption, tenth) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1f", tenth / 10.0f))),
+            new OptionInstance.IntRange(0, 20),
+            Math.clamp(Math.round(setting.value() * 10.0f), 0, 20),
+            tenth -> setting.set(tenth / 10.0f));
+    }
+
+    private static OptionInstance<Integer> volumeHeightBase() {
+        FloatSetting setting = CausticaConfig.Rt.Volume.HEIGHT_BASE;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumeHeightBase",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumeHeightBase.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + " blocks")),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value()), 0, 200),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> volumeHeightScale() {
+        FloatSetting setting = CausticaConfig.Rt.Volume.HEIGHT_SCALE;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumeHeightScale",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumeHeightScale.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + " blocks")),
+            new OptionInstance.IntRange(1, 100),
+            Math.clamp(Math.round(setting.value()), 1, 100),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> volumeScattering() {
+        FloatSetting setting = CausticaConfig.Rt.Volume.SCATTERING;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumeScattering",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumeScattering.tooltip")),
+            (caption, tenth) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", tenth / 100.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            tenth -> setting.set(tenth / 100.0f));
+    }
+
+    private static OptionInstance<Integer> volumePhaseForward() {
+        FloatSetting setting = CausticaConfig.Rt.Volume.PHASE_FORWARD;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumePhaseForward",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumePhaseForward.tooltip")),
+            (caption, tenth) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", tenth / 100.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            tenth -> setting.set(tenth / 100.0f));
+    }
+
+    private static OptionInstance<Integer> volumeEmission() {
+        FloatSetting setting = CausticaConfig.Rt.Volume.EMISSION_MULTIPLIER;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumeEmission",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumeEmission.tooltip")),
+            (caption, tenth) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1f", tenth / 10.0f))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 10.0f), 0, 100),
+            tenth -> setting.set(tenth / 10.0f));
     }
 }
