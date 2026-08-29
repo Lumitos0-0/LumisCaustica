@@ -53,6 +53,18 @@ abstract class GenerateRtBindings extends DefaultTask {
                     MULTISCATTER_SAMPLER: "multiScatterLut"]],
             [prefix: "PRESENT", source: "pipelines/hdr_composite/main.comp.slang", resources: [
                     OUTPUT: "outputImage", SOURCE: "sourceImage"]],
+            [prefix: "FROXEL_MEDIA", source: "pipelines/volumetrics/media.comp.slang", resources: [
+                    OUTPUT: "froxelMedia"]],
+            [prefix: "FROXEL_LIGHT", source: "pipelines/volumetrics/light.comp.slang", resources: [
+                    TLAS: "topLevelAS", MEDIA: "froxelMedia", OUTPUT: "froxelLight",
+                    SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut"]],
+            [prefix: "FROXEL_TEMPORAL", source: "pipelines/volumetrics/temporal.comp.slang", resources: [
+                    LIGHT_INPUT: "froxelLight", HISTORY_INPUT: "froxelHistoryIn",
+                    OUTPUT: "froxelFiltered", HISTORY_OUTPUT: "froxelHistoryOut"]],
+            [prefix: "FROXEL_INTEGRATE", source: "pipelines/volumetrics/integrate.comp.slang", resources: [
+                    LIGHT_INPUT: "froxelFiltered", MEDIA_INPUT: "froxelMedia", OUTPUT: "froxelVolume"]],
+            [prefix: "FROXEL_COMPOSITE", source: "pipelines/volumetrics/composite.comp.slang", resources: [
+                    SCENE: "sceneImage", VOLUME: "froxelVolume", DEPTH: "depthImage"]],
             [prefix: "OVERLAY_IMAGE", source: "pipelines/overlay_composite/glow.frag.slang", resources: [VALUE: "sourceImage"]],
             [prefix: "OVERLAY_SAMPLER", source: "pipelines/name_tag/fragment.frag.slang", resources: [VALUE: "fontAtlas"]],
             [prefix: "OVERLAY_TLAS", source: "pipelines/block_outline/fragment.frag.slang", resources: [VALUE: "tlas"]]

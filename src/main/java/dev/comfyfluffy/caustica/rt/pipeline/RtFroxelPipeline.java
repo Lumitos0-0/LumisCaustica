@@ -12,7 +12,6 @@ import dev.comfyfluffy.caustica.rt.gen.FroxelLightPushData;
 import dev.comfyfluffy.caustica.rt.gen.FroxelMediaPushData;
 import dev.comfyfluffy.caustica.rt.gen.FroxelTemporalPushData;
 import dev.comfyfluffy.caustica.rt.gen.WorldPushData;
-import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3f;
