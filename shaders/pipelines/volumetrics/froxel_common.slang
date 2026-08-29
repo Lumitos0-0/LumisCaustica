@@ -6,9 +6,10 @@ import world_common;
 public static const float VOLUMETRICS_PI = 3.14159265358979323846;
 public static const float VOLUMETRICS_INV_4PI = 0.07957747154594767;
 
-// Instance cull mask: bit 0 (0x01) for secondary shadow/volumetric rays
+// Instance cull mask: bit 0 (0x01) for secondary shadow/volumetric rays, 0xFF for all opaque geometry
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
+public static const uint CULL_ALL = 0xFFu;
 
 // Structs for push constants across all volumetric passes
 public struct FroxelMediaPush {
@@ -100,13 +101,12 @@ public float froxelJitter(uint3 coord, uint frameIndex) {
     return float(v & 0x00FFFFFFu) * (1.0 / 16777216.0);
 }
 
-// Reconstruct unprojected camera ray origin and direction from inverted projection
-public void froxelRay(float2 ndc, float4x4 invViewProj, out float3 origin, out float3 dir) {
-    float4 nearH = mul(invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
+// Reconstruct unprojected camera ray direction from inverted projection (Vulkan reverse-Z)
+public void froxelRay(float2 ndc, float4x4 invViewProj, out float3 dir) {
     float4 farH = mul(invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
+    float4 nearH = mul(invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
     float3 farP = farH.xyz / farH.w;
-    origin = nearP;
+    float3 nearP = nearH.xyz / nearH.w;
     dir = normalize(farP - nearP);
 }
 
@@ -117,9 +117,9 @@ public float3 froxelToCamRelative(float3 froxelId, float3 gridDims, float4x4 inv
     float2 ndc = uv * 2.0 - 1.0;
     float linearZ = sliceToLinearDepth(froxelId.z + jitterZ, zNear, zFar, gridDims.z);
     
-    float3 origin, dir;
-    froxelRay(ndc, invViewProj, origin, dir);
-    return origin + dir * linearZ;
+    float3 dir;
+    froxelRay(ndc, invViewProj, dir);
+    return dir * linearZ;
 }
 
 // Convert camera-relative position back into continuous (u, v, slice) froxel space

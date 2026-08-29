@@ -26,8 +26,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float zFar = pc.params0.y;
     float maxDistance = pc.params0.z;
 
-    float3 camOrigin, camDir;
-    froxelRay(ndc, pc.invViewProj, camOrigin, camDir);
+    float3 camDir;
+    froxelRay(ndc, pc.invViewProj, camDir);
 
     // Sample the exact hardware depth for this pixel without edge-distorting interpolation
     int2 depthPix = clamp(int2(uv * float2(depthDims)), int2(0), int2(depthDims) - 1);
@@ -37,7 +37,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (hwDepth > 1.0e-5) {
         float4 hitH = mul(pc.invViewProj, float4(ndc.x, ndc.y, hwDepth, 1.0));
         if (hitH.w > 0.0) {
-            linearDepth = min(length(hitH.xyz / hitH.w - camOrigin), maxDistance);
+            linearDepth = min(length(hitH.xyz / hitH.w), maxDistance);
         }
     }
 

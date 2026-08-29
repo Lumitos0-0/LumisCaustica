@@ -34,15 +34,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float2 ndc = uv * 2.0 - 1.0;
 
     // Exact unprojected camera ray to calculate true world altitude Y
-    float3 camOrigin, rayDir;
-    froxelRay(ndc, pc.invViewProj, camOrigin, rayDir);
-    float3 camRelPos = camOrigin + rayDir * sliceDepth;
+    float3 rayDir;
+    froxelRay(ndc, pc.invViewProj, rayDir);
+    float3 camRelPos = rayDir * sliceDepth;
     float worldY = camRelPos.y + pc.camPos.y;
 
-    // Continuous atmosphere + cave medium: clear baseline medium plus smooth ground height modulation
-    float baseHaze = baseDensity * 0.20;
-    float heightScale = exp(-clamp((worldY - groundAltitude) * heightFalloff, -2.5, 4.0));
-    float density = (baseHaze + baseDensity * 0.80 * heightScale) * distFade;
+    // Continuous medium across all altitudes: uniform base plus soft ground height modulation
+    float heightDiff = (worldY - groundAltitude) * heightFalloff;
+    float heightScale = exp(-clamp(heightDiff, -2.5, 4.0));
+    float density = baseDensity * (0.35 + 0.65 * heightScale) * distFade;
 
     // Natural atmosphere Rayleigh/Mie base scattering
     float3 fogColor = float3(pc.params1.z, pc.params1.w, pc.params2.x);

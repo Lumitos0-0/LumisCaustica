@@ -81,10 +81,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float2 ndc = uv * 2.0 - 1.0;
     float linearZ = sliceToLinearDepth(float(dispatchId.z) + jitterZ, zNear, zFar, float(gridDims.z));
 
-    float3 camOrigin, rayDir;
-    froxelRay(ndc, pc.invViewProj, camOrigin, rayDir);
+    float3 rayDir;
+    froxelRay(ndc, pc.invViewProj, rayDir);
 
-    float3 camRelPos = camOrigin + rayDir * linearZ;
+    float3 camRelPos = rayDir * linearZ;
     float dist = length(camRelPos);
     if (dist > maxDist) {
         froxelLight[dispatchId] = float4(0.0, 0.0, 0.0, 0.0);
@@ -115,13 +115,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float shadowVis = 1.0;
         if (pc.enableShadows != 0u) {
             RayDesc ray;
-            ray.Origin = worldPos + sunDir * 0.05;
+            ray.Origin = worldPos + sunDir * 0.1;
             ray.Direction = sunDir;
-            ray.TMin = 0.01;
-            ray.TMax = 10000.0;
+            ray.TMin = 0.05;
+            ray.TMax = 500.0;
 
             RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-            q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_SECONDARY, ray);
+            q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
             q.Proceed();
             if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
                 shadowVis = 0.0;
@@ -134,97 +134,70 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     // ============================================================================================
-    // 2. Direct Local Block Emitters (Torches, Lanterns, Glowstone, Lava, Jack-o'-Lanterns)
+    // 2. Direct Local Block Emitters (Torches, Lanterns, Glowstone, Lava, Froglights, Pumpkins)
     // ============================================================================================
-    bool enableBlockLights = (pc.lightGridDims.w != 0) && (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
+    bool enableBlockLights = (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
     if (enableBlockLights) {
         float3 blockInscatter = float3(0.0, 0.0, 0.0);
         float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
 
-        // Locate light grid cell containing this voxel
-        if (pc.lightGridCellAddr != 0 && pc.lightGridSpanAddr != 0 && all(pc.lightGridDims.xyz > int3(0))) {
-            int3 cellCoord = int3(floor((worldPos - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
-            
-            // Continuous evaluation across grid borders: clamp cell lookup within valid bounds so boundary voxels don't hard-clip
-            if (all(cellCoord >= int3(-2)) && all(cellCoord <= pc.lightGridDims.xyz + int3(1))) {
-                int3 clampedCoord = clamp(cellCoord, int3(0), pc.lightGridDims.xyz - int3(1));
-                uint linearCell = (uint(clampedCoord.z) * uint(pc.lightGridDims.y) + uint(clampedCoord.y))
-                                  * uint(pc.lightGridDims.x) + uint(clampedCoord.x);
-                LightGridCell cell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linearCell];
-                
-                if (cell.spanCount > 0u) {
-                    ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
-                    
-                    // Iterate through candidate spans in the cell (up to 16 spans)
-                    uint maxSpans = min(cell.spanCount, 16u);
-                    float spanWeight = float(cell.spanCount) / float(maxSpans);
+        uint totalLights = pc.lightCount;
+        uint maxLightsToTest = min(totalLights, 64u);
+        uint step = (totalLights <= 64u) ? 1u : (totalLights + 63u) / 64u;
+        float lightWeight = float(totalLights) / float((totalLights + step - 1u) / step);
 
-                    for (uint s = 0u; s < maxSpans; s++) {
-                        LightGridSpan span = spans[cell.spanOffset + s];
-                        uint firstLight = span.firstLight;
-                        uint count = span.packedLightCounts & 0xffffu;
-                        if (count == 0u) continue;
+        ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
 
-                        uint lightsToTest = min(count, 4u);
-                        float lightWeight = float(count) / float(lightsToTest);
-                        float totalWeight = spanWeight * lightWeight;
+        for (uint i = 0u; i < totalLights; i += step) {
+            Light lg = lights[i];
 
-                        for (uint li = 0u; li < lightsToTest; li++) {
-                            // Deterministic stride across lights: tests all lights in small blocks (torches, pumpkins)
-                            uint strideOffset = (count <= 4u) ? li : (li * count) / lightsToTest;
-                            uint lightIndex = min(firstLight + strideOffset, pc.lightCount - 1u);
-                            Light lg = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
+            float3 lightPos = lg.pos + pc.lightRebase.xyz;
+            float3 toL = lightPos - worldPos;
+            float dist2 = dot(toL, toL);
 
-                            float3 lightPos = lg.pos + pc.lightRebase.xyz;
-                            float3 toL = lightPos - worldPos;
-                            float dist2 = dot(toL, toL);
+            // True Euclidean 24-meter sphere with instant scalar early-out: zero grid cuts, zero pop
+            if (dist2 > 0.01 && dist2 < 576.0) {
+                float lightDist = sqrt(dist2);
+                float3 wi = toL / lightDist;
 
-                            if (dist2 > 0.001 && dist2 < 576.0) { // expansive 24 meters reach
-                                float lightDist = sqrt(dist2);
-                                float3 wi = toL / lightDist;
+                float3 lightNormal = decodeLightNormal(lg);
+                float cosL = dot(lightNormal, -wi);
+                float emissionFactor = max(cosL, 0.35);
 
-                                float3 lightNormal = decodeLightNormal(lg);
-                                float cosL = dot(lightNormal, -wi);
-                                float emissionFactor = max(cosL, 0.35);
+                float area = decodeLightArea(lg);
+                float3 le = decodeLightRadiance(lg.le);
 
-                                float area = decodeLightArea(lg);
-                                float3 le = decodeLightRadiance(lg.le);
+                // Smooth C^1 quadratic atmospheric diffusion falloff across cavern (24m reach)
+                float distFade = max(1.0 - (lightDist / 24.0), 0.0);
+                float smoothDistFade = distFade * distFade;
+                float G = (emissionFactor * area * smoothDistFade) / (lightDist * 0.75 + 0.6);
 
-                                // Atmospheric diffusion falloff: smooth room-filling glow fading out to 24m
-                                float distFade = max(1.0 - (lightDist / 24.0), 0.0);
-                                float smoothDistFade = distFade * distFade;
-                                float G = (emissionFactor * area * smoothDistFade) / (lightDist * 0.75 + 0.6);
+                float cosThetaL = dot(rayDir, wi);
+                float phaseL = dualLobePhase(cosThetaL, g1, g2, lobeWeight);
 
-                                float cosThetaL = dot(rayDir, wi);
-                                float phaseL = dualLobePhase(cosThetaL, g1, g2, lobeWeight);
+                float3 sampleContrib = le * (G * phaseL * scattering * lightWeight * 0.75);
 
-                                float3 sampleContrib = le * (G * phaseL * scattering * totalWeight * 0.7);
+                // Early-out if contribution is imperceptible
+                if (dot(sampleContrib, sampleContrib) > 1.0e-7) {
+                    float shadowVis = 1.0;
+                    if (pc.enableShadows != 0u) {
+                        RayDesc ray;
+                        ray.Origin = worldPos;
+                        ray.Direction = wi;
+                        ray.TMin = 0.05;
+                        ray.TMax = max(lightDist - 0.05, 0.01);
 
-                                // Early-out if contribution is imperceptible
-                                if (dot(sampleContrib, sampleContrib) > 1.0e-7) {
-                                    float shadowVis = 1.0;
-                                    if (pc.enableShadows != 0u) {
-                                        RayDesc ray;
-                                        ray.Origin = worldPos;
-                                        ray.Direction = wi;
-                                        ray.TMin = 0.05;
-                                        ray.TMax = max(lightDist - 0.05, 0.01);
+                        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
+                        q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
+                        q.Proceed();
 
-                                        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-                                        q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_SECONDARY, ray);
-                                        q.Proceed();
-
-                                        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                                            shadowVis = 0.0;
-                                        }
-                                    }
-
-                                    if (shadowVis > 0.0) {
-                                        blockInscatter += clampVoxelMaxRadiance(sampleContrib, voxelSize);
-                                    }
-                                }
-                            }
+                        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                            shadowVis = 0.0;
                         }
+                    }
+
+                    if (shadowVis > 0.0) {
+                        blockInscatter += clampVoxelMaxRadiance(sampleContrib, voxelSize);
                     }
                 }
             }
@@ -235,7 +208,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // ============================================================================================
     // 3. Ambient Sky Illumination
     // ============================================================================================
-    // Gentle diffuse ambient sky light from sky-view LUT for soft overhead fill
+    // Sample diffuse ambient sky light from sky-view LUT for soft fill, occluded by overhead geometry
     float skyOcclusion = 1.0;
     if (pc.enableShadows != 0u) {
         RayDesc skyRay;
@@ -245,7 +218,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         skyRay.TMax = 128.0;
 
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> qSky;
-        qSky.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_SECONDARY, skyRay);
+        qSky.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, skyRay);
         qSky.Proceed();
         if (qSky.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
             skyOcclusion = 0.0;
@@ -255,7 +228,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (skyOcclusion > 0.0) {
         float2 skyUv = float2(0.5, 0.5);
         float3 ambientSkyLuminance = bt709ToAcesCg(skyViewLut.SampleLevel(skyUv, 0.0).rgb);
-        totalInscatter += ambientSkyLuminance * (VOLUMETRICS_INV_4PI * scattering * 0.04 * skyOcclusion);
+        totalInscatter += ambientSkyLuminance * (VOLUMETRICS_INV_4PI * scattering * 0.05 * skyOcclusion);
     }
 
     // Apply pre-exposure so float16 volume stores stable HDR ranges
