@@ -18,6 +18,38 @@
 	"caustica.options.rt.maxBounces": "Path Bounces",
 	"caustica.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
 
+	"caustica.options.rt.volumetrics": "Volumetric Fog & Lighting",
+	"caustica.options.rt.volumetrics.tooltip": "Froxel-frustum volumetric fog, sun shafts, participating media, and depth-aware RTE integration.",
+
+	"caustica.options.rt.volumetricsQuality": "Volumetrics Quality",
+	"caustica.options.rt.volumetricsQuality.tooltip": "3D Froxel grid resolution. Higher values produce crisper sun shafts and finer participating media detail.",
+	"caustica.options.rt.volumetricsQuality.0": "Low",
+	"caustica.options.rt.volumetricsQuality.1": "Medium",
+	"caustica.options.rt.volumetricsQuality.2": "High",
+	"caustica.options.rt.volumetricsQuality.3": "Ultra",
+	"caustica.options.rt.volumetricsQuality.4": "Cinematic",
+
+	"caustica.options.rt.volumetricsDensity": "Atmosphere Density",
+	"caustica.options.rt.volumetricsDensity.tooltip": "Base density of participating media and ground atmospheric haze.",
+
+	"caustica.options.rt.volumetricsHeightFalloff": "Fog Height Falloff",
+	"caustica.options.rt.volumetricsHeightFalloff.tooltip": "Rate at which atmospheric fog density decays exponentially with height above ground altitude.",
+
+	"caustica.options.rt.volumetricsMaxDistance": "Volumetrics Max Distance",
+	"caustica.options.rt.volumetricsMaxDistance.tooltip": "Maximum depth distance (in meters) for participating media evaluation and analytical in-scattering integration.",
+
+	"caustica.options.rt.volumetricsSunShafts": "Volumetric Sun Shafts",
+	"caustica.options.rt.volumetricsSunShafts.tooltip": "Cast volumetric shadows and crepuscular god rays from celestial sun and moon lights using hardware ray queries.",
+
+	"caustica.options.rt.volumetricsSunShaftMultiplier": "Sun Shaft Intensity",
+	"caustica.options.rt.volumetricsSunShaftMultiplier.tooltip": "Radiant intensity multiplier for volumetric sun rays and crepuscular god shafts.",
+
+	"caustica.options.rt.volumetricsAnisotropy": "Scattering Forward Bias",
+	"caustica.options.rt.volumetricsAnisotropy.tooltip": "Henyey-Greenstein forward scattering anisotropy factor (g1). Higher values concentrate light forward toward the sun.",
+
+	"caustica.options.rt.volumetricsTemporal": "Temporal Filter",
+	"caustica.options.rt.volumetricsTemporal.tooltip": "3D Spatio-Temporal filter with YCoCg AABB variance box clamping to eliminate noise, jitter stepping, and volumetric boiling.",
+
 	"caustica.options.rt.entities": "Ray-Traced Entities",
 	"caustica.options.rt.entities.tooltip": "Include entities and block entities in the ray-traced scene.",
 

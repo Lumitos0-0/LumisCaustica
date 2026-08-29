@@ -59,6 +59,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtFroxelPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
@@ -174,6 +175,7 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtFroxelPipeline froxelPipeline;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -1235,6 +1237,59 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
 
+            // Volumetric Fog & Lighting (Froxel Frustum Pipeline)
+            if (CausticaConfig.Rt.Volumetrics.ENABLED.value() && skyLut != null) {
+                if (froxelPipeline == null) {
+                    froxelPipeline = RtFroxelPipeline.create(ctx);
+                }
+                froxelPipeline.ensureResources(ctx, displayW, displayH, CausticaConfig.Rt.Volumetrics.QUALITY.value());
+
+                float toRad = (float) (Math.PI / 180.0);
+                float noonTilt = LOOK.sky().sunNoonSouthTiltDegrees() * toRad;
+                float sAngle = sky.celestial().x();
+                float mAngle = sky.celestial().y();
+                float peakS = (float) Math.cos(sAngle);
+                float peakM = (float) Math.cos(mAngle);
+                float sunX = (float) -Math.sin(sAngle);
+                float sunY = (float) Math.cos(noonTilt) * peakS;
+                float sunZ = (float) Math.sin(noonTilt) * peakS;
+                float sunIllum = LOOK.lighting().sunIlluminanceLux();
+                float sunRadius = LOOK.sky().sunAngularRadiusDegrees() * toRad;
+
+                if (sunY < -0.05f) { // Moon dominant
+                    sunX = (float) -Math.sin(mAngle);
+                    sunY = (float) Math.cos(noonTilt) * peakM;
+                    sunZ = (float) Math.sin(noonTilt) * peakM;
+                    float phaseFixed = LOOK.lighting().moonPhaseFixedFraction();
+                    float mPhase = sky.look2().w();
+                    float mFraction = Math.abs(mPhase - 4.0f) / 4.0f;
+                    sunIllum = LOOK.lighting().moonIlluminanceLux() * (phaseFixed + (1.0f - phaseFixed) * mFraction);
+                    sunRadius = LOOK.sky().moonAngularRadiusDegrees() * toRad;
+                }
+
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel volumetrics");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
+                    froxelPipeline.recordVolumetrics(cmd, stack,
+                            frameTlas.accel.handle,
+                            skyLut.skyViewView(), skyLut.transmittanceView(), skyLut.sampler(),
+                            rrOutput, gDepth,
+                            mvCurProjView, mvPushMatrix, frameInvViewProj,
+                            camX, camY, camZ,
+                            mvCamDeltaX, mvCamDeltaY, mvCamDeltaZ,
+                            terrain.blockX, terrain.blockY, terrain.blockZ,
+                            terrain.lightRebaseOffsetX(), terrain.lightRebaseOffsetY(), terrain.lightRebaseOffsetZ(),
+                            terrain.lightBufferAddress(), terrain.lightGridCellBufferAddress(), terrain.lightGridSpanBufferAddress(),
+                            terrain.lightGridOriginX(), terrain.lightGridOriginY(), terrain.lightGridOriginZ(), 16.0f,
+                            terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(),
+                            terrain.lightCount(),
+                            sunX, sunY, sunZ, sunIllum, sunRadius,
+                            exposure.preExposure(),
+                            (flags & 0b01) != 0, wtr, wtg, wtb, waterWaveTime,
+                            frameCounter);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
             // exposure/auto-exposure/sharpness entirely for RR), so this is purely our own metering
@@ -1502,6 +1557,10 @@ public final class RtComposite {
         if (bloomPipeline != null) {
             bloomPipeline.destroy();
             bloomPipeline = null;
+        }
+        if (froxelPipeline != null) {
+            froxelPipeline.destroy();
+            froxelPipeline = null;
         }
         if (skyLut != null) {
             skyLut.destroy();

@@ -3,6 +3,7 @@
 // complete Std430DataLayout: field types, byte offsets, total size, matrix mode, and array counts.
 import world_common;
 import display_common;
+import froxel_common;
 
 struct WorldPushLayoutProbe {
     WorldPush values[2]; // array stride is the complete, tail-padded WorldPush byte size
@@ -92,5 +93,50 @@ void probePushAddr(uint3 id : SV_DispatchThreadID) {
 void probeBloomPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
+    }
+}
+
+[[vk::push_constant]] FroxelMediaPush froxelMediaPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFroxelMediaPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(froxelMediaPushProbe.gridDims.x) + froxelMediaPushProbe.params0.x;
+    }
+}
+
+[[vk::push_constant]] FroxelLightPush froxelLightPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFroxelLightPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(froxelLightPushProbe.gridDims.x) + froxelLightPushProbe.params0.x;
+    }
+}
+
+[[vk::push_constant]] FroxelTemporalPush froxelTemporalPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFroxelTemporalPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(froxelTemporalPushProbe.gridDims.x) + froxelTemporalPushProbe.params0.x;
+    }
+}
+
+[[vk::push_constant]] FroxelIntegratePush froxelIntegratePushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFroxelIntegratePush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(froxelIntegratePushProbe.gridDims.x) + froxelIntegratePushProbe.params0.x;
+    }
+}
+
+[[vk::push_constant]] FroxelCompositePush froxelCompositePushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFroxelCompositePush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(froxelCompositePushProbe.screenAndDepth.x) + froxelCompositePushProbe.params0.x;
     }
 }

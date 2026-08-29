@@ -58,8 +58,8 @@ public static const float INV_PI = 0.31830988618;
 // arrangement kept a hand-maintained Java port of the atmosphere march for exactly this value.
 // Illuminance here is ACEScg (the transport basis), converted once where it is assigned.
 public static CelestialLight celestialLight = {};
-public static const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
-public static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface
+public static const float SURF_BIAS = 0.001;  // offset secondary-ray origins along the normal (anti-acne)
+public static const float RAY_TMIN = 0.0005;   // tiny tmin: the normal offset already clears the surface
 
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 public static const float WATER_IOR = 1.333;

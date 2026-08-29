@@ -46,6 +46,15 @@ public final class RtVideoOptions {
             gamma(),
             spp(),
             maxBounces(),
+            volumetricsEnabled(),
+            volumetricsQuality(),
+            volumetricsDensity(),
+            volumetricsHeightFalloff(),
+            volumetricsMaxDistance(),
+            volumetricsSunShafts(),
+            volumetricsSunShaftMultiplier(),
+            volumetricsAnisotropy(),
+            volumetricsTemporal(),
             entities(),
             particles(),
             waterWaves(),
@@ -58,6 +67,93 @@ public final class RtVideoOptions {
         }
         options.add(debugView());
         return options.toArray(OptionInstance<?>[]::new);
+    }
+
+    private static OptionInstance<Boolean> volumetricsEnabled() {
+        return bool("caustica.options.rt.volumetrics", CausticaConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    private static OptionInstance<Integer> volumetricsQuality() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
+        List<Integer> steps = CausticaConfig.Rt.Volumetrics.QUALITY_STEPS;
+        int initialQuality = steps.contains(setting.value()) ? setting.value() : 2;
+        int initialPosition = steps.indexOf(initialQuality);
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricsQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricsQuality.tooltip")),
+            (caption, position) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.volumetricsQuality." + steps.get(position))),
+            new OptionInstance.IntRange(0, steps.size() - 1),
+            initialPosition,
+            position -> setting.set(steps.get(position)));
+    }
+
+    private static OptionInstance<Integer> volumetricsDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.BASE_DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricsDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricsDensity.tooltip")),
+            (caption, thousandths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", thousandths / 1000.0f))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 100),
+            thousandths -> setting.set(thousandths / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> volumetricsHeightFalloff() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricsHeightFalloff",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricsHeightFalloff.tooltip")),
+            (caption, thousandths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", thousandths / 1000.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 200),
+            thousandths -> setting.set(thousandths / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> volumetricsMaxDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricsMaxDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricsMaxDistance.tooltip")),
+            (caption, dist) -> Options.genericValueLabel(caption,
+                    Component.literal(dist + " m")),
+            new OptionInstance.IntRange(32, 512),
+            Math.clamp(Math.round(setting.value()), 32, 512),
+            dist -> setting.set(dist.floatValue()));
+    }
+
+    private static OptionInstance<Boolean> volumetricsSunShafts() {
+        return bool("caustica.options.rt.volumetricsSunShafts", CausticaConfig.Rt.Volumetrics.SUN_SHAFTS);
+    }
+
+    private static OptionInstance<Integer> volumetricsSunShaftMultiplier() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.SUN_SHAFT_MULTIPLIER;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricsSunShaftMultiplier",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricsSunShaftMultiplier.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1fx", tenths / 10.0f))),
+            new OptionInstance.IntRange(0, 50),
+            Math.clamp(Math.round(setting.value() * 10.0f), 0, 50),
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Integer> volumetricsAnisotropy() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.ANISOTROPY_FORWARD;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricsAnisotropy",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricsAnisotropy.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 95),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 95),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> volumetricsTemporal() {
+        return bool("caustica.options.rt.volumetricsTemporal", CausticaConfig.Rt.Volumetrics.TEMPORAL_FILTER);
     }
 
     private static OptionInstance<String> exposureMode() {

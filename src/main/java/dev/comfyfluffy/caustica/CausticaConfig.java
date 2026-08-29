@@ -59,7 +59,11 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.Volumetrics.ENABLED, Rt.Volumetrics.QUALITY,
+            Rt.Volumetrics.MAX_DISTANCE, Rt.Volumetrics.BASE_DENSITY, Rt.Volumetrics.HEIGHT_FALLOFF,
+            Rt.Volumetrics.GROUND_ALTITUDE, Rt.Volumetrics.ANISOTROPY_FORWARD, Rt.Volumetrics.ANISOTROPY_BACKWARD,
+            Rt.Volumetrics.LOBE_WEIGHT, Rt.Volumetrics.SUN_SHAFT_MULTIPLIER, Rt.Volumetrics.SUN_SHAFTS,
+            Rt.Volumetrics.BLOCK_LIGHTS, Rt.Volumetrics.TEMPORAL_FILTER, Ngx.PATH,
         };
     }
 
@@ -104,6 +108,10 @@ public final class CausticaConfig {
         FILE.setComment("hdr",
                 " HDR display output. Requires operating system and display support.\n"
                         + " ui-nits controls UI brightness; peak-nits must be 500, 1000, 2000, or 4000.");
+        FILE.setComment("volumetrics",
+                " Froxel-frustum volumetric lighting (light shafts, participating media, exponential height fog).\n"
+                        + " quality: 0 (Low), 1 (Medium), 2 (High), 3 (Ultra), 4 (Cinematic).\n"
+                        + " anisotropy-forward and anisotropy-backward control dual-lobe Henyey-Greenstein scattering.");
         FILE.setComment("screenshots",
                 " exr-enabled saves an ACEScg EXR beside the normal F2 PNG while ray tracing is active.");
     }
@@ -665,6 +673,38 @@ public final class CausticaConfig {
                     intChoice("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0, QUALITY_STEPS);
 
             private DlssRr() {
+            }
+        }
+
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
+            public static final List<Integer> QUALITY_STEPS = List.of(0, 1, 2, 3, 4);
+            public static final IntSetting QUALITY =
+                    intChoice("caustica.rt.volumetrics.quality", "volumetrics.quality", 2, QUALITY_STEPS);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.volumetrics.maxDistance", "volumetrics.max-distance", 256.0f, 32.0f, 1024.0f);
+            public static final FloatSetting BASE_DENSITY =
+                    clampedFloat("caustica.rt.volumetrics.baseDensity", "volumetrics.base-density", 0.015f, 0.0f, 0.5f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.volumetrics.heightFalloff", "volumetrics.height-falloff", 0.035f, 0.0f, 0.5f);
+            public static final FloatSetting GROUND_ALTITUDE =
+                    clampedFloat("caustica.rt.volumetrics.groundAltitude", "volumetrics.ground-altitude", 64.0f, -64.0f, 320.0f);
+            public static final FloatSetting ANISOTROPY_FORWARD =
+                    clampedFloat("caustica.rt.volumetrics.anisotropyForward", "volumetrics.anisotropy-forward", 0.65f, 0.0f, 0.95f);
+            public static final FloatSetting ANISOTROPY_BACKWARD =
+                    clampedFloat("caustica.rt.volumetrics.anisotropyBackward", "volumetrics.anisotropy-backward", -0.25f, -0.95f, 0.0f);
+            public static final FloatSetting LOBE_WEIGHT =
+                    clampedFloat("caustica.rt.volumetrics.lobeWeight", "volumetrics.lobe-weight", 0.85f, 0.0f, 1.0f);
+            public static final FloatSetting SUN_SHAFT_MULTIPLIER =
+                    clampedFloat("caustica.rt.volumetrics.sunShaftMultiplier", "volumetrics.sun-shaft-multiplier", 1.0f, 0.0f, 5.0f);
+            public static final BooleanSetting SUN_SHAFTS =
+                    bool("caustica.rt.volumetrics.sunShafts", "volumetrics.sun-shafts", true);
+            public static final BooleanSetting BLOCK_LIGHTS =
+                    bool("caustica.rt.volumetrics.blockLights", "volumetrics.block-lights", true);
+            public static final BooleanSetting TEMPORAL_FILTER =
+                    bool("caustica.rt.volumetrics.temporalFilter", "volumetrics.temporal-filter", true);
+
+            private Volumetrics() {
             }
         }
 
