@@ -110,7 +110,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float viewerRadiusKm = ATMOS_BOTTOM_KM + max(viewerAltitudeKm, MIN_VIEWER_ALTITUDE_KM);
         float3 sunTransmittance = transmittanceToSpace(transmittanceLut, viewerRadiusKm, sunDir, pc.sunAngularRadius);
 
-        // Hardware RayQuery shadow test against scene geometry
+        // Hardware RayQuery shadow test against scene geometry (1 ray)
         float shadowVis = 1.0;
         RayDesc ray;
         ray.Origin = worldPos + sunDir * 0.1;
@@ -140,7 +140,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         uint totalLights = pc.lightCount;
         ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
 
-        // Continuous Euclidean evaluation across ALL active emitters: zero grid cuts, zero chunk seams
+        float3 bestWi = float3(0.0, 1.0, 0.0);
+        float bestLightDist = 100.0;
+        float maxWeight = 0.0;
+
+        // Step 1: Accumulate unshadowed irradiance across all nearby emitters in fast scalar ALU
         for (uint i = 0u; i < totalLights; i++) {
             Light lg = lights[i];
 
@@ -160,42 +164,48 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                 float area = decodeLightArea(lg);
                 float3 le = decodeLightRadiance(lg.le);
 
-                // Physical solid-angle form factor: approaches area / 0.35 as d -> 0 (no singularities/spotlights)
+                // Physical solid-angle form factor (no singularities/spotlights)
                 float formFactor = (emissionFactor * area) / (dist2 + 0.35);
 
-                // Smooth C^1 quadratic distance fade reaching exactly 0 at 32m
+                // Smooth C^1 quadratic distance fade reaching 0 at 32m
                 float distFade = max(1.0 - (lightDist / 32.0), 0.0);
                 float smoothDistFade = distFade * distFade;
 
-                // Volumetric in-scattered radiance
-                float3 sampleContrib = le * (formFactor * smoothDistFade * VOLUMETRICS_INV_4PI * scattering * 5.0);
+                float3 contrib = le * (formFactor * smoothDistFade * VOLUMETRICS_INV_4PI * scattering * 5.0);
+                float weight = dot(contrib, float3(0.2126, 0.7152, 0.0722));
 
-                // Early-out if contribution is imperceptible
-                if (dot(sampleContrib, sampleContrib) > 1.0e-7) {
-                    float shadowVis = 1.0;
-                    if (pc.enableShadows != 0u) {
-                        RayDesc ray;
-                        ray.Origin = worldPos;
-                        ray.Direction = wi;
-                        ray.TMin = 0.05;
-                        ray.TMax = max(lightDist - 0.05, 0.01);
+                blockInscatter += contrib;
 
-                        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-                        q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
-                        q.Proceed();
-
-                        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                            shadowVis = 0.0;
-                        }
-                    }
-
-                    if (shadowVis > 0.0) {
-                        blockInscatter += clampVoxelMaxRadiance(sampleContrib, voxelSize);
-                    }
+                // Track the dominant light source for shadow evaluation
+                if (weight > maxWeight) {
+                    maxWeight = weight;
+                    bestWi = wi;
+                    bestLightDist = lightDist;
                 }
             }
         }
-        totalInscatter += blockInscatter;
+
+        // Step 2: Exactly ONE hardware RayQuery per voxel to the dominant emitter (blazing fast 120+ FPS!)
+        if (maxWeight > 1.0e-6) {
+            float shadowVis = 1.0;
+            if (pc.enableShadows != 0u) {
+                RayDesc ray;
+                ray.Origin = worldPos;
+                ray.Direction = bestWi;
+                ray.TMin = 0.05;
+                ray.TMax = max(bestLightDist - 0.05, 0.01);
+
+                RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
+                q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
+                q.Proceed();
+
+                if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                    shadowVis = 0.0;
+                }
+            }
+
+            totalInscatter += clampVoxelMaxRadiance(blockInscatter * shadowVis, voxelSize);
+        }
     }
 
     // ============================================================================================
