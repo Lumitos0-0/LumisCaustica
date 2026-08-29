@@ -69,7 +69,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float maxDist = pc.params0.z;
     float preExposure = max(pc.params0.w, 1.0e-6);
 
-    float g1 = pc.params1.x; // Forward Mie scattering anisotropy for sun shafts (e.g. 0.65)
+    float g1 = pc.params1.x; // Forward Mie scattering anisotropy for celestial beams (e.g. 0.65)
     float g2 = pc.params1.y; // Backscattering anisotropy (e.g. -0.25)
     float lobeWeight = pc.params1.z; // Weight between forward and back lobes (e.g. 0.85)
     float sunShaftMultiplier = pc.params1.w > 0.0 ? pc.params1.w : 1.0;
@@ -136,63 +136,84 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (enableBlockLights) {
         float3 blockInscatter = float3(0.0, 0.0, 0.0);
         float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
+        int3 gridDimsL = pc.lightGridDims.xyz;
 
-        uint totalLights = pc.lightCount;
-        uint maxLights = min(totalLights, 128u);
-        ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
+        if (all(gridDimsL > int3(0)) && pc.lightGridCellAddr != 0 && pc.lightGridSpanAddr != 0) {
+            int3 coord = int3(floor((worldPos - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
+            int3 clampedCoord = clamp(coord, int3(0), gridDimsL - int3(1));
+            uint linearCell = (uint(clampedCoord.z) * uint(gridDimsL.y) + uint(clampedCoord.y))
+                              * uint(gridDimsL.x) + uint(clampedCoord.x);
+            LightGridCell cell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linearCell];
 
-        // Local diffuse scattering phase: isotropic with gentle forward bias (no artificial laser spotlights)
-        const float localPhase = VOLUMETRICS_INV_4PI;
+            if (cell.spanCount > 0u) {
+                ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
+                ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
 
-        for (uint i = 0u; i < maxLights; i++) {
-            Light lg = lights[i];
+                uint maxSpans = min(cell.spanCount, 16u);
+                for (uint s = 0u; s < maxSpans; s++) {
+                    LightGridSpan span = spans[cell.spanOffset + s];
+                    uint firstLight = span.firstLight;
+                    uint count = span.packedLightCounts & 0xffffu;
+                    if (count == 0u) continue;
 
-            float3 lightPos = lg.pos + pc.lightRebase.xyz;
-            float3 toL = lightPos - worldPos;
-            float dist2 = dot(toL, toL);
+                    uint numToTest = min(count, 8u);
+                    float spanLightWeight = float(count) / float(numToTest);
 
-            // True Euclidean 24-meter sphere with instant scalar rejection
-            if (dist2 > 0.001 && dist2 < 576.0) {
-                float lightDist = sqrt(dist2);
-                float3 wi = toL / lightDist;
+                    for (uint li = 0u; li < numToTest; li++) {
+                        uint offset = (count <= 8u) ? li : (li * count) / numToTest;
+                        uint lightIndex = min(firstLight + offset, pc.lightCount - 1u);
+                        Light lg = lights[lightIndex];
 
-                float3 lightNormal = decodeLightNormal(lg);
-                float cosL = dot(lightNormal, -wi);
-                float emissionFactor = max(cosL, 0.25);
+                        float3 lightPos = lg.pos + pc.lightRebase.xyz;
+                        float3 toL = lightPos - worldPos;
+                        float dist2 = dot(toL, toL);
 
-                float area = decodeLightArea(lg);
-                float3 le = decodeLightRadiance(lg.le);
+                        // True Euclidean 32-meter sphere with instant scalar rejection
+                        if (dist2 > 0.001 && dist2 < 1024.0) {
+                            float lightDist = sqrt(dist2);
+                            float3 wi = toL / lightDist;
 
-                // Physical solid-angle form factor: approaches constant area / pi as distance -> 0 (no floating point singularities)
-                float formFactor = (emissionFactor * area) / (dist2 + max(area * 0.3183, 1.0));
+                            float3 lightNormal = decodeLightNormal(lg);
+                            float cosL = dot(lightNormal, -wi);
+                            float emissionFactor = max(cosL, 0.25);
 
-                // Smooth quadratic atmospheric distance fade to exactly 0 at 24m
-                float distFade = max(1.0 - (lightDist / 24.0), 0.0);
-                float smoothDistFade = distFade * distFade;
+                            float area = decodeLightArea(lg);
+                            float3 le = decodeLightRadiance(lg.le);
 
-                float3 sampleContrib = le * (formFactor * smoothDistFade * localPhase * scattering * 1.5);
+                            // Bounded physical form factor: approaches area / 0.35 as d -> 0 (no singularities/spotlights)
+                            float formFactor = (emissionFactor * area) / (dist2 + 0.35);
 
-                // Early-out if contribution is imperceptible
-                if (dot(sampleContrib, sampleContrib) > 1.0e-7) {
-                    float shadowVis = 1.0;
-                    if (pc.enableShadows != 0u) {
-                        RayDesc ray;
-                        ray.Origin = worldPos;
-                        ray.Direction = wi;
-                        ray.TMin = 0.05;
-                        ray.TMax = max(lightDist - 0.05, 0.01);
+                            // Smooth C^1 quadratic distance fade reaching exactly 0 at 32m
+                            float distFade = max(1.0 - (lightDist / 32.0), 0.0);
+                            float smoothDistFade = distFade * distFade;
 
-                        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-                        q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
-                        q.Proceed();
+                            // Volumetric in-scattered radiance
+                            float3 sampleContrib = le * (formFactor * smoothDistFade * VOLUMETRICS_INV_4PI * scattering * spanLightWeight * 5.0);
 
-                        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                            shadowVis = 0.0;
+                            // Early-out if contribution is imperceptible
+                            if (dot(sampleContrib, sampleContrib) > 1.0e-7) {
+                                float shadowVis = 1.0;
+                                if (pc.enableShadows != 0u) {
+                                    RayDesc ray;
+                                    ray.Origin = worldPos;
+                                    ray.Direction = wi;
+                                    ray.TMin = 0.05;
+                                    ray.TMax = max(lightDist - 0.05, 0.01);
+
+                                    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
+                                    q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
+                                    q.Proceed();
+
+                                    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                                        shadowVis = 0.0;
+                                    }
+                                }
+
+                                if (shadowVis > 0.0) {
+                                    blockInscatter += clampVoxelMaxRadiance(sampleContrib, voxelSize);
+                                }
+                            }
                         }
-                    }
-
-                    if (shadowVis > 0.0) {
-                        blockInscatter += clampVoxelMaxRadiance(sampleContrib, voxelSize);
                     }
                 }
             }
