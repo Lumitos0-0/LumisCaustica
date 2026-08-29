@@ -1,4 +1,4 @@
-// Computes direct in-scattered light at each Froxel cell from Sun/Moon and block emitters with Resampled Importance Sampling (RIS).
+// Computes direct in-scattered light at each Froxel cell from Sun/Moon and block emitters with fast analytical accumulation and soft geometric occlusion.
 import froxel_common;
 import world_common;
 import sky;
@@ -44,98 +44,6 @@ float decodeLightArea(Light light) {
 float3 decodeLightNormal(Light light) {
     float3 n = normalize(cross(decodeLightHalfU(light), decodeLightHalfV(light)));
     return (light.section & 0x40000000u) != 0u ? -n : n;
-}
-
-int3 decodeLightSectionCoord(Light light) {
-    uint packed = light.section;
-    return int3(int(packed & 0x3ffu), int((packed >> 10u) & 0x3ffu), int((packed >> 20u) & 0x3ffu));
-}
-
-// Low-discrepancy pseudo-random number generator
-float rndf(inout uint state) {
-    state = state * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return float((word >> 22u) ^ word) * (1.0 / 4294967296.0);
-}
-
-// Select one light from the global emitted-power distribution in O(1)
-void selectGlobalLight(inout uint proposalSeed, out uint lightIndex) {
-    float aliasSample = rndf(proposalSeed) * float(pc.lightCount);
-    uint column = min(uint(aliasSample), pc.lightCount - 1u);
-    if (pc.lightAliasAddr != 0) {
-        LightAlias a = ConstPtr<LightAlias>(pc.lightAliasAddr)[column];
-        bool self = aliasSample - float(column) < a.accept;
-        lightIndex = self ? column : a.aliasIndex;
-    } else {
-        lightIndex = column;
-    }
-}
-
-// Select one light from a chunk section's local power alias table in O(1)
-void selectSectionLight(uint firstLight, uint lightCount, inout uint proposalSeed, out uint lightIndex) {
-    float aliasSample = rndf(proposalSeed) * float(lightCount);
-    uint column = min(uint(aliasSample), lightCount - 1u);
-    LightAlias alias = ConstPtr<LightAlias>(pc.lightLocalAliasAddr)[firstLight + column];
-    bool self = aliasSample - float(column) < alias.accept;
-    uint localIndex = self ? column : alias.aliasIndex;
-    lightIndex = firstLight + localIndex;
-}
-
-// Select a light through a cell's section span alias table in O(1)
-void selectLightGridSpanLight(LightGridCell cell, inout uint proposalSeed, out uint lightIndex) {
-    ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
-    float aliasSample = rndf(proposalSeed) * float(cell.spanCount);
-    uint column = min(uint(aliasSample), cell.spanCount - 1u);
-    LightGridSpan span = spans[cell.spanOffset + column];
-    bool self = aliasSample - float(column) < span.accept;
-    uint firstLight = self ? span.firstLight : span.aliasFirstLight;
-    uint lightCount = self ? (span.packedLightCounts & 0xffffu) : (span.packedLightCounts >> 16u);
-    selectSectionLight(firstLight, lightCount, proposalSeed, lightIndex);
-}
-
-// Sample the exact proposal mixture q = alpha*qCell + (1-alpha)*qGlobal
-void selectLightGridLight(LightGridCell cell, bool useLocal, inout uint proposalSeed, out uint lightIndex) {
-    if (useLocal) {
-        selectLightGridSpanLight(cell, proposalSeed, lightIndex);
-    } else {
-        selectGlobalLight(proposalSeed, lightIndex);
-    }
-}
-
-// Reconstruct proposal probability density function
-float proposalPdf(Light light, float3 le, LightGridCell cell, int3 cellCoord, float localProbability) {
-    float power = max(0.0, decodeLightArea(light) * dot(le, float3(0.2126, 0.7152, 0.0722)));
-    float globalPdf = pc.lightAliasAddr != 0 ? power * pc.lightRebase.w : 1.0 / float(pc.lightCount);
-    float localPdf = 0.0;
-    if (localProbability > 0.0 && power > 0.0) {
-        int3 delta = decodeLightSectionCoord(light) - cellCoord;
-        if (all(abs(delta) <= int3(2, 2, 2))) {
-            float3 deltaF = float3(delta);
-            localPdf = power * cell.invWeightSum / max(1.0, dot(deltaF, deltaF));
-        }
-    }
-    return localProbability * localPdf + (1.0 - localProbability) * globalPdf;
-}
-
-// Volumetric RIS Reservoir
-struct VolumetricReservoir {
-    float3 samplePos;
-    float3 sampleRadiance;
-    float M;
-    float W;
-    float wSum;
-    float phat;
-};
-
-VolumetricReservoir resEmpty() {
-    VolumetricReservoir r;
-    r.samplePos = float3(0.0, 0.0, 0.0);
-    r.sampleRadiance = float3(0.0, 0.0, 0.0);
-    r.M = 0.0;
-    r.W = 0.0;
-    r.wSum = 0.0;
-    r.phat = 0.0;
-    return r;
 }
 
 [shader("compute")]
@@ -230,119 +138,92 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     // ============================================================================================
-    // 2. Direct Local Block Emitters with Resampled Importance Sampling (RIS)
+    // 2. Direct Local Block Emitters (Analytical Multi-Emitter Accumulation + Soft Occlusion)
     // ============================================================================================
     bool enableBlockLights = (pc.lightGridDims.w != 0) && (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
     if (enableBlockLights) {
         float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
-        uint seed = dispatchId.x * 1664525u + dispatchId.y * 1013904223u + dispatchId.z * 22695477u + pc.gridDims.w * 2654435761u;
-        uint proposalSeed = seed ^ 0x9e3779b9u;
+        float3 blockInscatter = float3(0.0, 0.0, 0.0);
 
-        LightGridCell gridCell;
-        gridCell.spanOffset = 0u;
-        gridCell.spanCount = 0u;
-        gridCell.invWeightSum = 0.0;
-        int3 gridCellCoord = int3(0, 0, 0);
+        ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
+        float3 dominantWi = float3(0.0, 1.0, 0.0);
+        float dominantLightDist = 100.0;
+        float dominantWeight = 0.0;
 
         int3 gridDimsL = pc.lightGridDims.xyz;
-        bool hasGridCell = false;
 
         if (all(gridDimsL > int3(0)) && pc.lightGridCellAddr != 0 && pc.lightGridSpanAddr != 0) {
-            // Low-discrepancy sub-cell jitter to eliminate boundary seams
-            float3 gridLookup = worldPos + (float3(rndf(proposalSeed), rndf(proposalSeed), rndf(proposalSeed)) - 0.5) * pc.lightGridOrigin.w;
-            int3 coord = int3(floor((gridLookup - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
+            int3 coord = int3(floor((worldPos - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
 
             if (all(coord >= int3(0)) && all(coord < gridDimsL)) {
                 uint linearCell = (uint(coord.z) * uint(gridDimsL.y) + uint(coord.y)) * uint(gridDimsL.x) + uint(coord.x);
-                gridCell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linearCell];
-                gridCellCoord = coord;
-                hasGridCell = (gridCell.spanCount > 0u);
-            }
-        }
+                LightGridCell cell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linearCell];
+                ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
 
-        uint candidateCount = max(pc.risCandidates, 1u);
-        uint globalCandidateCount = hasGridCell ? max(1u, (candidateCount + 2u) / 4u) : candidateCount;
-        uint localCandidateCount = candidateCount - globalCandidateCount;
-        float localProbability = float(localCandidateCount) / float(candidateCount);
+                uint numSpans = min(cell.spanCount, 32u);
 
-        VolumetricReservoir r = resEmpty();
-        r.M = float(candidateCount);
+                for (uint s = 0u; s < numSpans; s++) {
+                    LightGridSpan span = spans[cell.spanOffset + s];
+                    uint firstLight = span.firstLight;
+                    uint count = min(span.packedLightCounts & 0xffffu, 32u);
 
-        ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
+                    for (uint l = 0u; l < count; l++) {
+                        uint lightIdx = firstLight + l;
+                        if (lightIdx >= pc.lightCount) continue;
 
-        // Stratified candidate proposal loop (O(1) alias table lookup per candidate)
-        for (uint c = 0u; c < candidateCount; c++) {
-            uint li;
-            uint globalsBefore = (c * globalCandidateCount) / candidateCount;
-            uint globalsAfter = ((c + 1u) * globalCandidateCount) / candidateCount;
-            bool useLocal = hasGridCell && (globalsAfter == globalsBefore);
+                        Light lg = lights[lightIdx];
+                        float3 lightPos = lg.pos + pc.lightRebase.xyz;
+                        float3 toL = lightPos - worldPos;
+                        float dist2 = dot(toL, toL);
 
-            selectLightGridLight(gridCell, useLocal, proposalSeed, li);
-            if (li >= pc.lightCount) continue;
+                        // Continuous Euclidean 32-meter sphere with instant scalar rejection
+                        if (dist2 > 0.001 && dist2 < 1024.0) {
+                            float lightDist = sqrt(dist2);
+                            float3 wi = toL / lightDist;
 
-            Light lg = lights[li];
+                            float3 lightNormal = decodeLightNormal(lg);
+                            float cosL = dot(lightNormal, -wi);
+                            float emissionFactor = max(cosL, 0.25);
 
-            // Area light surface sampling with low-discrepancy jitter
-            float s = rndf(seed) * 2.0 - 1.0;
-            float t = rndf(seed) * 2.0 - 1.0;
-            float3 sp = lg.pos + pc.lightRebase.xyz + s * decodeLightHalfU(lg) + t * decodeLightHalfV(lg);
+                            float area = decodeLightArea(lg);
+                            float3 le = decodeLightRadiance(lg.le);
 
-            float3 toL = sp - worldPos;
-            float dist2 = dot(toL, toL);
+                            // Smooth physical form factor with singularity protection (zero fireflies, zero spotlights)
+                            float formFactor = (emissionFactor * area) / (dist2 + 0.35);
 
-            if (dist2 > 0.001 && dist2 < 1024.0) {
-                float lightDist = sqrt(dist2);
-                float3 wi = toL / lightDist;
+                            // Continuous C^1 quadratic distance fade reaching exactly 0 at 32m (zero chunk seams)
+                            float distFade = max(1.0 - (lightDist / 32.0), 0.0);
+                            float smoothDistFade = distFade * distFade;
 
-                float3 lightNormal = decodeLightNormal(lg);
-                float cosL = dot(lightNormal, -wi);
-                float emissionFactor = max(cosL, 0.25);
+                            // Volumetric phase function for local emitters
+                            float cosTheta = dot(rayDir, wi);
+                            float phase = dualLobePhase(cosTheta, g1 * 0.5, g2 * 0.5, 0.5);
 
-                float area = decodeLightArea(lg);
-                float3 le = decodeLightRadiance(lg.le);
+                            float3 contrib = le * (formFactor * smoothDistFade * phase * scattering * 5.0);
+                            float weight = dot(contrib, float3(0.2126, 0.7152, 0.0722));
 
-                // Regularized solid-angle form factor (eliminates singularity fireflies)
-                float formFactor = (emissionFactor * area) / (dist2 + 0.35);
+                            blockInscatter += contrib;
 
-                // Smooth C^1 quadratic distance fade reaching 0 at 32m
-                float distFade = max(1.0 - (lightDist / 32.0), 0.0);
-                float smoothDistFade = distFade * distFade;
-
-                // Volumetric phase function
-                float cosTheta = dot(rayDir, wi);
-                float phase = dualLobePhase(cosTheta, g1 * 0.5, g2 * 0.5, 0.5);
-
-                float3 unshadowedContrib = le * (formFactor * smoothDistFade * phase * scattering * 5.0);
-                float phat = dot(unshadowedContrib, float3(0.2126, 0.7152, 0.0722));
-
-                if (phat > 0.0) {
-                    float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);
-                    float w = phat / max(sourcePdf, 1.0e-20);
-                    r.wSum += w;
-
-                    if (rndf(seed) * r.wSum < w) {
-                        r.samplePos = sp;
-                        r.sampleRadiance = unshadowedContrib;
-                        r.phat = phat;
+                            if (weight > dominantWeight) {
+                                dominantWeight = weight;
+                                dominantWi = wi;
+                                dominantLightDist = lightDist;
+                            }
+                        }
                     }
                 }
             }
         }
 
-        r.W = r.phat > 0.0 ? (r.wSum / (r.M * r.phat)) : 0.0;
-
-        // Trace EXACTLY 1 hardware RayQuery shadow ray for the survivor sample (100% physically accurate, zero light leaks)
-        if (r.phat > 0.0 && r.W > 0.0) {
+        // Geometric occlusion test for solid cave walls with soft volumetric penumbra wrap
+        if (dominantWeight > 1.0e-6) {
             float shadowVis = 1.0;
             if (pc.enableShadows != 0u) {
-                float3 toSurvivor = r.samplePos - worldPos;
-                float survivorDist = length(toSurvivor);
-
                 RayDesc ray;
                 ray.Origin = worldPos;
-                ray.Direction = toSurvivor / max(survivorDist, 1.0e-4);
-                ray.TMin = 0.05;
-                ray.TMax = max(survivorDist - 0.05, 0.01);
+                ray.Direction = dominantWi;
+                ray.TMin = 0.15; // Soft margin to prevent self-occlusion on thin fences/posts
+                ray.TMax = max(dominantLightDist - 0.15, 0.01);
 
                 RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
                 q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
@@ -353,8 +234,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                 }
             }
 
-            float3 survivorRadiance = r.sampleRadiance * (shadowVis * r.W);
-            totalInscatter += clampVoxelMaxRadiance(survivorRadiance, voxelSize);
+            totalInscatter += clampVoxelMaxRadiance(blockInscatter * shadowVis, voxelSize);
         }
     }
 
