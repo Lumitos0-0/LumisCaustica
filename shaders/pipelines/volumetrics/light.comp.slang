@@ -140,60 +140,79 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // ============================================================================================
     // 2. Direct Local Block Emitters (Torches, Lanterns, Glowstone, Lava Lakes, Lavafalls, Froglights)
     // ============================================================================================
-    bool enableBlockLights = (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
+    bool enableBlockLights = (pc.lightGridDims.w != 0) && (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
     if (enableBlockLights) {
         float3 blockInscatter = float3(0.0, 0.0, 0.0);
         float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
 
-        uint totalLights = min(pc.lightCount, 256u);
         ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
-
         float3 bestWi = float3(0.0, 1.0, 0.0);
         float bestLightDist = 100.0;
         float maxWeight = 0.0;
 
-        // Step 1: Accumulate unshadowed irradiance across all nearby emitters in fast scalar ALU
-        for (uint i = 0u; i < totalLights; i++) {
-            Light lg = lights[i];
+        int3 gridDimsL = pc.lightGridDims.xyz;
 
-            float3 lightPos = lg.pos + pc.lightRebase.xyz;
-            float3 toL = lightPos - worldPos;
-            float dist2 = dot(toL, toL);
+        if (all(gridDimsL > int3(0)) && pc.lightGridCellAddr != 0 && pc.lightGridSpanAddr != 0) {
+            int3 coord = int3(floor((worldPos - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
 
-            // True Euclidean 32-meter sphere with instant scalar rejection
-            if (dist2 > 0.001 && dist2 < 1024.0) {
-                float lightDist = sqrt(dist2);
-                float3 wi = toL / lightDist;
+            if (all(coord >= int3(0)) && all(coord < gridDimsL)) {
+                uint linearCell = (uint(coord.z) * uint(gridDimsL.y) + uint(coord.y)) * uint(gridDimsL.x) + uint(coord.x);
+                LightGridCell cell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linearCell];
+                ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
 
-                float3 lightNormal = decodeLightNormal(lg);
-                float cosL = dot(lightNormal, -wi);
-                float emissionFactor = max(cosL, 0.25);
+                uint numSpans = min(cell.spanCount, 32u);
 
-                float area = decodeLightArea(lg);
-                float3 le = decodeLightRadiance(lg.le);
+                for (uint s = 0u; s < numSpans; s++) {
+                    LightGridSpan span = spans[cell.spanOffset + s];
+                    uint firstLight = span.firstLight;
+                    uint count = min(span.packedLightCounts & 0xffffu, 32u);
 
-                // Physical solid-angle form factor (no singularities/spotlights)
-                float formFactor = (emissionFactor * area) / (dist2 + 0.35);
+                    for (uint l = 0u; l < count; l++) {
+                        uint lightIdx = firstLight + l;
+                        if (lightIdx >= pc.lightCount) continue;
 
-                // Smooth C^1 quadratic distance fade reaching 0 at 32m
-                float distFade = max(1.0 - (lightDist / 32.0), 0.0);
-                float smoothDistFade = distFade * distFade;
+                        Light lg = lights[lightIdx];
+                        float3 lightPos = lg.pos + pc.lightRebase.xyz;
+                        float3 toL = lightPos - worldPos;
+                        float dist2 = dot(toL, toL);
 
-                float3 contrib = le * (formFactor * smoothDistFade * VOLUMETRICS_INV_4PI * scattering * 5.0);
-                float weight = dot(contrib, float3(0.2126, 0.7152, 0.0722));
+                        // True Euclidean 32-meter sphere with instant scalar rejection
+                        if (dist2 > 0.001 && dist2 < 1024.0) {
+                            float lightDist = sqrt(dist2);
+                            float3 wi = toL / lightDist;
 
-                blockInscatter += contrib;
+                            float3 lightNormal = decodeLightNormal(lg);
+                            float cosL = dot(lightNormal, -wi);
+                            float emissionFactor = max(cosL, 0.25);
 
-                // Track the dominant light source for shadow evaluation
-                if (weight > maxWeight) {
-                    maxWeight = weight;
-                    bestWi = wi;
-                    bestLightDist = lightDist;
+                            float area = decodeLightArea(lg);
+                            float3 le = decodeLightRadiance(lg.le);
+
+                            // Physical solid-angle form factor (no singularities/spotlights)
+                            float formFactor = (emissionFactor * area) / (dist2 + 0.35);
+
+                            // Smooth C^1 quadratic distance fade reaching exactly 0 at 32m
+                            float distFade = max(1.0 - (lightDist / 32.0), 0.0);
+                            float smoothDistFade = distFade * distFade;
+
+                            float3 contrib = le * (formFactor * smoothDistFade * VOLUMETRICS_INV_4PI * scattering * 5.0);
+                            float weight = dot(contrib, float3(0.2126, 0.7152, 0.0722));
+
+                            blockInscatter += contrib;
+
+                            // Track the dominant light source for shadow evaluation
+                            if (weight > maxWeight) {
+                                maxWeight = weight;
+                                bestWi = wi;
+                                bestLightDist = lightDist;
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Step 2: Exactly ONE hardware RayQuery per voxel to the dominant emitter (blazing fast 120+ FPS!)
+        // Exactly ONE hardware RayQuery per voxel to the dominant emitter (blazing fast 120+ FPS!)
         if (maxWeight > 1.0e-6) {
             float shadowVis = 1.0;
             if (pc.enableShadows != 0u) {
