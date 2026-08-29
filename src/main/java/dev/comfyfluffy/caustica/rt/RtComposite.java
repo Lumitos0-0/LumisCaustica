@@ -1279,6 +1279,7 @@ public final class RtComposite {
                             terrain.blockX, terrain.blockY, terrain.blockZ,
                             terrain.lightRebaseOffsetX(), terrain.lightRebaseOffsetY(), terrain.lightRebaseOffsetZ(),
                             terrain.lightBufferAddress(), terrain.lightGridCellBufferAddress(), terrain.lightGridSpanBufferAddress(),
+                            terrain.lightAliasBufferAddress(), terrain.lightLocalAliasBufferAddress(), terrain.lightInvGlobalPowerSum(),
                             terrain.lightGridOriginX(), terrain.lightGridOriginY(), terrain.lightGridOriginZ(), 16.0f,
                             terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(),
                             terrain.lightCount(),

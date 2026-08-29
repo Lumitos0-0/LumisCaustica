@@ -30,17 +30,19 @@ public struct FroxelLightPush {
     public float4 sunDirIllum;         // xyz = sun/moon light direction, w = illuminance (lux)
     public float4 lightGridOrigin;     // xyz = light grid cell origin in rebased blocks, w = cell size
     public int4   lightGridDims;       // xyz = light grid dimensions, w = enableBlockLights
-    public float4 lightRebase;         // xyz = light buffer rebase offset in world blocks
+    public float4 lightRebase;         // xyz = light buffer rebase offset in world blocks, w = invGlobalPowerSum
     public float4x4 invViewProj;       // camera inverse view-projection (jitter-free)
     public float3 camOffset;           // terrain rebase offset
     public uint   lightCount;
     public float3 camPos;
     public float  sunAngularRadius;
-    public uint64_t lightBufAddr;      // RIS global light buffer address
-    public uint64_t lightGridCellAddr; // Dense light grid cell headers
-    public uint64_t lightGridSpanAddr; // Packed section spans
+    public uint64_t lightBufAddr;        // RIS global light buffer address
+    public uint64_t lightGridCellAddr;   // Dense light grid cell headers
+    public uint64_t lightGridSpanAddr;   // Packed section spans
+    public uint64_t lightAliasAddr;      // Global power alias buffer address
+    public uint64_t lightLocalAliasAddr; // Local section alias buffer address
     public uint   enableShadows;
-    public float  phasePadding;
+    public uint   risCandidates;
 };
 
 public struct FroxelTemporalPush {

@@ -306,6 +306,7 @@ public final class RtFroxelPipeline {
                                   int terrainBlockX, int terrainBlockY, int terrainBlockZ,
                                   float lightRebaseX, float lightRebaseY, float lightRebaseZ,
                                   long lightBufAddr, long lightGridCellAddr, long lightGridSpanAddr,
+                                  long lightAliasAddr, long lightLocalAliasAddr, float invGlobalPowerSum,
                                   float lightGridOriginX, float lightGridOriginY, float lightGridOriginZ, float lightGridCellSize,
                                   int lightGridDimX, int lightGridDimY, int lightGridDimZ,
                                   int lightCount,
@@ -365,7 +366,7 @@ public final class RtFroxelPipeline {
                     new FroxelLightPushData.Float4(sunDirX, sunDirY, sunDirZ, sunIlluminanceLux),
                     new FroxelLightPushData.Float4(lightGridOriginX, lightGridOriginY, lightGridOriginZ, lightGridCellSize),
                     new FroxelLightPushData.Int4(lightGridDimX, lightGridDimY, lightGridDimZ, CausticaConfig.Rt.Volumetrics.BLOCK_LIGHTS.value() ? 1 : 0),
-                    new FroxelLightPushData.Float4(lightRebaseX, lightRebaseY, lightRebaseZ, 0.0f),
+                    new FroxelLightPushData.Float4(lightRebaseX, lightRebaseY, lightRebaseZ, invGlobalPowerSum),
                     invViewProj,
                     new FroxelLightPushData.Float3((float) (camX - terrainBlockX), (float) (camY - terrainBlockY), (float) (camZ - terrainBlockZ)),
                     lightCount,
@@ -374,8 +375,10 @@ public final class RtFroxelPipeline {
                     lightBufAddr,
                     lightGridCellAddr,
                     lightGridSpanAddr,
+                    lightAliasAddr,
+                    lightLocalAliasAddr,
                     CausticaConfig.Rt.Volumetrics.SUN_SHAFTS.value() ? 1 : 0,
-                    0.0f
+                    8 // RIS candidates (M=8)
             ).write(lightPush);
             VK10.vkCmdPushConstants(cmd, lightLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, lightPush);
             VK10.vkCmdDispatch(cmd, groupX, groupY, groupZ);
