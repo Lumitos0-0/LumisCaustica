@@ -99,6 +99,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // ============================================================================================
     float3 sunDir = pc.sunDirIllum.xyz;
     float sunIlluminance = pc.sunDirIllum.w * sunShaftMultiplier; // lux at top of atmosphere
+    float celestialShadowVis = 0.0;
 
     if (sunIlluminance > 0.0 && pc.enableShadows != 0u) {
         // Dual-Lobe Henyey-Greenstein phase function for collimated celestial beams
@@ -111,7 +112,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float3 sunTransmittance = transmittanceToSpace(transmittanceLut, viewerRadiusKm, sunDir, pc.sunAngularRadius);
 
         // Hardware RayQuery shadow test against scene geometry (1 ray)
-        float shadowVis = 1.0;
+        celestialShadowVis = 1.0;
         RayDesc ray;
         ray.Origin = worldPos + sunDir * 0.1;
         ray.Direction = sunDir;
@@ -122,11 +123,18 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
         q.Proceed();
         if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            shadowVis = 0.0;
+            celestialShadowVis = 0.0;
         }
 
-        float3 directSunLight = bt709ToAcesCg(sunTransmittance * sunIlluminance * shadowVis);
+        float3 directSunLight = bt709ToAcesCg(sunTransmittance * sunIlluminance * celestialShadowVis);
         totalInscatter += directSunLight * (phase * scattering);
+
+        // Gentle ambient sky fill when celestial path is unoccluded
+        if (celestialShadowVis > 0.0) {
+            float2 skyUv = float2(0.5, 0.5);
+            float3 ambientSkyLuminance = bt709ToAcesCg(skyViewLut.SampleLevel(skyUv, 0.0).rgb);
+            totalInscatter += ambientSkyLuminance * (VOLUMETRICS_INV_4PI * scattering * 0.05);
+        }
     }
 
     // ============================================================================================
@@ -137,7 +145,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float3 blockInscatter = float3(0.0, 0.0, 0.0);
         float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
 
-        uint totalLights = pc.lightCount;
+        uint totalLights = min(pc.lightCount, 256u);
         ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
 
         float3 bestWi = float3(0.0, 1.0, 0.0);
@@ -206,32 +214,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
             totalInscatter += clampVoxelMaxRadiance(blockInscatter * shadowVis, voxelSize);
         }
-    }
-
-    // ============================================================================================
-    // 3. Ambient Sky Illumination
-    // ============================================================================================
-    // Gentle diffuse ambient sky light from sky-view LUT for soft fill, occluded by overhead geometry
-    float skyOcclusion = 1.0;
-    if (pc.enableShadows != 0u) {
-        RayDesc skyRay;
-        skyRay.Origin = worldPos + float3(0.0, 0.05, 0.0);
-        skyRay.Direction = float3(0.0, 1.0, 0.0);
-        skyRay.TMin = 0.01;
-        skyRay.TMax = 128.0;
-
-        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> qSky;
-        qSky.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, skyRay);
-        qSky.Proceed();
-        if (qSky.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            skyOcclusion = 0.0;
-        }
-    }
-
-    if (skyOcclusion > 0.0) {
-        float2 skyUv = float2(0.5, 0.5);
-        float3 ambientSkyLuminance = bt709ToAcesCg(skyViewLut.SampleLevel(skyUv, 0.0).rgb);
-        totalInscatter += ambientSkyLuminance * (VOLUMETRICS_INV_4PI * scattering * 0.05 * skyOcclusion);
     }
 
     // Apply pre-exposure so float16 volume stores stable HDR ranges
