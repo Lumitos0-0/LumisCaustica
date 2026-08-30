@@ -10,10 +10,13 @@
 // which returns sky radiance — so soft sky fill and contact AO both fall out of the path integral.
 //
 // The volumetric inject pass calls this function directly for each light probe: phase-sampled
-// directions from a fog cell are traced with the SAME shading rules as a surface pixel, so block
-// emitters, terrain GI, skylight and tinted transmission reach the fog with no fog-specific lighting
-// model of their own. Probe paths keep the smooth atmosphere LUT on miss (stars are dropped: a single
-// per-cell sample would read them as salt noise) and gather emission at their first vertex.
+// directions from a fog cell are traced with the SAME shading rules as a surface pixel, so terrain GI,
+// skylight and tinted transmission reach the fog with no fog-specific lighting model of their own.
+// Probe-path restrictions (seg.probePath) are deliberate: no surface RIS, no direct-emitter gather, no
+// SSS, diffuse-only continuation — those are single-sample HDR terms that showed up as fog fireflies,
+// and the fog handles sun/moon with its own directional term and block emitters with its own next-event
+// sample instead. Probe rays keep the smooth atmosphere LUT on miss (stars and the sun/moon disc are
+// dropped: a single per-cell sample of either would read as salt noise).
 //
 // The build emits an ordinary TraceRay fallback and an optional EXT SER variant from this source.
 module path_trace;
@@ -45,8 +48,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     int maxBounces = int(worldPush.maxBounces);
     int rrStart = maxBounces <= 3 ? 1 : 2;
     // RIS emitter NEE: direct lighting from block emitters is active when lights are published and the
-    // candidate count is non-zero. Otherwise emitters contribute only when a path hits them.
-    bool risOn = worldPush.risCandidates > 0u && worldPush.lightCount > 0u && pc.lightBufAddr != 0;
+    // candidate count is non-zero. Otherwise emitters contribute only when a path hits them. Volumetric
+    // probe paths turn RIS off: the fog evaluates block emitters with its own next-event sample per
+    // probe (see volumetric_inject), so surface-RIS inside a probe path would only re-add variance —
+    // and its HDR single-sample spikes are exactly the fog firefly source.
+    bool risOn = worldPush.risCandidates > 0u && worldPush.lightCount > 0u && pc.lightBufAddr != 0
+            && !seg.probePath;
     // Independent light-proposal RNG. Screen-space coherent selection is intentionally deferred until
     // there is a real presampled RIS tile buffer; direct sharing made tile-shaped lighting noise visible.
     // Measured: making a 16x16 tile share this seed recovers at most 1.3ms, so a future pool should share
@@ -264,17 +271,16 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // Emission is already the full HDR luminance (look-package baseline or absolute cd/m² override
         // multiplier baked in Java at material-compile time — see MaterialHeader.features packing).
         //
-        // probePath marks a path whose first vertex had no previous RIS (the volumetric probe): its own
-        // emitter radiance is the light being sampled and must be gathered, exactly like the primary ray,
-        // while the probe ray still hides the celestial disc (its sun/moon is handled by the fog
-        // directional term). Continuation vertices keep the normal gate.
-        bool gateEmitter = risOn && payloadEmitterInList()
-                && !(bounce == seg.bounce && seg.probePath);
+        // probePath (the volumetric probe) never gathers direct-hit emission: the fog's own next-event
+        // emitter sample already accounts for that light with a visibility ray, so a path that happens
+        // to land on a lava block would only double-count it — and one HDR hit per probe cell is the
+        // fog's firefly source. The gate below therefore applies to ordinary paths only.
+        bool gateEmitter = risOn && payloadEmitterInList();
         float emission = payloadEmission();
         // One gate drives both the RIS call below and the direct-hit emission suppression here. They must
         // agree: gateEmitter exists only because RIS already accounted for this emitter, so a bounce where
         // RIS is skipped must also gather emission directly or that light is lost outright.
-        if (emission > 0.0 && (!gateEmitter || showCelestial)) {
+        if (emission > 0.0 && !seg.probePath && (!gateEmitter || showCelestial)) {
             L += throughput * albedo * emission;
         }
 
@@ -330,7 +336,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // through them toward the light source). Shadow ray fires from the back face to avoid
         // self-occlusion. cosT = dot(lightDir, rd): rd tracks the ray toward the sun when the sun is
         // behind the slab, giving cosT ≈ 1 → forward-scatter peak.
-        if (sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
+        // Probe paths skip thin-surface SSS as well: it is another sun-facing HDR term with its own
+        // shadow ray, and the fog only needs the diffuse light field, not backlit-leaf detail.
+        if (sss > 0.0 && !seg.probePath && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
                 VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, 10000.0);
@@ -355,10 +363,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
 
         // Indirect continuation: importance-sample the diffuse OR the GGX specular lobe, chosen by their
-        // relative reflectance.
-        float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
-                       ? 1.0
-                       : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
+        // relative reflectance. Probe paths force the diffuse lobe: mirror/glossy hits are another
+        // single-sample firefly source in a blurry medium, and the fog light field only needs the
+        // diffuse (low-frequency) part.
+        float ps = seg.probePath ? 0.0
+                : (exactSpecular && luminance(diffAlb) <= 1.0e-6
+                        ? 1.0
+                        : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9));
         if (rndf(seed) < ps) {
             float3 l;
             if (exactSpecular) {

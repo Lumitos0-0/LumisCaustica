@@ -19,7 +19,8 @@ import math;
 public static const uint FROXEL_ENABLED = 1u;
 public static const uint FROXEL_HISTORY_VALID = 2u;
 public static const uint FROXEL_UNDERWATER = 4u;
-// Bits 8..15 carry the path-traced GI samples per probe cell, bits 16..19 the GI bounce depth per sample.
+// Bits 8..15 carry the path-traced GI samples per probe cell, bits 16..19 the GI bounce depth per
+// sample, bits 20..23 the XY probe decimation and bits 24..27 the Z probe decimation.
 
 public bool froxelEnabled() {
     return (uint(worldPush.froxelGrid.w) & FROXEL_ENABLED) != 0u;
@@ -41,20 +42,33 @@ public uint froxelGiBounces() {
     return (uint(worldPush.froxelGrid.w) >> 16u) & 0x0fu;
 }
 
+public uint froxelProbeDivXY() {
+    return max(1u, (uint(worldPush.froxelGrid.w) >> 20u) & 0x0fu);
+}
+
+public uint froxelProbeDivZ() {
+    return max(1u, (uint(worldPush.froxelGrid.w) >> 24u) & 0x0fu);
+}
+
 public int3 froxelDimensions() {
     return worldPush.froxelGrid.xyz;
 }
 
 /**
- * Resolution of the lighting probe grid. The inject pass shades one cell per 4x4 fog cells (XY) and per
- * 2 Z slices; the filter/integrate passes run at full grid. The light field is smooth (skylight, soft
- * emitter halos, low-frequency GI) and the temporal filter resolves the probe sampling, so the rays —
- * the dominant cost of the inject pass — can be decimated hard without the fog itself losing density
- * resolution. Each probe covers 4x4 fog cells, so one shade replaces 32 full-grid cells.
+ * Resolution of the lighting probe grid. The inject pass shades one cell per divXY x divXY fog cells in
+ * XY and per divZ Z slices; the filter/integrate passes run at full grid. The light field is
+ * low-frequency (skylight, soft emitter halos, terrain GI) and the filter temporally accumulates and
+ * trilinearly resamples it, so the rays — the dominant cost of the inject pass — can be decimated hard
+ * without the fog itself losing density resolution. The decimation is pushed per quality so the user's
+ * quality slider trades rays against lighting resolution directly.
  */
 public int3 froxelInjectDimensions() {
     int3 dims = froxelDimensions();
-    return int3((dims.x + 3) >> 2, (dims.y + 3) >> 2, (dims.z + 1) >> 1);
+    uint divXY = froxelProbeDivXY();
+    uint divZ = froxelProbeDivZ();
+    return int3((dims.x + int(divXY) - 1) / int(divXY),
+            (dims.y + int(divXY) - 1) / int(divXY),
+            (dims.z + int(divZ) - 1) / int(divZ));
 }
 
 /** Camera-ray distance at one nonlinear Z boundary (boundary 0 = camera, depth = max distance). */

@@ -1,12 +1,20 @@
 // Temporal filtering of the injected froxel lighting. One raygen thread per fog cell.
 //
-// The injection is a single-sample estimate per lighting-probe cell (one sun ray + a small RIS
-// reservoir), so it is noisy; this pass resamples the half-resolution probe grid back to the fog grid,
+// The injection is a single-sample estimate per lighting-probe cell (sun ray + emitter next-event +
+// radiance probe), so it is noisy; this pass resamples the decimated probe grid back to the fog grid,
 // reprojects the previous frame's filtered result into the current camera (same prevViewProj + camDelta
-// convention as the reflection motion vectors) and blends with variance clipping against the injection's
-// neighborhood, the standard technique for removing ghosting without letting noise accumulate. The pair
-// of filtered volumes ping-pongs on frameIndex parity; bit 1 of froxelGrid.w reports whether the history
-// from the previous frame is valid.
+// convention as the reflection motion vectors) and blends, the standard technique for removing ghosting
+// without letting noise accumulate. The pair of filtered volumes ping-pongs on frameIndex parity; bit 1
+// of froxelGrid.w reports whether the history from the previous frame is valid.
+//
+// The blend itself happens in a gamma-encoded space (exponent 1/5, the production DDGI/RTXGI probe
+// update curve): high-DR single samples — a probe whose ray hit a bright emitter or a sun-facing glint
+// — are compressed before they enter the history, so what would be a per-cell firefly becomes a stable
+// low-frequency term, and the steady-state value approximates the perceptually averaged light field
+// instead of being dominated by the brightest frame. This is deliberate bias: a stable, slightly dimmer
+// field is preferred over an unstable one with spikes (the same tradeoff NVIDIA's irradiance probes
+// make). The variance clip below still runs in linear space against the same-frame neighborhood, where
+// it guards the reprojection itself (camera swings, light changes).
 //
 // The stored quantity is {sigma_s * L per unit length, scalar extinction}, so color and density are
 // filtered together with one weight, keeping the integrate pass's Beer-Lambert slice integral
@@ -18,6 +26,10 @@ import math;
 import froxel;
 
 public static const float FROXEL_CLIP_SIGMA = 2.0; // variance-clip range in standard deviations
+// Perceptual accumulation exponent (store x^(1/gamma), decode x^gamma). 5.0 is the production DDGI
+// value: it keeps light changes perceptually linear in time while compressing firefly spikes hard.
+public static const float FROXEL_ACCUM_GAMMA = 5.0;
+public static const float FROXEL_ACCUM_INV_GAMMA = 1.0 / FROXEL_ACCUM_GAMMA;
 
 [shader("raygeneration")]
 void main() {
@@ -30,9 +42,9 @@ void main() {
 
     uint writeIdx = worldPush.frameIndex & 1u;
     uint historyIdx = 1u - writeIdx;
-    // Injection runs at 1/4 XY x 1/2 Z resolution; resample it back to the full fog grid here. One pass
-    // handles the upscale so the variance clip, temporal blend and integrate all see the same smoothed
-    // field.
+    // Injection runs at the decimated probe resolution; resample it back to the full fog grid here. One
+    // pass handles the upscale so the firefly-encoding blend, variance clip and integrate all see the
+    // same smoothed field.
     uint injectWidth;
     uint injectHeight;
     uint injectDepth;
@@ -74,8 +86,8 @@ void main() {
 
             // Variance clipping: bound the history against a local mean ± k·sigma of the current
             // injection, so stale/incorrect history (camera swings, light changes) cannot ghost. The
-            // neighborhood is the containing 3x3 probe block (each covers 4x4 fog cells), read directly
-            // from the decimated scattering so this stays cheap.
+            // neighborhood is the containing 3x3 probe block, read directly from the decimated
+            // scattering so this stays cheap.
             float3 mean = float3(0.0, 0.0, 0.0);
             float3 meanSq = float3(0.0, 0.0, 0.0);
             float count = 0.0;
@@ -105,7 +117,11 @@ void main() {
             float clippedExtinction = clamp(history.w, 0.0,
                     max(current.w * 2.0, current.w + 0.01));
             float temporalWeight = clamp(worldPush.fogShape.w, 0.0, 0.99);
-            result = float4(lerp(current.rgb, clippedRgb, temporalWeight),
+            // Gamma-encoded blend (see file header): HDR single samples cannot spike the output.
+            float3 currentEnc = pow(max(current.rgb, float3(0.0)), float3(FROXEL_ACCUM_INV_GAMMA));
+            float3 historyEnc = pow(max(clippedRgb, float3(0.0)), float3(FROXEL_ACCUM_INV_GAMMA));
+            float3 blendedEnc = lerp(currentEnc, historyEnc, temporalWeight);
+            result = float4(pow(blendedEnc, float3(FROXEL_ACCUM_GAMMA)),
                     lerp(current.w, clippedExtinction, temporalWeight));
         }
     }

@@ -25,9 +25,10 @@ public struct PathSegment {
     public uint seed;
     public int bounce;          // interfaces already consumed, so RR start and the bounce cap stay global
     public bool showCelestial;
-    // Volumetric radiance probes start their own path at the first vertex: there is no previous RIS to
-    // account for an emitter they hit, so their direct-hit emission is always gathered, and the miss
-    // hides the discrete starfield (single-probe star samples would read as salt noise in the fog).
+    // Volumetric radiance probes start their own path at the first vertex: the path restricts the local
+    // lighting terms (no surface RIS, no direct-emitter gather, no SSS, diffuse-only continuation) and
+    // the miss hides stars and the celestial discs, because the fog feeds those lights through its own
+    // directional and next-event emitter samples.
     public bool probePath;
 };
 

@@ -91,7 +91,7 @@ public struct WorldPush {
     // ---- Camera-frustum froxel participating media (volumetric_inject/filter/integrate).
     // xyz grid dimensions; w bit 0 enables the passes, bit 1 marks a valid previous-frame history,
     // bit 2 selects underwater behavior, bits 8..15 carry path-traced GI samples per probe cell, bits
-    // 16..19 the GI bounce depth per sample.
+    // 16..19 the GI bounce depth per sample, bits 20..27 the probe grid decimation (XY, Z).
     public int4     froxelGrid;
     // x maximum camera-ray distance (blocks), y depth-distribution exponent,
     // z base extinction coefficient (1/block), w exponential height falloff (1/block).

@@ -25,16 +25,21 @@ import java.util.Arrays;
  * ray-generation passes that update them:
  *
  * <ol>
- *   <li>inject — one thread per lighting-probe cell (the probe grid is a quarter of the fog grid's XY
- *       and half its slices, see {@code froxelInjectDimensions}) computes extinction (world-stable density field)
- *       and the single-scattering term {sigma_s·L per unit length, sigma_t}; sun/moon light reaches the
- *       media through the same path-traced {@code visibility()} rays as surface lighting, and the
- *       remaining radiance (emissives, GI, skylight) is sampled by tracing the scene's own path tracer
- *       ({@code tracePath}) from each probe cell, so tinted glass/water/translucent geometry filters
- *       everything that enters the fog;</li>
+ *   <li>inject — one thread per lighting-probe cell (the probe grid is decimated in XY and Z relative
+ *       to the fog grid, see {@code froxelInjectDimensions}) computes extinction (world-stable density
+ *       field) and the single-scattering term {sigma_s·L per unit length, sigma_t}; sun/moon light
+ *       reaches the media through the same path-traced {@code visibility()} rays as surface lighting,
+ *       block emitters enter through a pdf-correct next-event sample over the light grid, and the
+ *       remaining radiance is sampled by tracing the scene's own path tracer ({@code tracePath}) from
+ *       each probe cell under a restricted probe path (no surface RIS/emission gather/SSS, diffuse-only
+ *       continuation) — so terrain GI, skylight and tinted glass/water/translucent geometry filter
+ *       everything that enters the fog without the single-sample HDR spikes those restrictions
+ *       remove;</li>
  *   <li>filter — resamples the decimated probe grid to the fog grid, temporal reprojection of the
- *       previous frame's filtered result into the current camera, plus variance clipping against the
- *       current injection (ping-pong RGBA16F lanes);</li>
+ *       previous frame's filtered result into the current camera, gamma-encoded temporal accumulation
+ *       (the DDGI/RTXGI probe curve: high-DR single samples are compressed before blending so they
+ *       cannot read as per-cell dots), plus variance clipping against the current injection (ping-pong
+ *       RGBA16F lanes);</li>
  *   <li>integrate — camera-outward march applying the analytic Beer–Lambert slice integral, producing a
  *       per-column {cumulative in-scatter, transmittance} volume that {@code applyFroxelFog} composites
  *       scene-linearly before pre-exposure.</li>
@@ -52,12 +57,15 @@ public final class RtVolumetrics {
 
     private static final int[] QUALITY_PIXEL_SIZE = {4, 4, 3, 2, 2};
     private static final int[] QUALITY_DEPTH_SLICES = {32, 48, 64, 96, 112};
-    // Path-traced radiance probes per cell, and bounce depth each probe continues past its first hit.
-    // Every extra bounce costs a full trace + NEE/RIS shadow rays per probe, so higher qualities raise
-    // the *sample* budget first and cap the depth at one continuation (the fog is a blurry medium — deep
-    // chains add more cost than visible detail).
-    private static final int[] QUALITY_GI_SAMPLES = {1, 1, 1, 2, 2};
-    private static final int[] QUALITY_GI_BOUNCES = {0, 1, 1, 1, 1};
+    // Path-traced radiance probes per cell, bounce depth each probe continues past its first hit, and
+    // the probe-grid decimation relative to the fog grid (XY and Z). Every extra bounce costs a full
+    // trace + shadow rays per probe, so higher qualities raise the sample budget before the depth (the
+    // fog is a blurry medium — deep chains add more cost than visible detail). Decimation trades rays
+    // for lighting resolution; the temporal accumulator + trilinear resample keep lower settings smooth.
+    private static final int[] QUALITY_GI_SAMPLES = {1, 1, 1, 1, 2};
+    private static final int[] QUALITY_GI_BOUNCES = {0, 0, 1, 1, 1};
+    private static final int[] QUALITY_PROBE_DIV_XY = {4, 3, 2, 2, 2};
+    private static final int[] QUALITY_PROBE_DIV_Z = {2, 2, 2, 2, 2};
 
     private RtFroxelGrid grid;
     private int deviceExtentCap;
@@ -109,12 +117,15 @@ public final class RtVolumetrics {
         volumeDepth = ctx.createStorageImage(renderWidth, renderHeight, VK10.VK_FORMAT_R32_SFLOAT,
                 "volumetric first-surface depth " + renderWidth + "x" + renderHeight);
         String extent = wanted.width() + "x" + wanted.height() + "x" + wanted.depth();
-        // Lighting probe grid is 1/4 of the fog grid's XY and 1/2 its slices (matches
+        // Lighting probe grid decimation matches the quality flags the shader reads (see
         // froxelInjectDimensions); the filter pass trilinearly resamples it to the full fog grid, so the
-        // inject ray count drops 8x without losing fog density detail.
-        int probeWidth = (wanted.width() + 3) / 4;
-        int probeHeight = (wanted.height() + 3) / 4;
-        int probeDepth = (wanted.depth() + 1) / 2;
+        // inject ray count drops by the decimation factor without losing fog density detail.
+        int quality = Math.clamp(CausticaConfig.Rt.Volumetrics.QUALITY.value(), 0, 4);
+        int divXY = QUALITY_PROBE_DIV_XY[quality];
+        int divZ = QUALITY_PROBE_DIV_Z[quality];
+        int probeWidth = (wanted.width() + divXY - 1) / divXY;
+        int probeHeight = (wanted.height() + divXY - 1) / divXY;
+        int probeDepth = (wanted.depth() + divZ - 1) / divZ;
         String probeExtent = probeWidth + "x" + probeHeight + "x" + probeDepth;
         scattering = ctx.createStorageVolume(probeWidth, probeHeight, probeDepth,
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering " + probeExtent);
@@ -204,6 +215,8 @@ public final class RtVolumetrics {
         if (submerged) flags |= 0b100;
         flags |= (QUALITY_GI_SAMPLES[quality] & 0xff) << 8;
         flags |= (QUALITY_GI_BOUNCES[quality] & 0xf) << 16;
+        flags |= (QUALITY_PROBE_DIV_XY[quality] & 0xf) << 20;
+        flags |= (QUALITY_PROBE_DIV_Z[quality] & 0xf) << 24;
 
         float baseHeightRebased = seaLevel + heightOffset - rebaseY;
         return new FrameData(

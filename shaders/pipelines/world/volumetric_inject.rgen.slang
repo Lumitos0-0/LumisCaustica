@@ -1,27 +1,32 @@
-// Froxel light + extinction injection. One raygen thread per lighting-probe cell (the probe grid is 1/4
-// of the fog grid's XY and 1/2 its slices — see froxelInjectDimensions; DispatchRaysDimensions is that
-// 3D grid). Each cell
-// derives its camera-ray position, evaluates the world-stable density field, then lightens the
-// single-scattering term with two sources:
+// Froxel light + extinction injection. One raygen thread per lighting-probe cell (the probe grid is
+// decimated relative to the fog grid — see froxelInjectDimensions; DispatchRaysDimensions is that 3D
+// grid). Each cell derives its camera-ray position, evaluates the world-stable density field, then
+// lightens the single-scattering term with three sources:
 //
 //   directional — sun/moon through the same weather-independent path-traced visibility() the surface
 //                 NEE uses, so tinted glass/water/translucent geometry colors the in-scattered light
 //                 and soft shadows break up the shafts;
-//   GI          — the path tracer itself. The in-scatter integral over incoming directions is
+//   emitters    — next-event estimation over the existing power-weighted block-emitter light grid:
+//                 ONE alias-sampled local emitter per probe, one path-traced visibility ray, weighted
+//                 by its exact sampling pdf. This is the only place block-emitter light enters the fog
+//                 (probe paths never gather direct hits — an HDR hit per probe cell is the fog firefly
+//                 source), and the same low-variance idea as the surface NEE for the sun;
+//   GI          — the path tracer itself. The in-scatter integral over the remaining radiance is
 //                 importance-sampled by the HG phase about the view ray (exact pdf, so the estimator is
-//                 just the sampled radiance), and each sample is traced with tracePath(): the first
-//                 hit shades exactly like a surface pixel (emission + sun NEE + emitter RIS + SSS) and
-//                 continues into the scene, so block-emitter light, terrain/canopy GI and skylight all
-//                 reach the fog with the same local lighting model as the image. A probe ray may not
-//                 see the celestial disc — the directional term represents the sun/moon directly, so a
-//                 disc sample would be a firefly on top of it — but the atmosphere LUT glow still
-//                 enters through the miss shader, giving the orange halo around the sun direction.
+//                 just the sampled radiance), and each sample is traced with tracePath() under the
+//                 restricted probe path (no surface RIS, no emission gather, no SSS, diffuse-only, no
+//                 stars/disc): terrain/canopy GI and skylight reach the fog with the same local shading
+//                 model as the image, and the smooth atmosphere LUT enters through the miss shader.
 //
 // All light-attenuation paths go through visibility(), whose any-hit shaders already accumulate
 // per-channel Beer-Lambert transmission (tinted glass, water, translucent blocks, entity dielectrics),
 // so fog lit through a red window pane is red — this is the path-traced advantage over shadow maps.
-// The probe path additionally traverses real dielectric volumes (glass, ice) with the same medium
-// stack as the image, so its radiance is attenuated by the surfaces it passes.
+// Probe paths additionally traverse real dielectric volumes (glass, ice) with the same medium stack as
+// the image, so their radiance is attenuated by the surfaces they pass.
+//
+// The temporal filter accumulates this volume in a gamma-encoded space (see volumetric_filter): single
+// high-DR samples are compressed before they enter the history, which is what turns the remaining
+// probe-sampling noise into a stable low-frequency field instead of bright per-cell dots.
 import world_common;
 import world_core;
 import bindings;
@@ -33,8 +38,66 @@ import froxel;
 import medium;
 import segment;
 import path_trace;
+import lighting;
 
 public static const float FROXEL_INJECTION_MAX = 30000.0; // per-unit-length in-scatter ceiling (fp16 safe)
+
+/** Unoccluded in-scattered radiance from one uniformly sampled emitter rectangle (phase ∝ HG). */
+public float3 evaluateVolumeEmitter(float3 samplePosition, float3 lightPosition, float3 lightNormal,
+                             float3 emission, float area, float3 viewRay, float g) {
+    float3 toLight = lightPosition - samplePosition;
+    float dist2 = dot(toLight, toLight);
+    if (dist2 <= 1.0e-5) {
+        return float3(0.0);
+    }
+    float dist = sqrt(dist2);
+    float3 lightDir = toLight / dist;
+    float emitterCosine = max(0.0, dot(lightNormal, -lightDir));
+    float phase = hg(dot(lightDir, viewRay), g);
+    return emission * (emitterCosine * area * phase / dist2);
+}
+
+/**
+ * Next-event estimate of nearby block-emitter in-scatter with ONE visibility ray. Samples the local
+ * light-grid span by its power-weighted alias table (the exact proposal pdf is recoverable, so the
+ * estimator divides by it), which turns torch/lava glow into a bounded low-variance term that the
+ * temporal accumulation converges — a stochastic path that occasionally HITS an emitter reads as
+ * fireflies instead, since the probability of hitting a small HDR surface from a probe cell is tiny.
+ */
+public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay, float g,
+                             inout uint sampleSeed, inout uint proposalSeed) {
+    if (worldPush.lightCount == 0u || pc.lightBufAddr == 0 || pc.lightLocalAliasAddr == 0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    LightGridCell gridCell;
+    int3 gridCellCoord;
+    if (!findLightGridCell(samplePosition, gridCell, gridCellCoord)
+            || gridCell.invWeightSum <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    uint lightIndex;
+    selectLightGridSpanLight(gridCell, proposalSeed, lightIndex);
+    Light light = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
+    float3 emission = lightRadiance(light);
+    float area = lightArea(light);
+    float3 rectanglePoint = light.pos + worldPush.lightRebase.xyz
+            + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfU(light)
+            + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfV(light);
+    float3 contribution = evaluateVolumeEmitter(samplePosition, rectanglePoint,
+            lightGeometricNormal(light), emission, area, viewRay, g);
+    // localProbability=1 reconstructs the exact weighted neighborhood proposal PDF.
+    float sourcePdf = proposalPdf(light, emission, gridCell, gridCellCoord, 1.0);
+    if (sourcePdf <= 1.0e-20) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 toLight = rectanglePoint - samplePosition;
+    float dist = length(toLight);
+    if (dist <= RAY_TMIN) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 visible = visibility(samplePosition, toLight / dist, dist * 0.999).transmittance;
+    return contribution * visible / sourcePdf;
+}
 
 [shader("raygeneration")]
 void main() {
@@ -44,16 +107,16 @@ void main() {
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
 
-    // The probe grid is 1/4 XY x 1/2 Z (see froxelInjectDimensions): one shade per 4x4x2 fog cells, with
-    // the filter pass trilinearly resampling it back to the full grid. Rays are the dominant cost of this
-    // pass, so the 32x thread reduction is the largest single lever available.
+    // The probe grid is decimated in XY and Z (see froxelInjectDimensions), one shade per probe block;
+    // the filter pass trilinearly resamples it back to the full grid. Rays are the dominant cost of this
+    // pass, so the decimation is the largest single lever available.
     int3 dims = froxelInjectDimensions();
     uint3 tid = DispatchRaysIndex();
     if (tid.x >= uint(dims.x) || tid.y >= uint(dims.y) || tid.z >= uint(dims.z)) {
         return;
     }
     float4 outCell = float4(0.0, 0.0, 0.0, 0.0);
-    // Center of the covered 2x2 block in full-grid cell units (cell i's center is i + 0.5). Sub-cell
+    // Center of the covered probe block in full-grid cell units (cell i's center is i + 0.5). Sub-cell
     // jitter decorrelates the sampled position across frames without moving the block; the temporal
     // filter then averages the noise away instead of it sitting as a per-cell bias.
     float2 probeScale = float2(froxelDimensions().xy) / float2(dims.xy);
@@ -87,6 +150,9 @@ void main() {
     uint seed = (tid.x * 1973u + tid.y * 9277u + tid.z * 5939u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);
     seed = pcg(seed);
+    uint proposalSeed = (tid.x * 12289u + tid.y * 41521u + tid.z * 25457u)
+            ^ (worldPush.frameIndex * 40503u);
+    proposalSeed = pcg(proposalSeed);
 
     float3 inScatter = float3(0.0, 0.0, 0.0);
 
@@ -112,17 +178,23 @@ void main() {
         inScatter += sigmaS * celestialLight.illuminance * phase * transmittance * directional;
     }
 
-    // 2) Path-traced radiance probe (GI + emissives + skylight). Directions are sampled from the HG
-    // phase about the view ray — the exact pdf, so the average sample radiance IS the phase-weighted
-    // in-scatter integral with no extra weight. Each sample path starts at the cell and shades its first
-    // vertex like a surface pixel, then continues up to the configured GI depth; the temporal filter
-    // resolves the resulting noise over frames. The celestial disc and the discrete starfield stay
-    // hidden on probe rays: the directional term above already represents the sun/moon with its own
-    // phase weight, and a single per-cell star sample would read as speckle instead of glow. The
-    // atmosphere LUT and airglow still enter through the miss shader, so the sky stays smooth. The first
-    // vertex emitter radiance is gathered even on hidden-disc rays, because an emissive surface seen
-    // directly by the fog is the light being sampled — no previous RIS along this path accounted for it.
+    // 2) Block-emitter next-event estimation, one light per probe per frame, pdf-correct, gated by the
+    // same GI strength as the radiance probe so one setting controls the whole non-directional fog
+    // light field. The temporal filter accumulates the contributions, so over a few frames every probe
+    // covers the whole nearby light set.
     float giStrength = worldPush.fogLighting.y;
+    if (giStrength > 0.0) {
+        inScatter += sigmaS * froxelEmitterLighting(pos, dir, g, seed, proposalSeed) * giStrength;
+    }
+
+    // 3) Path-traced radiance probe (terrain GI + skylight). Directions are sampled from the HG phase
+    // about the view ray — the exact pdf, so the average sample radiance IS the phase-weighted
+    // in-scatter integral with no extra weight. Each sample path starts at the cell, shades its first
+    // vertex under the restricted probe path and continues up to the configured GI depth; the temporal
+    // filter resolves the resulting noise over frames. The celestial disc and the discrete starfield
+    // stay hidden on probe rays: the directional term above already represents the sun/moon with its
+    // own phase weight, and a single per-cell star sample would read as speckle instead of glow. The
+    // atmosphere LUT and airglow still enter through the miss shader, so the sky stays smooth.
     uint giSamples = froxelGiSamples();
     if (giSamples > 0u && giStrength > 0.0) {
         float3 radiance = float3(0.0, 0.0, 0.0);
