@@ -164,6 +164,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint3 groupThreadId : SV_Group
     float sunShaftMultiplier = pc.params1.w > 0.0 ? pc.params1.w : 1.0;
 
     // Stable voxel center depth to eliminate distance fluctuation noise on point emissives
+    float2 uv = (float2(dispatchId.xy) + 0.5) / float2(gridDims.xy);
+    float2 ndc = uv * 2.0 - 1.0;
     float linearZ = sliceToLinearDepth(float(dispatchId.z) + 0.5, zNear, zFar, float(gridDims.z));
 
     float3 rayDir;
