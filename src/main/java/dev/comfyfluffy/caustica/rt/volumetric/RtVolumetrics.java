@@ -25,14 +25,14 @@ import java.util.Arrays;
  * ray-generation passes that update them:
  *
  * <ol>
- *   <li>inject — one thread per lighting-probe cell (the probe grid is half the fog grid's XY
- *       resolution, see {@code froxelInjectDimensions}) computes extinction (world-stable density field)
+ *   <li>inject — one thread per lighting-probe cell (the probe grid is a quarter of the fog grid's XY
+ *       and half its slices, see {@code froxelInjectDimensions}) computes extinction (world-stable density field)
  *       and the single-scattering term {sigma_s·L per unit length, sigma_t}; sun/moon light reaches the
  *       media through the same path-traced {@code visibility()} rays as surface lighting, and the
  *       remaining radiance (emissives, GI, skylight) is sampled by tracing the scene's own path tracer
  *       ({@code tracePath}) from each probe cell, so tinted glass/water/translucent geometry filters
  *       everything that enters the fog;</li>
- *   <li>filter — resamples the half-resolution probe grid to the fog grid, temporal reprojection of the
+ *   <li>filter — resamples the decimated probe grid to the fog grid, temporal reprojection of the
  *       previous frame's filtered result into the current camera, plus variance clipping against the
  *       current injection (ping-pong RGBA16F lanes);</li>
  *   <li>integrate — camera-outward march applying the analytic Beer–Lambert slice integral, producing a
@@ -53,8 +53,11 @@ public final class RtVolumetrics {
     private static final int[] QUALITY_PIXEL_SIZE = {4, 4, 3, 2, 2};
     private static final int[] QUALITY_DEPTH_SLICES = {32, 48, 64, 96, 112};
     // Path-traced radiance probes per cell, and bounce depth each probe continues past its first hit.
+    // Every extra bounce costs a full trace + NEE/RIS shadow rays per probe, so higher qualities raise
+    // the *sample* budget first and cap the depth at one continuation (the fog is a blurry medium — deep
+    // chains add more cost than visible detail).
     private static final int[] QUALITY_GI_SAMPLES = {1, 1, 1, 2, 2};
-    private static final int[] QUALITY_GI_BOUNCES = {0, 1, 1, 2, 2};
+    private static final int[] QUALITY_GI_BOUNCES = {0, 1, 1, 1, 1};
 
     private RtFroxelGrid grid;
     private int deviceExtentCap;
@@ -106,12 +109,14 @@ public final class RtVolumetrics {
         volumeDepth = ctx.createStorageImage(renderWidth, renderHeight, VK10.VK_FORMAT_R32_SFLOAT,
                 "volumetric first-surface depth " + renderWidth + "x" + renderHeight);
         String extent = wanted.width() + "x" + wanted.height() + "x" + wanted.depth();
-        // Lighting probe grid is half-resolution in XY (matches froxelInjectDimensions); the filter pass
-        // trilinearly resamples it to the full fog grid, so ray count drops 4x without losing fog detail.
-        int probeWidth = (wanted.width() + 1) / 2;
-        int probeHeight = (wanted.height() + 1) / 2;
-        String probeExtent = probeWidth + "x" + probeHeight + "x" + wanted.depth();
-        scattering = ctx.createStorageVolume(probeWidth, probeHeight, wanted.depth(),
+        // Lighting probe grid is 1/4 of the fog grid's XY and 1/2 its slices (matches
+        // froxelInjectDimensions); the filter pass trilinearly resamples it to the full fog grid, so the
+        // inject ray count drops 8x without losing fog density detail.
+        int probeWidth = (wanted.width() + 3) / 4;
+        int probeHeight = (wanted.height() + 3) / 4;
+        int probeDepth = (wanted.depth() + 1) / 2;
+        String probeExtent = probeWidth + "x" + probeHeight + "x" + probeDepth;
+        scattering = ctx.createStorageVolume(probeWidth, probeHeight, probeDepth,
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering " + probeExtent);
         filtered[0] = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel filtered A " + extent);

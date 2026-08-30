@@ -25,14 +25,15 @@ public struct PathSegment {
     public uint seed;
     public int bounce;          // interfaces already consumed, so RR start and the bounce cap stay global
     public bool showCelestial;
-    // True for path starts that trace their own light (the volumetric probe): the first vertex's
-    // emitter radiance must be gathered even though showCelestial is false for disc-hiding reasons.
-    public bool gatherFirstEmission;
+    // Volumetric radiance probes start their own path at the first vertex: there is no previous RIS to
+    // account for an emitter they hit, so their direct-hit emission is always gathered, and the miss
+    // hides the discrete starfield (single-probe star samples would read as salt noise in the fog).
+    public bool probePath;
 };
 
 public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, MediumStack medium,
                             float rayConeWidth, float rayConeSpread, uint seed,
-                            int bounce, bool showCelestial, bool gatherFirstEmission) {
+                            int bounce, bool showCelestial, bool probePath) {
     PathSegment s;
     s.ro = ro;
     s.rd = rd;
@@ -43,7 +44,7 @@ public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, Medi
     s.seed = seed;
     s.bounce = bounce;
     s.showCelestial = showCelestial;
-    s.gatherFirstEmission = gatherFirstEmission;
+    s.probePath = probePath;
     return s;
 }
 // field is a uint, so Std430DataLayout gives this an exact 48-byte stride.
@@ -122,7 +123,7 @@ public PackedPathSegment packPathSegment(PathSegment seg, uint nextRecord) {
     p.seed = seg.seed;
     p.pathFlags = (uint(seg.bounce) & 15u)
             | (seg.showCelestial ? 1u << 8u : 0u)
-            | (seg.gatherFirstEmission ? 1u << 11u : 0u)
+            | (seg.probePath ? 1u << 11u : 0u)
             | (seg.medium.current.water ? 1u << 9u : 0u)
             | (seg.medium.outer.water ? 1u << 10u : 0u);
     p.nextRecord = nextRecord;
@@ -146,7 +147,7 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     return makePathSegment(p.ro, octDecode(unpackUnorm16x2(p.rd)),
             unpackRgb9e5(p.throughput), medium, cone.x, cone.y, p.seed,
             int(p.pathFlags & 15u), (p.pathFlags & (1u << 8u)) != 0u,
-            (p.pathFlags & (1u << 11u)) != 0u);
+            (p.pathFlags & (1u << 11u)) != 0u);  // probePath
 }
 
 // Walk only the visually-primary dielectric chain. The terminal non-dielectric/miss trace is repeated

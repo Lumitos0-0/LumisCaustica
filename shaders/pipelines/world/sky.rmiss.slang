@@ -116,7 +116,11 @@ void main(inout Payload payload) {
     // itself follows, because it is the same LUT that produced the sky. Zero angular radius — a star is a
     // point, so it sets at the horizon line.
     float3 extinction = transmittanceToSpace(transmittanceLut, state.viewerRadiusKm, dir, 0.0);
-    color += stars(dir, state, extinction);
+    // Volumetric probes drop the discrete starfield: with one sample per fog cell they read as
+    // salt-and-pepper noise, and the fog slice itself makes any real star contribution negligible.
+    if ((payload.flags & PAYLOAD_HIDE_STARS) == 0u) {
+        color += stars(dir, state, extinction);
+    }
 
     if (showCelestial) {
         float2 local;

@@ -30,16 +30,18 @@ void main() {
 
     uint writeIdx = worldPush.frameIndex & 1u;
     uint historyIdx = 1u - writeIdx;
-    // Injection runs at half XY resolution; resample it back to the full fog grid here. One pass handles
-    // the upscale so the variance clip, temporal blend and integrate all see the same smoothed field.
+    // Injection runs at 1/4 XY x 1/2 Z resolution; resample it back to the full fog grid here. One pass
+    // handles the upscale so the variance clip, temporal blend and integrate all see the same smoothed
+    // field.
     uint injectWidth;
     uint injectHeight;
     uint injectDepth;
     froxelScattering.GetDimensions(injectWidth, injectHeight, injectDepth);
     float2 probeScale = float2(dims.xy) / float2(injectWidth, injectHeight);
     float2 probeCoord = (float2(tid.xy) + 0.5) / probeScale;
+    float probeZ = (float(tid.z) + 0.5) * float(injectDepth) / float(dims.z);
     int3 probeDims = int3(int(injectWidth), int(injectHeight), int(injectDepth));
-    float3 probeCoord3D = float3(probeCoord, float(tid.z) + 0.5);
+    float3 probeCoord3D = float3(probeCoord, probeZ);
     float4 current = froxelTrilinear(froxelScattering, probeDims, probeCoord3D);
     float4 result = current;
 
@@ -72,20 +74,18 @@ void main() {
 
             // Variance clipping: bound the history against a local mean ± k·sigma of the current
             // injection, so stale/incorrect history (camera swings, light changes) cannot ghost. The
-            // neighborhood is the containing 3x3 probe block (each covers 2x2 fog cells), read directly
-            // from the half-res scattering so this stays cheap.
+            // neighborhood is the containing 3x3 probe block (each covers 4x4 fog cells), read directly
+            // from the decimated scattering so this stays cheap.
             float3 mean = float3(0.0, 0.0, 0.0);
             float3 meanSq = float3(0.0, 0.0, 0.0);
             float count = 0.0;
-            int3 itid = int3(tid);
             int2 probeCell = clamp(int2(floor(probeCoord)), int2(0, 0),
                     int2(int(injectWidth), int(injectHeight)) - 1);
-            // The probe grid shares the fog grid's slice count (only XY is decimated), so the queried
-            // injectDepth is the same as dims.z.
+            int probeSlice = clamp(int(floor(probeZ)), 0, int(injectDepth) - 1);
             int3 probeMax = int3(int(injectWidth) - 1, int(injectHeight) - 1, int(injectDepth) - 1);
             for (int dx = -1; dx <= 1; ++dx) {
                 for (int dy = -1; dy <= 1; ++dy) {
-                    int3 n = clamp(int3(probeCell.x + dx, probeCell.y + dy, itid.z),
+                    int3 n = clamp(int3(probeCell.x + dx, probeCell.y + dy, probeSlice),
                             int3(0, 0, 0), probeMax);
                     float4 c = froxelScattering[n];
                     mean += c.rgb;

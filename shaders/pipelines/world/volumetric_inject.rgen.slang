@@ -1,5 +1,6 @@
-// Froxel light + extinction injection. One raygen thread per lighting-probe cell (the probe grid is
-// half-resolution in XY — see froxelInjectDimensions; DispatchRaysDimensions is that 3D grid). Each cell
+// Froxel light + extinction injection. One raygen thread per lighting-probe cell (the probe grid is 1/4
+// of the fog grid's XY and 1/2 its slices — see froxelInjectDimensions; DispatchRaysDimensions is that
+// 3D grid). Each cell
 // derives its camera-ray position, evaluates the world-stable density field, then lightens the
 // single-scattering term with two sources:
 //
@@ -43,9 +44,9 @@ void main() {
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
 
-    // The probe grid is half-resolution in XY (see froxelInjectDimensions): one shade per 2x2 fog cells,
-    // with the filter pass trilinearly resampling it back to the full grid. Rays are the dominant cost of
-    // this pass, so a 4x thread reduction is the largest single lever available.
+    // The probe grid is 1/4 XY x 1/2 Z (see froxelInjectDimensions): one shade per 4x4x2 fog cells, with
+    // the filter pass trilinearly resampling it back to the full grid. Rays are the dominant cost of this
+    // pass, so the 32x thread reduction is the largest single lever available.
     int3 dims = froxelInjectDimensions();
     uint3 tid = DispatchRaysIndex();
     if (tid.x >= uint(dims.x) || tid.y >= uint(dims.y) || tid.z >= uint(dims.z)) {
@@ -115,10 +116,12 @@ void main() {
     // phase about the view ray — the exact pdf, so the average sample radiance IS the phase-weighted
     // in-scatter integral with no extra weight. Each sample path starts at the cell and shades its first
     // vertex like a surface pixel, then continues up to the configured GI depth; the temporal filter
-    // resolves the resulting noise over frames. The celestial disc stays hidden on probe rays (the
-    // directional term above is that light, with its own phase weight) and the first vertex emitter
-    // radiance is gathered even on hidden-disc rays, because an emissive surface seen directly by the
-    // fog is the light being sampled — no previous RIS along this path accounted for it.
+    // resolves the resulting noise over frames. The celestial disc and the discrete starfield stay
+    // hidden on probe rays: the directional term above already represents the sun/moon with its own
+    // phase weight, and a single per-cell star sample would read as speckle instead of glow. The
+    // atmosphere LUT and airglow still enter through the miss shader, so the sky stays smooth. The first
+    // vertex emitter radiance is gathered even on hidden-disc rays, because an emissive surface seen
+    // directly by the fog is the light being sampled — no previous RIS along this path accounted for it.
     float giStrength = worldPush.fogLighting.y;
     uint giSamples = froxelGiSamples();
     if (giSamples > 0u && giStrength > 0.0) {

@@ -46,7 +46,7 @@ public PathSegment tracePrimary(PathSegment seg,
                                                rayConeWidth, rayConeSpread, seed, bounce,
                                                showCelestial, false);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
-                      showCelestial, rayConeWidth, rayConeSpread);
+                      showCelestial, rayConeWidth, rayConeSpread, false);
         // Capture the first hit immediately: guide probes below (reflection/transmission resolution)
         // reuse the payload and would overwrite the distance the froxel clip needs.
         firstHitDistance = payload.hitT;

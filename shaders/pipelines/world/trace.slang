@@ -55,10 +55,12 @@ public Payload makeRadiancePayload(uint flags, uint rayCone) {
 }
 
 // Ordinary radiance trace for latency-sensitive, coherent work such as Pass A. It invokes hit/miss
-// shaders directly and therefore requires no invocation-reorder capability.
+// shaders directly and therefore requires no invocation-reorder capability. hideStars drops the
+// starfield from the miss radiance (volumetric probes: discrete stars are single-sample salt noise).
 public void traceRadiance(uint cullMask, float3 ro, float tmin, float3 rd, float tmax,
-                    bool showCelestial, float rayConeWidth, float rayConeSpread) {
-    payload = makeRadiancePayload(showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u,
+                    bool showCelestial, float rayConeWidth, float rayConeSpread, bool hideStars) {
+    payload = makeRadiancePayload((showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u)
+            | (hideStars ? PAYLOAD_HIDE_STARS : 0u),
             packHalf2(float2(rayConeWidth, rayConeSpread)));
     TraceRay(topLevelAS, RAY_FLAG_NONE, cullMask,
             SBT_RADIANCE, SBT_STRIDE_BUCKET, MISS_RADIANCE,

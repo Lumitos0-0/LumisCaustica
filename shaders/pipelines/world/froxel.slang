@@ -46,14 +46,15 @@ public int3 froxelDimensions() {
 }
 
 /**
- * XY resolution of the lighting probe grid. The inject pass shades one cell per 2x2 fog cells and the
- * filter/integrate passes run at full grid; the temporal filter is what resolves the difference, so the
- * light field can be far cheaper without the fog itself losing resolution. Z is un-decimated because
- * extinction changes per slice (density, height falloff), while the light field is smooth across slices.
+ * Resolution of the lighting probe grid. The inject pass shades one cell per 4x4 fog cells (XY) and per
+ * 2 Z slices; the filter/integrate passes run at full grid. The light field is smooth (skylight, soft
+ * emitter halos, low-frequency GI) and the temporal filter resolves the probe sampling, so the rays —
+ * the dominant cost of the inject pass — can be decimated hard without the fog itself losing density
+ * resolution. Each probe covers 4x4 fog cells, so one shade replaces 32 full-grid cells.
  */
 public int3 froxelInjectDimensions() {
     int3 dims = froxelDimensions();
-    return int3((dims.x + 1) >> 1, (dims.y + 1) >> 1, dims.z);
+    return int3((dims.x + 3) >> 2, (dims.y + 3) >> 2, (dims.z + 1) >> 1);
 }
 
 /** Camera-ray distance at one nonlinear Z boundary (boundary 0 = camera, depth = max distance). */
@@ -168,9 +169,9 @@ public float2 froxelFrameJitter() {
 /**
  * Trilinear sample of one 3D volume at a continuous coordinate in cell units where cell i's center is
  * i + 0.5 (so coord == dimensions means just past the last center; clamped before the taps). {@code dims}
- * must be the volume's own dimensions — the lighting-probe volume is half XY of the fog grid, so it is
- * NOT always {@code froxelDimensions()}. RWTexture resources are passed through by handle, so the same
- * lookup serves history and integrated volumes.
+ * must be the volume's own dimensions — the lighting-probe volume is a quarter XY and half Z of the fog
+ * grid, so it is NOT always {@code froxelDimensions()}. RWTexture resources are passed through by
+ * handle, so the same lookup serves history and integrated volumes.
  */
 public float4 froxelTrilinear(RWTexture3D<float4> volume, int3 dims, float3 coord) {
     float3 p = clamp(coord - 0.5, float3(0.0), float3(dims) - 1.0);

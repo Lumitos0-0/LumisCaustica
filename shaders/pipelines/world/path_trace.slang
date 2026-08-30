@@ -12,7 +12,8 @@
 // The volumetric inject pass calls this function directly for each light probe: phase-sampled
 // directions from a fog cell are traced with the SAME shading rules as a surface pixel, so block
 // emitters, terrain GI, skylight and tinted transmission reach the fog with no fog-specific lighting
-// model of their own.
+// model of their own. Probe paths keep the smooth atmosphere LUT on miss (stars are dropped: a single
+// per-cell sample would read them as salt noise) and gather emission at their first vertex.
 //
 // The build emits an ordinary TraceRay fallback and an optional EXT SER variant from this source.
 module path_trace;
@@ -79,10 +80,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
         traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0,
-                               showCelestial, rayConeWidth, rayConeSpread, pathPhaseHint);
+                               showCelestial, rayConeWidth, rayConeSpread, seg.probePath,
+                               pathPhaseHint);
 #else
         traceRadiance(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0,
-                      showCelestial, rayConeWidth, rayConeSpread);
+                      showCelestial, rayConeWidth, rayConeSpread, seg.probePath);
 #endif
 
         if (payload.hitT < 0.0) {
@@ -262,12 +264,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // Emission is already the full HDR luminance (look-package baseline or absolute cd/m² override
         // multiplier baked in Java at material-compile time — see MaterialHeader.features packing).
         //
-        // gatherFirstEmission marks a path whose first vertex had no previous RIS (the volumetric
-        // probe): its own emitter radiance is the light being sampled and must be gathered, exactly like
-        // the primary ray, while the probe ray still hides the celestial disc (its sun/moon is handled
-        // by the fog directional term). Continuation vertices keep the normal gate.
+        // probePath marks a path whose first vertex had no previous RIS (the volumetric probe): its own
+        // emitter radiance is the light being sampled and must be gathered, exactly like the primary ray,
+        // while the probe ray still hides the celestial disc (its sun/moon is handled by the fog
+        // directional term). Continuation vertices keep the normal gate.
         bool gateEmitter = risOn && payloadEmitterInList()
-                && !(bounce == seg.bounce && seg.gatherFirstEmission);
+                && !(bounce == seg.bounce && seg.probePath);
         float emission = payloadEmission();
         // One gate drives both the RIS call below and the direct-hit emission suppression here. They must
         // agree: gateEmitter exists only because RIS already accounted for this emitter, so a bounce where
