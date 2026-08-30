@@ -1,4 +1,4 @@
-// Computes direct in-scattered light at each Froxel cell from Sun/Moon and block emitters using Spatially-Correlated Volumetric ReSTIR.
+// Computes direct in-scattered light at each Froxel cell using 3D Spatial Reservoir Exchange (ReSTIR) across adjacent froxels.
 import froxel_common;
 import world_common;
 import sky;
@@ -119,6 +119,7 @@ float proposalPdf(Light light, float3 le, LightGridCell cell, int3 cellCoord, fl
 
 // Volumetric ReSTIR Reservoir
 struct VolumetricReservoir {
+    uint lightIndex;
     float3 samplePos;
     float3 sampleRadiance;
     float M;
@@ -129,6 +130,7 @@ struct VolumetricReservoir {
 
 VolumetricReservoir resEmpty() {
     VolumetricReservoir r;
+    r.lightIndex = 0u;
     r.samplePos = float3(0.0, 0.0, 0.0);
     r.sampleRadiance = float3(0.0, 0.0, 0.0);
     r.M = 0.0;
@@ -138,23 +140,18 @@ VolumetricReservoir resEmpty() {
     return r;
 }
 
+// LDS Groupshared memory for 3D spatial reservoir exchange across adjacent froxels
+groupshared VolumetricReservoir s_sharedReservoirs[8][8][4];
+
 [shader("compute")]
 [numthreads(8, 8, 4)]
-void main(uint3 dispatchId : SV_DispatchThreadID) {
+void main(uint3 dispatchId : SV_DispatchThreadID, uint3 groupThreadId : SV_GroupThreadID) {
     uint3 gridDims = pc.gridDims.xyz;
-    if (any(dispatchId >= gridDims)) {
-        return;
-    }
+    bool isValidVoxel = all(dispatchId < gridDims);
 
-    float4 media = froxelMedia[dispatchId];
+    float4 media = isValidVoxel ? froxelMedia[dispatchId] : float4(0.0);
     float3 scattering = media.rgb;
     float extinction = media.a;
-
-    // Early out if no participating media exists in this voxel
-    if (extinction <= 1.0e-7 || dot(scattering, scattering) <= 1.0e-7) {
-        froxelLight[dispatchId] = float4(0.0, 0.0, 0.0, 0.0);
-        return;
-    }
 
     float zNear = pc.params0.x;
     float zFar = pc.params0.y;
@@ -178,66 +175,21 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float3 camRelPos = rayDir * linearZ;
     float dist = length(camRelPos);
-    if (dist > maxDist) {
-        froxelLight[dispatchId] = float4(0.0, 0.0, 0.0, 0.0);
-        return;
-    }
-
     float3 worldPos = camRelPos + pc.camOffset;
-    float3 totalInscatter = float3(0.0, 0.0, 0.0);
+
+    bool hasMedia = isValidVoxel && (extinction > 1.0e-7) && (dot(scattering, scattering) > 1.0e-7) && (dist <= maxDist);
 
     // ============================================================================================
-    // 1. Direct Celestial (Sun / Moon) Light Shafts
+    // Step 1: Initial RIS Candidate Proposal
     // ============================================================================================
-    float3 sunDir = pc.sunDirIllum.xyz;
-    float sunIlluminance = pc.sunDirIllum.w * sunShaftMultiplier; // lux at top of atmosphere
-    float celestialShadowVis = 0.0;
+    VolumetricReservoir r_init = resEmpty();
+    uint seed = dispatchId.x * 1664525u + dispatchId.y * 1013904223u + dispatchId.z * 22695477u + pc.gridDims.w * 2654435761u;
+    uint proposalSeed = seed ^ 0x9e3779b9u;
 
-    if (sunIlluminance > 0.0 && pc.enableShadows != 0u) {
-        // Dual-Lobe Henyey-Greenstein phase function for collimated celestial beams
-        float cosTheta = dot(rayDir, sunDir);
-        float phase = dualLobePhase(cosTheta, g1, g2, lobeWeight);
+    bool enableBlockLights = hasMedia && (pc.lightGridDims.w != 0) && (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
+    ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
 
-        // Atmospheric transmittance along sun direction
-        float viewerAltitudeKm = clamp((pc.camPos.y + camRelPos.y - 64.0) / 100.0, 0.0, 99.0);
-        float viewerRadiusKm = ATMOS_BOTTOM_KM + max(viewerAltitudeKm, MIN_VIEWER_ALTITUDE_KM);
-        float3 sunTransmittance = transmittanceToSpace(transmittanceLut, viewerRadiusKm, sunDir, pc.sunAngularRadius);
-
-        // Hardware RayQuery shadow test against scene geometry (1 ray)
-        celestialShadowVis = 1.0;
-        RayDesc ray;
-        ray.Origin = worldPos + sunDir * 0.1;
-        ray.Direction = sunDir;
-        ray.TMin = 0.05;
-        ray.TMax = 500.0;
-
-        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-        q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
-        q.Proceed();
-        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            celestialShadowVis = 0.0;
-        }
-
-        float3 directSunLight = bt709ToAcesCg(sunTransmittance * sunIlluminance * celestialShadowVis);
-        totalInscatter += directSunLight * (phase * scattering);
-
-        // Gentle ambient sky fill when celestial path is unoccluded
-        if (celestialShadowVis > 0.0) {
-            float2 skyUv = float2(0.5, 0.5);
-            float3 ambientSkyLuminance = bt709ToAcesCg(skyViewLut.SampleLevel(skyUv, 0.0).rgb);
-            totalInscatter += ambientSkyLuminance * (VOLUMETRICS_INV_4PI * scattering * 0.05);
-        }
-    }
-
-    // ============================================================================================
-    // 2. Direct Local Block Emitters with Spatially-Correlated Volumetric ReSTIR
-    // ============================================================================================
-    bool enableBlockLights = (pc.lightGridDims.w != 0) && (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
     if (enableBlockLights) {
-        float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
-        uint seed = dispatchId.x * 1664525u + dispatchId.y * 1013904223u + dispatchId.z * 22695477u + pc.gridDims.w * 2654435761u;
-        uint proposalSeed = seed ^ 0x9e3779b9u;
-
         LightGridCell gridCell;
         gridCell.spanOffset = 0u;
         gridCell.spanCount = 0u;
@@ -248,7 +200,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         bool hasGridCell = false;
 
         if (all(gridDimsL > int3(0)) && pc.lightGridCellAddr != 0 && pc.lightGridSpanAddr != 0) {
-            // Low-discrepancy spatial jitter to evaluate local light grid cell
             float3 gridLookup = worldPos;
             int3 coord = int3(floor((gridLookup - pc.lightGridOrigin.xyz) / pc.lightGridOrigin.w));
 
@@ -260,16 +211,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             }
         }
 
-        // Candidate proposal budget (M=12: 8 local alias candidates + 4 spatial proposals)
-        uint candidateCount = max(pc.risCandidates, 8u) + 4u;
+        uint candidateCount = max(pc.risCandidates, 8u);
         uint globalCandidateCount = hasGridCell ? max(1u, (candidateCount + 2u) / 4u) : candidateCount;
         uint localCandidateCount = candidateCount - globalCandidateCount;
         float localProbability = float(localCandidateCount) / float(candidateCount);
 
-        VolumetricReservoir r = resEmpty();
-        r.M = float(candidateCount);
-
-        ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
+        r_init.M = float(candidateCount);
 
         for (uint c = 0u; c < candidateCount; c++) {
             uint li;
@@ -282,7 +229,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
             Light lg = lights[li];
 
-            // Area light surface sampling with low-discrepancy Halton jitter
             float s = rndf(seed) * 2.0 - 1.0;
             float t = rndf(seed) * 2.0 - 1.0;
             float3 sp = lg.pos + pc.lightRebase.xyz + s * decodeLightHalfU(lg) + t * decodeLightHalfV(lg);
@@ -301,10 +247,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                 float area = decodeLightArea(lg);
                 float3 le = decodeLightRadiance(lg.le);
 
-                // Smooth physical form factor with singularity protection (zero fireflies, zero spotlights)
+                // Smooth regularized form factor (eliminates singularity fireflies)
                 float formFactor = (emissionFactor * area) / (dist2 + 0.35);
 
-                // Continuous C^1 quadratic distance fade reaching exactly 0 at 32m (zero chunk seams)
+                // Continuous C^1 quadratic distance fade reaching 0 at 32m
                 float distFade = max(1.0 - (lightDist / 32.0), 0.0);
                 float smoothDistFade = distFade * distFade;
 
@@ -318,44 +264,176 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                 if (phat > 0.0) {
                     float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);
                     float w = phat / max(sourcePdf, 1.0e-20);
-                    r.wSum += w;
+                    r_init.wSum += w;
 
-                    if (rndf(seed) * r.wSum < w) {
-                        r.samplePos = sp;
-                        r.sampleRadiance = unshadowedContrib;
-                        r.phat = phat;
+                    if (rndf(seed) * r_init.wSum < w) {
+                        r_init.lightIndex = li;
+                        r_init.samplePos = sp;
+                        r_init.sampleRadiance = unshadowedContrib;
+                        r_init.phat = phat;
                     }
                 }
             }
         }
 
-        r.W = r.phat > 0.0 ? (r.wSum / (r.M * r.phat)) : 0.0;
+        r_init.W = r_init.phat > 0.0 ? (r_init.wSum / (r_init.M * r_init.phat)) : 0.0;
+    }
 
-        // Trace EXACTLY 1 hardware RayQuery shadow ray for the ReSTIR survivor sample (zero light leaks, zero multi-light conflicts)
-        if (r.phat > 0.0 && r.W > 0.0) {
-            float shadowVis = 1.0;
-            if (pc.enableShadows != 0u) {
-                float3 toSurvivor = r.samplePos - worldPos;
-                float survivorDist = length(toSurvivor);
+    // Write initial reservoir to LDS shared memory for 3D spatial exchange
+    s_sharedReservoirs[groupThreadId.x][groupThreadId.y][groupThreadId.z] = r_init;
 
-                RayDesc ray;
-                ray.Origin = worldPos;
-                ray.Direction = toSurvivor / max(survivorDist, 1.0e-4);
-                ray.TMin = 0.10;
-                ray.TMax = max(survivorDist - 0.10, 0.01);
+    // Synchronize workgroup to ensure all 256 local reservoirs are visible
+    GroupMemoryBarrierWithGroupSync();
 
-                RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-                q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
-                q.Proceed();
+    // ============================================================================================
+    // Step 2: 3D Spatial Reservoir Exchange Across Adjacent Froxels
+    // ============================================================================================
+    VolumetricReservoir r_spatial = r_init;
 
-                if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                    shadowVis = 0.0;
+    if (enableBlockLights) {
+        // Gather 6 orthogonal 3D spatial neighbors within the shared workgroup
+        const int3 neighborOffsets[6] = {
+            int3(-1,  0,  0),
+            int3( 1,  0,  0),
+            int3( 0, -1,  0),
+            int3( 0,  1,  0),
+            int3( 0,  0, -1),
+            int3( 0,  0,  1)
+        };
+
+        for (int i = 0; i < 6; i++) {
+            int3 nCoord = int3(groupThreadId) + neighborOffsets[i];
+            if (all(nCoord >= int3(0)) && all(nCoord < int3(8, 8, 4))) {
+                VolumetricReservoir neighbor = s_sharedReservoirs[nCoord.x][nCoord.y][nCoord.z];
+
+                if (neighbor.phat > 0.0 && neighbor.W > 0.0 && neighbor.M > 0.0 && neighbor.lightIndex < pc.lightCount) {
+                    // Re-evaluate neighbor's candidate at current voxel's position
+                    float3 toL = neighbor.samplePos - worldPos;
+                    float dist2 = dot(toL, toL);
+
+                    if (dist2 > 0.001 && dist2 < 1024.0) {
+                        float lightDist = sqrt(dist2);
+                        float3 wi = toL / lightDist;
+
+                        Light lg = lights[neighbor.lightIndex];
+                        float3 lightNormal = decodeLightNormal(lg);
+                        float cosL = dot(lightNormal, -wi);
+                        float emissionFactor = max(cosL, 0.25);
+
+                        float area = decodeLightArea(lg);
+                        float3 le = decodeLightRadiance(lg.le);
+
+                        float formFactor = (emissionFactor * area) / (dist2 + 0.35);
+                        float distFade = max(1.0 - (lightDist / 32.0), 0.0);
+                        float smoothDistFade = distFade * distFade;
+
+                        float cosTheta = dot(rayDir, wi);
+                        float phase = dualLobePhase(cosTheta, g1 * 0.5, g2 * 0.5, 0.5);
+
+                        float3 currContrib = le * (formFactor * smoothDistFade * phase * scattering * 5.0);
+                        float currPhat = dot(currContrib, float3(0.2126, 0.7152, 0.0722));
+
+                        if (currPhat > 0.0) {
+                            // Spatial ReSTIR merge weight
+                            float w_n = currPhat * neighbor.W * neighbor.M;
+                            r_spatial.wSum += w_n;
+                            r_spatial.M += neighbor.M;
+
+                            if (rndf(seed) * r_spatial.wSum < w_n) {
+                                r_spatial.lightIndex = neighbor.lightIndex;
+                                r_spatial.samplePos = neighbor.samplePos;
+                                r_spatial.sampleRadiance = currContrib;
+                                r_spatial.phat = currPhat;
+                            }
+                        }
+                    }
                 }
             }
-
-            float3 survivorRadiance = r.sampleRadiance * (shadowVis * r.W);
-            totalInscatter += clampVoxelMaxRadiance(survivorRadiance, voxelSize);
         }
+
+        // Clamp spatial M to avoid over-accumulation
+        r_spatial.M = min(r_spatial.M, 64.0);
+        r_spatial.W = r_spatial.phat > 0.0 ? (r_spatial.wSum / (r_spatial.M * r_spatial.phat)) : 0.0;
+    }
+
+    if (!isValidVoxel) {
+        return;
+    }
+
+    if (!hasMedia) {
+        froxelLight[dispatchId] = float4(0.0, 0.0, 0.0, 0.0);
+        return;
+    }
+
+    float3 totalInscatter = float3(0.0, 0.0, 0.0);
+
+    // ============================================================================================
+    // Step 3: Direct Celestial (Sun / Moon) Light Shafts
+    // ============================================================================================
+    float3 sunDir = pc.sunDirIllum.xyz;
+    float sunIlluminance = pc.sunDirIllum.w * sunShaftMultiplier; // lux at top of atmosphere
+    float celestialShadowVis = 0.0;
+
+    if (sunIlluminance > 0.0 && pc.enableShadows != 0u) {
+        float cosTheta = dot(rayDir, sunDir);
+        float phase = dualLobePhase(cosTheta, g1, g2, lobeWeight);
+
+        float viewerAltitudeKm = clamp((pc.camPos.y + camRelPos.y - 64.0) / 100.0, 0.0, 99.0);
+        float viewerRadiusKm = ATMOS_BOTTOM_KM + max(viewerAltitudeKm, MIN_VIEWER_ALTITUDE_KM);
+        float3 sunTransmittance = transmittanceToSpace(transmittanceLut, viewerRadiusKm, sunDir, pc.sunAngularRadius);
+
+        celestialShadowVis = 1.0;
+        RayDesc ray;
+        ray.Origin = worldPos + sunDir * 0.1;
+        ray.Direction = sunDir;
+        ray.TMin = 0.05;
+        ray.TMax = 500.0;
+
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
+        q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
+        q.Proceed();
+        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+            celestialShadowVis = 0.0;
+        }
+
+        float3 directSunLight = bt709ToAcesCg(sunTransmittance * sunIlluminance * celestialShadowVis);
+        totalInscatter += directSunLight * (phase * scattering);
+
+        if (celestialShadowVis > 0.0) {
+            float2 skyUv = float2(0.5, 0.5);
+            float3 ambientSkyLuminance = bt709ToAcesCg(skyViewLut.SampleLevel(skyUv, 0.0).rgb);
+            totalInscatter += ambientSkyLuminance * (VOLUMETRICS_INV_4PI * scattering * 0.05);
+        }
+    }
+
+    // ============================================================================================
+    // Step 4: Shading & Exactly ONE Hardware RayQuery Shadow Ray for Spatial Survivor
+    // ============================================================================================
+    if (enableBlockLights && (r_spatial.phat > 0.0) && (r_spatial.W > 0.0)) {
+        float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
+        float shadowVis = 1.0;
+
+        if (pc.enableShadows != 0u) {
+            float3 toSurvivor = r_spatial.samplePos - worldPos;
+            float survivorDist = length(toSurvivor);
+
+            RayDesc ray;
+            ray.Origin = worldPos;
+            ray.Direction = toSurvivor / max(survivorDist, 1.0e-4);
+            ray.TMin = 0.10;
+            ray.TMax = max(survivorDist - 0.10, 0.01);
+
+            RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
+            q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
+            q.Proceed();
+
+            if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                shadowVis = 0.0;
+            }
+        }
+
+        float3 survivorRadiance = r_spatial.sampleRadiance * (shadowVis * r_spatial.W);
+        totalInscatter += clampVoxelMaxRadiance(survivorRadiance, voxelSize);
     }
 
     // Apply pre-exposure so float16 volume stores stable HDR ranges
