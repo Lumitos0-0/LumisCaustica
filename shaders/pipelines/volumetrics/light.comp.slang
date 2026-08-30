@@ -163,12 +163,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint3 groupThreadId : SV_Group
     float lobeWeight = pc.params1.z; // Weight between forward and back lobes (e.g. 0.85)
     float sunShaftMultiplier = pc.params1.w > 0.0 ? pc.params1.w : 1.0;
 
-    // Sub-voxel temporal jittering along depth to eliminate slice-stepping on light shafts
-    float jitterZ = froxelJitter(dispatchId, pc.gridDims.w);
-
-    float2 uv = (float2(dispatchId.xy) + 0.5) / float2(gridDims.xy);
-    float2 ndc = uv * 2.0 - 1.0;
-    float linearZ = sliceToLinearDepth(float(dispatchId.z) + jitterZ, zNear, zFar, float(gridDims.z));
+    // Stable voxel center depth to eliminate distance fluctuation noise on point emissives
+    float linearZ = sliceToLinearDepth(float(dispatchId.z) + 0.5, zNear, zFar, float(gridDims.z));
 
     float3 rayDir;
     froxelRay(ndc, pc.invViewProj, rayDir);
