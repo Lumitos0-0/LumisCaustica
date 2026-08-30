@@ -249,7 +249,7 @@ public final class RtComposite {
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
     private final RtExposure exposure = new RtExposure();
-    // Camera-frustum froxel volumetrics (inject/filter/integrate raygen passes, indices 2..4).
+    // Camera-frustum froxel volumetrics (light/inject/filter/integrate raygen passes, indices 2..5).
     private final RtVolumetrics volumetrics = new RtVolumetrics();
 
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
@@ -1148,7 +1148,7 @@ public final class RtComposite {
             // advances the temporal-history state: the history flag is armed only when record() runs.
             var fog = volumetrics.prepareFrame(frameCounter, terrain.blockX, terrain.blockY,
                     terrain.blockZ, level != null ? level.getSeaLevel() : 64,
-                    (flags & 0b01) != 0, waterWaveTime);
+                    (flags & 0b01) != 0, waterWaveTime, terrain.epoch());
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),

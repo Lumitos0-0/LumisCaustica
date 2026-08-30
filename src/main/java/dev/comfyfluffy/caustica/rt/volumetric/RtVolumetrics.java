@@ -86,6 +86,7 @@ public final class RtVolumetrics {
     private RtVolume lightB;
     private long lastRecordedFrame = Long.MIN_VALUE;
     private long opticalSignature = Long.MIN_VALUE;
+    private long lastTerrainEpoch = Long.MIN_VALUE;
     private boolean historyValid;
 
     /**
@@ -105,8 +106,13 @@ public final class RtVolumetrics {
         // Recompute the same clamped grid ensure() derives; a device-extent clamp changes the stored
         // dims, so comparing the raw wanted grid would force a rebuild on every frame.
         RtFroxelGrid wanted = wantedGrid(renderWidth, renderHeight, deviceExtentCap);
+        // The sun-shaft volume is decimated by the current quality flags (froxelInjectDimensions reads
+        // the same flags), so a quality change must reallocate it even when the fog grid did not move.
+        int[] shaftDims = probeDims(wanted);
         return grid.equals(wanted)
-                && volumeDepth.width == renderWidth && volumeDepth.height == renderHeight;
+                && volumeDepth.width == renderWidth && volumeDepth.height == renderHeight
+                && scattering.width == shaftDims[0] && scattering.height == shaftDims[1]
+                && scattering.depth == shaftDims[2];
     }
 
     /**
@@ -128,17 +134,12 @@ public final class RtVolumetrics {
         volumeDepth = ctx.createStorageImage(renderWidth, renderHeight, VK10.VK_FORMAT_R32_SFLOAT,
                 "volumetric first-surface depth " + renderWidth + "x" + renderHeight);
         String extent = wanted.width() + "x" + wanted.height() + "x" + wanted.depth();
-        // Lighting probe grid decimation matches the quality flags the shader reads (see
+        // Sun-shaft grid decimation matches the quality flags the shader reads (see
         // froxelInjectDimensions); the filter pass trilinearly resamples it to the full fog grid, so the
         // inject ray count drops by the decimation factor without losing fog density detail.
-        int quality = Math.clamp(CausticaConfig.Rt.Volumetrics.QUALITY.value(), 0, 4);
-        int divXY = QUALITY_PROBE_DIV_XY[quality];
-        int divZ = QUALITY_PROBE_DIV_Z[quality];
-        int probeWidth = (wanted.width() + divXY - 1) / divXY;
-        int probeHeight = (wanted.height() + divXY - 1) / divXY;
-        int probeDepth = (wanted.depth() + divZ - 1) / divZ;
-        String probeExtent = probeWidth + "x" + probeHeight + "x" + probeDepth;
-        scattering = ctx.createStorageVolume(probeWidth, probeHeight, probeDepth,
+        int[] probeDims = probeDims(wanted);
+        String probeExtent = probeDims[0] + "x" + probeDims[1] + "x" + probeDims[2];
+        scattering = ctx.createStorageVolume(probeDims[0], probeDims[1], probeDims[2],
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel scattering " + probeExtent);
         filtered[0] = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel filtered A " + extent);
@@ -170,12 +171,17 @@ public final class RtVolumetrics {
      * code serves both with no branching on the worldPush side beyond the flag.
      */
     public FrameData prepareFrame(long frameIndex, int rebaseX, int rebaseY, int rebaseZ,
-                                  int seaLevel, boolean submerged, float timeSeconds) {
+                                  int seaLevel, boolean submerged, float timeSeconds, long terrainEpoch) {
         requireReady();
         boolean underwaterEnabled = CausticaConfig.Rt.Volumetrics.UNDERWATER_ENABLED.value();
         boolean enabled = CausticaConfig.Rt.Volumetrics.ENABLED.value()
                 && (!submerged || underwaterEnabled);
-        boolean historyWasValid = historyValid && enabled;
+        // The probe volume accumulates over ~64 frames; if terrain or emitters were re-published the
+        // cached light field would lag for seconds behind the change (a torch goes in, fog catches up
+        // 3s later). The terrain epoch is the publication tag, so a changed epoch restarts the probe
+        // accumulation this frame: one soft re-convergence from the new world, never a stale field.
+        boolean historyWasValid = historyValid && enabled && terrainEpoch == lastTerrainEpoch;
+        lastTerrainEpoch = terrainEpoch;
         // A new frame invalidates whatever record() may have marked; record() re-arms it on success.
         historyValid = false;
         if (!enabled) {
@@ -358,6 +364,16 @@ public final class RtVolumetrics {
                     wanted.pixelSize());
         }
         return wanted;
+    }
+
+    /** Sun-shaft volume dimensions {width, height, depth} for the current quality and a wanted grid. */
+    private static int[] probeDims(RtFroxelGrid wanted) {
+        int quality = Math.clamp(CausticaConfig.Rt.Volumetrics.QUALITY.value(), 0, 4);
+        int divXY = QUALITY_PROBE_DIV_XY[quality];
+        int divZ = QUALITY_PROBE_DIV_Z[quality];
+        return new int[]{(wanted.width() + divXY - 1) / divXY,
+                (wanted.height() + divXY - 1) / divXY,
+                (wanted.depth() + divZ - 1) / divZ};
     }
 
     private static long signature(float maxDistance, float distribution, float extinction,

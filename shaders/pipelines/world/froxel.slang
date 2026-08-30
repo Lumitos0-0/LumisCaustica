@@ -106,7 +106,9 @@ public float3 froxelLightAnchor(float3 camera) {
 public float3 froxelLightSample(float3 pos) {
     int3 dims = froxelLightDimensions();
     float3 anchor = froxelLightAnchor(worldPush.camOffset);
-    float3 coord = (pos - anchor) / FROXEL_LIGHT_CELL - 0.5;
+    // Cell centers are at anchor + (i + 0.5) * CELL; froxelTrilinear converts that center coordinate
+    // (cell i <=> coord i + 0.5) to texel coordinates internally, so no extra half-cell here.
+    float3 coord = (pos - anchor) / FROXEL_LIGHT_CELL;
     float4 encoded = (worldPush.frameIndex & 1u) == 0u
             ? froxelTrilinear(froxelLightA, dims, coord)
             : froxelTrilinear(froxelLightB, dims, coord);

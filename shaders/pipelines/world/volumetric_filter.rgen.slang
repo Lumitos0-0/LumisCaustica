@@ -1,25 +1,20 @@
 // Temporal filtering of the injected froxel lighting. One raygen thread per fog cell.
 //
-// The injection is per-cell only in its analytic sun/moon term (the GI and emitter terms come from the
-// already-smooth world-anchored light volume), so this pass resamples the decimated grid back to the
-// fog grid,
-// reprojects the previous frame's filtered result into the current camera (same prevViewProj + camDelta
-// convention as the reflection motion vectors) and blends, the standard technique for removing ghosting
-// without letting noise accumulate. The pair of filtered volumes ping-pongs on frameIndex parity; bit 1
-// of froxelGrid.w reports whether the history from the previous frame is valid.
+// The injection is per-cell only in its analytic sun/moon term (the GI and emitter light comes from the
+// already-smooth world-anchored probe volume), so this pass resamples the decimated shaft grid back to
+// the fog grid, reprojects the previous frame's filtered result into the current camera (same
+// prevViewProj + camDelta convention as the reflection motion vectors) and blends, the standard
+// technique for removing ghosting without letting noise accumulate. The pair of filtered volumes
+// ping-pongs on frameIndex parity; bit 1 of froxelGrid.w reports whether the history from the previous
+// frame is valid.
 //
-// The blend itself happens in a gamma-encoded space (exponent 1/5, the production DDGI/RTXGI probe
-// update curve): high-DR single samples — a probe whose ray hit a bright emitter or a sun-facing glint
-// — are compressed before they enter the history, so what would be a per-cell firefly becomes a stable
-// low-frequency term, and the steady-state value approximates the perceptually averaged light field
-// instead of being dominated by the brightest frame. This is deliberate bias: a stable, slightly dimmer
-// field is preferred over an unstable one with spikes (the same tradeoff NVIDIA's irradiance probes
-// make). The variance clip below still runs in linear space against the same-frame neighborhood, where
-// it guards the reprojection itself (camera swings, light changes).
-//
-// The stored quantity is {sigma_s * L per unit length, scalar extinction}, so color and density are
-// filtered together with one weight, keeping the integrate pass's Beer-Lambert slice integral
-// consistent with whatever blend was applied.
+// Each shaft sample is jittered sub-cell per frame, so the blend is perceptual: gamma-encoded
+// accumulation (exponent 1/5, the production DDGI/RTXGI curve) keeps transitions around shadow edges
+// perceptually linear while compressing direct-sun values hard, and the variance clip below runs in
+// linear space against the same-frame neighborhood to guard the reprojection itself (camera swings,
+// light changes). The stored quantity is {sigma_s * L per unit length, scalar extinction}, so color
+// and density are filtered together with one weight, keeping the integrate pass's Beer-Lambert slice
+// integral consistent with whatever blend was applied.
 import world_common;
 import world_core;
 import bindings;
@@ -43,9 +38,9 @@ void main() {
 
     uint writeIdx = worldPush.frameIndex & 1u;
     uint historyIdx = 1u - writeIdx;
-    // Injection runs at the decimated probe resolution; resample it back to the full fog grid here. One
-    // pass handles the upscale so the firefly-encoding blend, variance clip and integrate all see the
-    // same smoothed field.
+    // Injection runs at the decimated shaft resolution; resample it back to the full fog grid here. One
+    // pass handles the upscale so the gamma-encoded blend, variance clip and integrate all see the same
+    // smoothed field.
     uint injectWidth;
     uint injectHeight;
     uint injectDepth;

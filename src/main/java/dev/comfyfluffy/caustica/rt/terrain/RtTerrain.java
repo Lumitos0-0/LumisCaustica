@@ -165,6 +165,11 @@ public final class RtTerrain {
     private int activeTasks;
     /** Invalidates all worker/GPU work from a detached world residency without joining it. */
     private volatile long terrainEpoch = 1L;
+
+    /** Monotonic tag of the resident terrain/light publication state (bumps on any rebuild/rebase). */
+    public long epoch() {
+        return terrainEpoch;
+    }
     private long buildToken;
     private long dirtyGroupSeq;
     private final RtSectionTable table = new RtSectionTable();

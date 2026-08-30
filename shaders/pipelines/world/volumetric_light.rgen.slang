@@ -12,9 +12,9 @@
 //
 // into a gamma-encoded running average (the production DDGI probe-update curve: HDR single samples are
 // compressed before they enter history, so what would be a bright per-cell dot becomes a stable
-// low-frequency term). The fog inject pass queries this volume trilinearly — probes are ~100x fewer
-// than fog light cells and each is averaged over up to 64 frames, so the per-cell sampling noise that
-// plagued the previous design is gone by construction.
+// low-frequency term). The fog inject pass queries this volume trilinearly — probes are far fewer than
+// fog light cells and each is averaged over up to 64 frames, so the fog's GI term carries no
+// per-cell sampling noise by construction.
 //
 // The ping-pong pair lets history follow the camera-anchor shift: the update reads the previous lane at
 // (index - shift), which is the position this probe occupied last frame (same world coordinates), so
