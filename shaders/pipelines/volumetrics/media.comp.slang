@@ -39,10 +39,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 camRelPos = rayDir * sliceDepth;
     float worldY = camRelPos.y + pc.camPos.y;
 
-    // Continuous medium across all altitudes: uniform base plus soft ground height modulation
-    float heightDiff = (worldY - groundAltitude) * heightFalloff;
-    float heightScale = exp(-clamp(heightDiff, -2.5, 4.0));
-    float density = baseDensity * (0.35 + 0.65 * heightScale) * distFade;
+    // Open-sky exponential falloff above ground, smooth constant baseline below ground and in caves
+    float heightAboveGround = max(worldY - groundAltitude, 0.0);
+    float heightScale = exp(-heightAboveGround * heightFalloff);
+    float density = baseDensity * heightScale * distFade;
 
     // Natural atmosphere Rayleigh/Mie base scattering
     float3 fogColor = float3(pc.params1.z, pc.params1.w, pc.params2.x);

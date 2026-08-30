@@ -1,4 +1,4 @@
-// Computes direct in-scattered light at each Froxel cell from Sun/Moon and block emitters with fast analytical accumulation and soft geometric occlusion.
+// Computes direct in-scattered light at each Froxel cell from Sun/Moon and block emitters with independent decoupled multi-emitter shadow evaluation.
 import froxel_common;
 import world_common;
 import sky;
@@ -138,17 +138,28 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     // ============================================================================================
-    // 2. Direct Local Block Emitters (Analytical Multi-Emitter Accumulation + Soft Occlusion)
+    // 2. Direct Local Block Emitters (Independent Decoupled Multi-Light Evaluation)
     // ============================================================================================
     bool enableBlockLights = (pc.lightGridDims.w != 0) && (pc.lightBufAddr != 0) && (pc.lightCount > 0u);
     if (enableBlockLights) {
         float voxelSize = computeSliceThickness(dispatchId.z, zNear, zFar, float(gridDims.z));
-        float3 blockInscatter = float3(0.0, 0.0, 0.0);
 
         ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
-        float3 dominantWi = float3(0.0, 1.0, 0.0);
-        float dominantLightDist = 100.0;
-        float dominantWeight = 0.0;
+
+        // Light 1 (Primary dominant emitter)
+        float3 l1_contrib = float3(0.0, 0.0, 0.0);
+        float3 l1_wi = float3(0.0, 1.0, 0.0);
+        float  l1_dist = 100.0;
+        float  l1_weight = 0.0;
+
+        // Light 2 (Secondary dominant emitter)
+        float3 l2_contrib = float3(0.0, 0.0, 0.0);
+        float3 l2_wi = float3(0.0, 1.0, 0.0);
+        float  l2_dist = 100.0;
+        float  l2_weight = 0.0;
+
+        // Distant multi-light soft ambient tail
+        float3 ambientTail = float3(0.0, 0.0, 0.0);
 
         int3 gridDimsL = pc.lightGridDims.xyz;
 
@@ -188,26 +199,39 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                             float area = decodeLightArea(lg);
                             float3 le = decodeLightRadiance(lg.le);
 
-                            // Smooth physical form factor with singularity protection (zero fireflies, zero spotlights)
+                            // Smooth physical form factor with singularity protection
                             float formFactor = (emissionFactor * area) / (dist2 + 0.35);
 
-                            // Continuous C^1 quadratic distance fade reaching exactly 0 at 32m (zero chunk seams)
+                            // Continuous C^1 quadratic distance fade reaching exactly 0 at 32m
                             float distFade = max(1.0 - (lightDist / 32.0), 0.0);
                             float smoothDistFade = distFade * distFade;
 
-                            // Volumetric phase function for local emitters
+                            // Volumetric phase function
                             float cosTheta = dot(rayDir, wi);
                             float phase = dualLobePhase(cosTheta, g1 * 0.5, g2 * 0.5, 0.5);
 
                             float3 contrib = le * (formFactor * smoothDistFade * phase * scattering * 5.0);
                             float weight = dot(contrib, float3(0.2126, 0.7152, 0.0722));
 
-                            blockInscatter += contrib;
+                            if (weight > l1_weight) {
+                                // Demote previous best to 2nd best
+                                l2_weight = l1_weight;
+                                l2_wi = l1_wi;
+                                l2_dist = l1_dist;
+                                l2_contrib = l1_contrib;
 
-                            if (weight > dominantWeight) {
-                                dominantWeight = weight;
-                                dominantWi = wi;
-                                dominantLightDist = lightDist;
+                                // Set new best
+                                l1_weight = weight;
+                                l1_wi = wi;
+                                l1_dist = lightDist;
+                                l1_contrib = contrib;
+                            } else if (weight > l2_weight) {
+                                l2_weight = weight;
+                                l2_wi = wi;
+                                l2_dist = lightDist;
+                                l2_contrib = contrib;
+                            } else {
+                                ambientTail += contrib;
                             }
                         }
                     }
@@ -215,26 +239,51 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             }
         }
 
-        // Geometric occlusion test for solid cave walls with soft volumetric penumbra wrap
-        if (dominantWeight > 1.0e-6) {
-            float shadowVis = 1.0;
+        // ========================================================================================
+        // Independent Decoupled Shadow Rays (Zero Light Bleeding, Zero Multi-Light Conflicts!)
+        // ========================================================================================
+        float v1 = 1.0;
+        if (l1_weight > 1.0e-6) {
             if (pc.enableShadows != 0u) {
-                RayDesc ray;
-                ray.Origin = worldPos;
-                ray.Direction = dominantWi;
-                ray.TMin = 0.15; // Soft margin to prevent self-occlusion on thin fences/posts
-                ray.TMax = max(dominantLightDist - 0.15, 0.01);
+                RayDesc ray1;
+                ray1.Origin = worldPos;
+                ray1.Direction = l1_wi;
+                ray1.TMin = 0.15;
+                ray1.TMax = max(l1_dist - 0.15, 0.01);
 
-                RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-                q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray);
-                q.Proceed();
-
-                if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                    shadowVis = 0.0;
+                RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q1;
+                q1.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray1);
+                q1.Proceed();
+                if (q1.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                    v1 = 0.0;
                 }
             }
+            totalInscatter += clampVoxelMaxRadiance(l1_contrib * v1, voxelSize);
+        }
 
-            totalInscatter += clampVoxelMaxRadiance(blockInscatter * shadowVis, voxelSize);
+        float v2 = 1.0;
+        if (l2_weight > 1.0e-6) {
+            if (pc.enableShadows != 0u) {
+                RayDesc ray2;
+                ray2.Origin = worldPos;
+                ray2.Direction = l2_wi;
+                ray2.TMin = 0.15;
+                ray2.TMax = max(l2_dist - 0.15, 0.01);
+
+                RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q2;
+                q2.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, CULL_ALL, ray2);
+                q2.Proceed();
+                if (q2.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                    v2 = 0.0;
+                }
+            }
+            totalInscatter += clampVoxelMaxRadiance(l2_contrib * v2, voxelSize);
+        }
+
+        // Ambient multi-light fill bounded by visible local illumination
+        if (dot(ambientTail, ambientTail) > 1.0e-7) {
+            float ambientVis = max(v1, v2);
+            totalInscatter += clampVoxelMaxRadiance(ambientTail * ambientVis, voxelSize);
         }
     }
 
