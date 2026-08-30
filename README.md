@@ -25,6 +25,8 @@ changes while the renderer is being built.
 - Dynamic entity rendering in the ray-traced scene
 - LabPBR-style material support
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations
+- Froxel volumetric fog with path-traced (not shadow-map) volumetric shadows, real spectral
+  transmission through tinted glass/water, and a per-pixel raymarch that integrates in-scattering
 
 ## Requirements
 

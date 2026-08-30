@@ -168,6 +168,8 @@ public final class RtPipeline {
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)
                     .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL).binding(WORLD_FROXEL).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
             check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout");
@@ -406,6 +408,20 @@ public final class RtPipeline {
         }
     }
 
+    /** Write the froxel 3D grid into its canonical world binding across every ring slot. */
+    public void setFroxelImage(long imageView) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
+            imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(RING, stack);
+            for (int i = 0; i < RING; i++) {
+                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_FROXEL)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(imgInfo);
+            }
+            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
+        }
+    }
+
     /** Write one DLSS-RR guide image into its canonical world binding across every ring slot. */
     public void setExtraStorageImage(int slot, long imageView) {
         if (slot < 0 || slot >= WORLD_GUIDE_COUNT) {
@@ -508,10 +524,22 @@ public final class RtPipeline {
      * hit regions are shared, so passes over the same scene differ only in this index.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex) {
+        traceVolume(cmd, width, height, 1, pushConstants, raygenIndex);
+    }
+
+    /**
+     * Like {@link #trace} but dispatches a 3D ray grid ({@code depth} invocations along Z), used by the
+     * froxel volumetric light pass whose invocation space is the frustum voxel grid (width x height x
+     * depth) rather than the screen.
+     */
+    public void traceVolume(VkCommandBuffer cmd, int width, int height, int depth,
+                            java.nio.ByteBuffer pushConstants, int raygenIndex) {
         if (raygenIndex < 0 || raygenIndex >= raygenCount) {
             throw new IllegalArgumentException("raygen index " + raygenIndex + " out of range [0, " + raygenCount + ")");
         }
-        try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "trace rays")) {
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd,
+                     depth == 1 ? "trace rays" : "trace rays volume")) {
             VK10.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
             java.nio.LongBuffer boundSets = bindlessSet != 0L
                     ? stack.longs(descriptorSets[currentSet], bindlessSet)
@@ -529,7 +557,7 @@ public final class RtPipeline {
             VkStridedDeviceAddressRegionKHR hit = VkStridedDeviceAddressRegionKHR.calloc(stack)
                     .deviceAddress(sbt.deviceAddress + (long) (raygenCount + missCount) * sbtStride).stride(sbtStride).size((long) hitGroupCount * sbtStride);
             VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
-            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, 1);
+            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, depth);
         }
     }
 

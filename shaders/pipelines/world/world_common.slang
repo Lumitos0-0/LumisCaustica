@@ -83,6 +83,14 @@ public struct WorldPush {
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+    // Froxel volumetric fog. froxel0: x near-plane distance (blocks), y froxel far distance, z base
+    // extinction density (per block), w HG phase anisotropy g. froxel1: rgb scattering colour (linear
+    // ACEScg), w isotropic sky/ambient fill factor. froxel2: x fog floor world Y (rebased space),
+    // y height falloff scale (blocks), z global strength multiplier. Consumed by froxel.rgen (the
+    // volumetric light pass) and froxel.comp (the raymarch integration).
+    public float4   froxel0;
+    public float4   froxel1;
+    public float4   froxel2;
     // Pre-exposure scalar applied to radiance at the outImage write
     // ONLY, so all light transport above stays in absolute scene units. Keeps stored fp16 values
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel

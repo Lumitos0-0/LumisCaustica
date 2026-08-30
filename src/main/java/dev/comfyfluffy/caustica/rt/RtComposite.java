@@ -33,6 +33,7 @@ import net.minecraft.world.level.MoonPhase;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import org.joml.Vector4f;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
@@ -67,6 +68,7 @@ import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
+import dev.comfyfluffy.caustica.rt.pipeline.RtFroxel;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
@@ -105,6 +107,20 @@ public final class RtComposite {
     // generated from the same Slang module and owns this second ABI as well. debugView is no longer
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
     private static final long PATH_RECORD_BYTES = 48L;
+    // Froxel raygen record index in the world pipeline's SBT (after the primary and indirect passes).
+    private static final int FROXEL_RAYGEN_INDEX = 2;
+    // Froxel grid depth slices. Must match FROXEL_DEPTH in shaders/pipelines/world/froxel_common.slang;
+    // both the light-pass dispatch and the raymarch's slice loop parameterise depth over this count.
+    private static final int FROXEL_DEPTH = 64;
+    // Nominal froxel X resolution (screen-space UV count); Y is derived from the render aspect at size.
+    private static final int FROXEL_X = 160;
+    // Lowest Y (grid height) so very wide/ultrawide windows keep a sane grid aspect instead of pinching.
+    private static final int FROXEL_Y_MIN = 32;
+
+    private static boolean fogEnabled() {
+        return CausticaConfig.Rt.Fog.ENABLED.value();
+    }
+
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -152,6 +168,14 @@ public final class RtComposite {
     }
 
     private RtPipeline worldPipeline;
+    // Froxel volumetric fog: the frustum-aligned 3D grid (populated by the world pipeline's froxel raygen
+    // with path-traced, colour-transmitting volumetric light) plus the screen-space raymarch compute pass
+    // that integrates it over the scene. The image is always sized/bound; the passes only dispatch while
+    // CausticaConfig.Rt.Fog.ENABLED.
+    private RtFroxel froxel;
+    private RtImage froxelVolume;
+    private int froxelW = -1;
+    private int froxelH = -1;
     // Set at the HEAD of Minecraft.reloadResourcePacks() (mixin): a resource reload recreates the block
     // atlas + entity textures. We tear down the world pipeline there (drops all descriptor references) and
     // rebuild it once the NEW atlas is in place — detected by the atlas view handle changing away from
@@ -603,6 +627,9 @@ public final class RtComposite {
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
+            if (froxel == null && fogEnabled()) {
+                froxel = RtFroxel.create(ctx);
+            }
             if (sdrToneLut == null) {
                 sdrToneLut = RtToneLut.load(ctx, "sdr_aces2_rec709.bin");
             }
@@ -655,6 +682,9 @@ public final class RtComposite {
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                     exposure.stateBuffer());
+            if (froxel != null && froxelVolume != null) {
+                froxel.setImages(output.view, gDepth.view, froxelVolume.view);
+            }
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -718,7 +748,8 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            "froxel.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -732,6 +763,9 @@ public final class RtComposite {
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
+                if (froxelVolume != null) {
+                    worldPipeline.setFroxelImage(froxelVolume.view);
+                }
                 bindGuideImages();
             }
             bindWorldTextures(ctx);
@@ -898,6 +932,7 @@ public final class RtComposite {
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
+                && froxelVolume != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
@@ -918,6 +953,10 @@ public final class RtComposite {
             continuationQueue.destroy();
             continuationQueue = null;
         }
+        if (froxelVolume != null) {
+            froxelVolume.destroy();
+            froxelVolume = null;
+        }
         destroyGuideImages();
 
         displayW = width;
@@ -932,6 +971,11 @@ public final class RtComposite {
         renderH = optimal != null ? optimal[1] : height;
         renderSizeRrEnabled = rrEnabled;
         renderSizeRrQuality = rrQuality;
+
+        // Froxel grid XY follows the render aspect (frustum-aligned screen UVs), so a cell column lines up
+        // with a ray no matter the window shape; depth is the fixed FROXEL_DEPTH slice count.
+        froxelW = FROXEL_X;
+        froxelH = Math.clamp((int) Math.round(FROXEL_X * (double) renderH / renderW), FROXEL_Y_MIN, FROXEL_X);
 
         // RT traces and DLSS-RR reconstruct scene-linear ACEScg in an HDR R16G16B16A16_SFLOAT target,
         // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
@@ -968,6 +1012,12 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
+        // Froxel volumetric grid: RGB in-scattered source per unit length + A extinction density, one cell
+        // per frustum voxel. Sized to the render aspect above; bound into both the world RT pipeline
+        // (written by the froxel raygen) and the raymarch compute (sampled trilinearly).
+        froxelVolume = ctx.createStorageImage3D(froxelW, froxelH, FROXEL_DEPTH,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "froxel grid " + froxelW + "x" + froxelH + "x" + FROXEL_DEPTH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -976,7 +1026,11 @@ public final class RtComposite {
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
+            worldPipeline.setFroxelImage(froxelVolume.view);
             bindGuideImages();
+        }
+        if (froxel != null) {
+            froxel.setImages(output.view, gDepth.view, froxelVolume.view);
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
@@ -1154,6 +1208,16 @@ public final class RtComposite {
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
+                    // Froxel volumetric fog parameters (see WorldPush froxel0/1/2 in world_common.slang).
+                    // near is the camera-centre near-plane distance so the exponential depth slices hug the
+                    // near plane; far is the froxel grid extent; density/phase/colour/ambient/falloff shape
+                    // the scattering, and the fog floor sits at sea level (world Y 64) rebased into the
+                    // terrain's coordinate space.
+                    new Float4(nearPlaneDistance(), CausticaConfig.Rt.Fog.FAR.value(),
+                            CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.PHASE_G.value()),
+                    new Float4(1f, 1f, 1f, CausticaConfig.Rt.Fog.AMBIENT.value()),
+                    new Float4(64 - terrain.blockY, CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value(),
+                            CausticaConfig.Rt.Fog.STRENGTH.value(), 0f),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
                     exposure.preExposure()
@@ -1210,7 +1274,23 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            if (fogEnabled() && froxel != null) {
+                // Froxel volumetric light: each frustum voxel path-traces its in-scattered radiance toward
+                // the dominant celestial body, accumulating colour transmission through tinted glass/water
+                // (same shadow ray as the surface NEE). The raymarch then integrates those cells over the
+                // view ray and composites the fog over the scene colour.
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // indirect writes + sky LUT visible; froxel reads both
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel volumetric light");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.froxelLight")) {
+                    active.traceVolume(cmd, froxelW, froxelH, FROXEL_DEPTH, pushConstants, FROXEL_RAYGEN_INDEX);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // froxel grid writes visible to the raymarch
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel raymarch");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.froxelRaymarch")) {
+                    froxel.record(cmd, stack, renderW, renderH, pushBuf.deviceAddress);
+                }
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT + fog writes visible to DLSS reads
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1336,6 +1416,20 @@ public final class RtComposite {
 
     private record SkyPush(Float4 celestial, Float4 look0, Float4 look1, Float4 look2, Float4 look3,
                            Float4 sunUv, Float4 moonUv) {}
+
+    /**
+     * Distance from the camera to the near clip plane along the centre view ray, used as the froxel grid's
+     * depth parameterisation origin so the first exponential depth slice hugs the near plane.
+     */
+    private float nearPlaneDistance() {
+        Vector4f ndc = new Vector4f(0.0f, 0.0f, 1.0f, 1.0f);
+        frameInvViewProj.transform(ndc);
+        float invW = 1.0f / ndc.w;
+        float x = ndc.x * invW;
+        float y = ndc.y * invW;
+        float z = ndc.z * invW;
+        return (float) Math.sqrt(x * x + y * y + z * z);
+    }
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
 
@@ -1492,6 +1586,14 @@ public final class RtComposite {
         if (continuationQueue != null) {
             continuationQueue.destroy();
             continuationQueue = null;
+        }
+        if (froxelVolume != null) {
+            froxelVolume.destroy();
+            froxelVolume = null;
+        }
+        if (froxel != null) {
+            froxel.destroy();
+            froxel = null;
         }
         destroyGuideImages();
         exposure.destroy();

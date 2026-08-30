@@ -57,6 +57,8 @@ public final class CausticaConfig {
         @SuppressWarnings("unused")
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
+            Rt.Fog.ENABLED, Rt.Fog.DENSITY, Rt.Fog.STRENGTH, Rt.Fog.PHASE_G, Rt.Fog.AMBIENT, Rt.Fog.FAR,
+            Rt.Fog.HEIGHT_FALLOFF,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
@@ -545,6 +547,31 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        /** Froxel volumetric fog: frustum-aligned grid, path-traced (not shadow-map) volumetric shadows. */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fog", "fog.enabled", true);
+            // Base extinction density (per block) at/below the fog floor. Roughly 0.0008 is a subtle haze
+            // over a few hundred blocks; 0.01 is a thick sunlit volume.
+            public static final FloatSetting DENSITY = finiteFloat("caustica.rt.fogDensity", "fog.density", 0.0008f);
+            // Global multiplier on the base density, independent of the TOML density for quick tuning.
+            public static final FloatSetting STRENGTH = finiteFloat("caustica.rt.fogStrength", "fog.strength", 1.0f);
+            // Henyey-Greenstein phase anisotropy: >0 forward-scatters the sun into a glow behind the light.
+            public static final FloatSetting PHASE_G =
+                    clampedFloat("caustica.rt.fogPhaseG", "fog.phase-g", 0.6f, -0.9f, 0.9f);
+            // Isotropic sky/ambient in-scatter factor; fills shadows and night volumes so they are not black.
+            public static final FloatSetting AMBIENT =
+                    clampedFloat("caustica.rt.fogAmbient", "fog.ambient", 0.05f, 0.0f, 1.0f);
+            // Froxel grid far distance (blocks); fog fades over this span into the far view.
+            public static final FloatSetting FAR = finiteFloat("caustica.rt.fogFar", "fog.far", 400.0f);
+            // Exponential density falloff scale (blocks) above the fog floor: small = tight ground fog,
+            // large = uniform atmospheric haze.
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    finiteFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 128.0f);
+
+            private Fog() {
             }
         }
 
