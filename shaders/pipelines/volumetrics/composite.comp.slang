@@ -1,4 +1,4 @@
-// Depth-aware composite of the 3D Froxel volume onto the scene color matching main's exact coordinate alignment and continuous sub-slice recovery.
+// Depth-aware composite of the 3D Froxel volume onto the scene color using exact linear hit distance from guide depth.
 import froxel_common;
 import world_common;
 
@@ -19,30 +19,20 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     int2 pix = int2(dispatchId.xy);
     float2 uv = (float2(pix) + 0.5) / float2(screenDims);
-    float2 ndc = uv * 2.0 - 1.0;
 
     float gridNz = float(pc.gridDims.z);
     float zNear = pc.params0.x;
     float zFar = pc.params0.y;
     float maxDistance = pc.params0.z;
 
-    // Sample the exact primary surface depth for this pixel
+    // Sample the exact linear ray hit distance in meters from DLSS guide depth
     int2 depthPix = clamp(int2(uv * float2(depthDims)), int2(0), int2(depthDims) - 1);
-    float hwDepth = depthImage[depthPix];
+    float hitDistance = depthImage[depthPix];
 
-    float linearDepth = maxDistance;
-    if (hwDepth > 1.0e-5) {
-        float4 hitH = mul(pc.invViewProj, float4(ndc.x, ndc.y, hwDepth, 1.0));
-        if (hitH.w > 0.0) {
-            linearDepth = min(length(hitH.xyz / hitH.w), maxDistance);
-        }
-    }
+    // Distance <= 0 indicates sky/miss ray, which extends to full maxDistance
+    float linearDepth = (hitDistance > 1.0e-4) ? min(hitDistance, maxDistance) : maxDistance;
 
-    if (linearDepth <= 0.0) {
-        return;
-    }
-
-    // Convert linear depth to continuous slice coordinate matching main
+    // Convert exact linear depth to continuous froxel slice coordinate
     float slice = linearDepthToSlice(linearDepth, zNear, zFar, gridNz);
     float3 volumeUVW = float3(uv, clamp(slice / gridNz, 0.0, 1.0));
     float4 integrated = froxelVolume.SampleLevel(volumeUVW, 0.0);
