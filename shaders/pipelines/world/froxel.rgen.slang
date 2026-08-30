@@ -16,15 +16,16 @@ import math;
 import trace;
 import sky;
 
-// Isotropic sky/ambient scattering colour (linear BT.709, D65). Scaled by the ambient factor and the
-// dominant body's illuminance so shadowed and night-time volumes keep a soft sky fill instead of going
-// pitch black; the day/night level comes from the light itself.
+// Small isotropic night/ground floor (linear BT.709, D65): a faint scattering fill so shadowed volumes
+// on a moonless night never clip to pure black. This is a floor only — the visible sky colour and its
+// day/night + sun-glow structure come from the real sky-view LUT (skyDome), not from here.
 static const float3 FOG_SKY_AMBIENT = float3(0.55, 0.68, 1.0);
 
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
+    SkyState sky = skyState(worldPush);
+    celestialLight = dominantCelestialLight(sky, transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
 
     uint3 cell = DispatchRaysIndex();
@@ -63,17 +64,21 @@ void main() {
     // scattering = density * colour) so the density lane also drives the view-direction transmittance.
     float3 scattering = density * fogColor;
 
-    // Path-traced, colour-transmitting transmittance from the cell toward the light. Same ray as the
-    // surface NEE shadow; see the file comment for why this is the whole point of the pass.
-    float3 toLight = visibility(cellPos, celestialLight.dir, 10000.0).transmittance;
+    // The volume scatters the real sky radiance in the view direction (skyDome, linear BT.709 -> ACEScg
+    // like every sky colour entering the path integral). This makes the fog mirror the actual dome: it
+    // picks up the sun's Mie glow toward the light, follows the day/night cycle, and varies with view
+    // direction — reading as genuine atmospheric scattering instead of a flat isotropic fill.
+    float3 skyInscatter = scattering * bt709ToAcesCg(skyDome(rd, sky, skyViewLut));
 
+    // Sun light shafts: the dominant body illuminates the fog with the same path-traced,
+    // colour-transmitting shadow ray as the surface NEE, forward-scattered by the Henyey-Greenstein
+    // phase. Occluders (and tinted glass) carve colour-tinted shadow volumes through the haze.
+    float3 toLight = visibility(cellPos, celestialLight.dir, 10000.0).transmittance;
     float3 sunInscatter = scattering * hg(dot(-rd, celestialLight.dir), phaseG)
             * celestialLight.illuminance * toLight;
 
-    // Isotropic sky/ambient fill. Source per unit length = scattering * ambientRadiance; luminance of
-    // the dominant body scales it with time of day, the tint gives it a sky colour.
-    float3 ambientRadiance = ambientFactor * luminance(celestialLight.illuminance) * FOG_SKY_AMBIENT;
-    float3 ambientInscatter = scattering * ambientRadiance;
+    // Small isotropic night/ground floor so shadowed volumes on a moonless night never clip to black.
+    float3 nightFloor = scattering * (ambientFactor * FOG_SKY_AMBIENT);
 
-    froxelVolume[cell] = float4(sunInscatter + ambientInscatter, density);
+    froxelVolume[cell] = float4(skyInscatter + sunInscatter + nightFloor, density);
 }

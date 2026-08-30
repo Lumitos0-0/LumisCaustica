@@ -536,6 +536,20 @@ public struct CelestialLight {
  * enormous (roughly 70 air masses), so both bodies are already within a rounding error of zero at the
  * moment the choice flips, making the handoff invisible without an authored smoothstep.
  */
+/**
+ * Atmosphere in-scatter radiance (linear BT.709) for a world direction (up = +Y), summed over both
+ * bodies' slices of this frame's sky-view LUT. This is the same sky the miss shader shades with, so the
+ * volumetric fog scatters the actual sky: it mirrors the dome behind it, picks up the sun's Mie glow
+ * toward the light, and follows the day/night cycle — instead of a flat isotropic constant.
+ */
+public float3 skyDome(float3 dir, SkyState s, Sampler2D skyViewLut) {
+    float2 sunUv = skyViewLutUv(s.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, s.sunDir), SKY_VIEW_BODY_SUN);
+    float2 moonUv = skyViewLutUv(s.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, s.moonDir), SKY_VIEW_BODY_MOON);
+    return skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
+}
+
 public CelestialLight dominantCelestialLight(SkyState s, Sampler2D transmittanceLut) {
     float3 sunLux = s.sunIlluminance
             * transmittanceToSpace(transmittanceLut, s.viewerRadiusKm, s.sunDir, s.sunAngularRadius);

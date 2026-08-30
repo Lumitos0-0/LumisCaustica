@@ -90,14 +90,8 @@ float3 stars(float3 dir, SkyState state, float3 extinction) {
     return star * bright * starColor * state.starLuminance * extinction;
 }
 
-/** Atmosphere in-scatter for a world direction: both bodies' slices of this frame's sky-view LUT. */
-float3 skyDome(float3 dir, SkyState state) {
-    float2 sunUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
-            lightViewCosine(dir, state.sunDir), SKY_VIEW_BODY_SUN);
-    float2 moonUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
-            lightViewCosine(dir, state.moonDir), SKY_VIEW_BODY_MOON);
-    return skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
-}
+// skyDome (the atmosphere in-scatter for a world direction) lives in sky.slang, shared with the froxel
+// volumetric light pass so the fog scatters the same sky the miss shader shades with.
 
 [shader("miss")]
 void main(inout Payload payload) {
@@ -106,7 +100,7 @@ void main(inout Payload payload) {
     float3 dir = normalize(WorldRayDirection());
     bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
 
-    float3 color = skyDome(dir, state);
+    float3 color = skyDome(dir, state, skyViewLut);
     // Airglow plus integrated unresolved starlight: the real floor of a moonless night sky (~1e-3 cd/m²),
     // isotropic because it is emitted by the upper atmosphere itself rather than scattered from a body.
     // Multiple scattering is in the LUT, so this remains a flat, physically small constant.
