@@ -68,6 +68,10 @@ public final class RtFrameStats {
                     // Wavefront trace and downstream debug stages.
                     "frame.tracePrimary",
                     "frame.traceIndirect",
+                    // Froxel volumetric passes (between Pass A and Pass B).
+                    "frame.volumetricInject",
+                    "frame.volumetricFilter",
+                    "frame.volumetricIntegrate",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",

@@ -25,6 +25,7 @@ import medium;
 import segment;
 import water;
 import trace;
+import froxel;
 #ifdef CAUSTICA_ENABLE_EXT_SER
 import trace_ser;
 #endif
@@ -431,6 +432,11 @@ void main() {
     // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.
-    float3 stored = frameRadiance * (worldPush.preExposure / float(spp));
+    // Volumetrics composite in scene-linear space before pre-exposure, so fog in-scattering and
+    // transmittance behave exactly like any other radiance through exposure, DLSS-RR and the display
+    // transform. The volume is already temporally filtered and integrated camera-outward.
+    float3 resolvedRadiance = frameRadiance / float(spp);
+    resolvedRadiance = applyFroxelFog(dispatchIndex, dimensions, resolvedRadiance);
+    float3 stored = resolvedRadiance * worldPush.preExposure;
     outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
 }

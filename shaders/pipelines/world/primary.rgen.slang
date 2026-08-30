@@ -26,7 +26,8 @@ import guides;
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
-                                out uint nextRecord) {
+                                out uint nextRecord,
+                                out float firstHitDistance) {
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -37,6 +38,7 @@ public PathSegment tracePrimary(PathSegment seg,
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
     nextRecord = PATH_NO_NEXT;
+    firstHitDistance = -1.0;
 
     {
         int bounce = seg.bounce;
@@ -45,6 +47,9 @@ public PathSegment tracePrimary(PathSegment seg,
                                                showCelestial);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
+        // Capture the first hit immediately: guide probes below (reflection/transmission resolution)
+        // reuse the payload and would overwrite the distance the froxel clip needs.
+        firstHitDistance = payload.hitT;
 
         if (payload.hitT < 0.0) {
             if (bounce == 0) {
@@ -244,9 +249,19 @@ void main() {
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
     uint nextRecord;
+    float firstHitDistance;
     PathSegment terminal = tracePrimary(
-            current, queue, splitRecord, nextRecord);
+            current, queue, splitRecord, nextRecord, firstHitDistance);
     queue[pixelIndex] = packPathSegment(terminal, nextRecord);
+
+    // Volumetric clip: the first visible interface stops fog accumulation along this pixel's ray.
+    // Written before writeGuides because the guide probes reuse the payload.
+    {
+        uint depthWidth;
+        uint depthHeight;
+        volumeDepth.GetDimensions(depthWidth, depthHeight);
+        volumeDepth[pix] = firstHitDistance;
+    }
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
 }

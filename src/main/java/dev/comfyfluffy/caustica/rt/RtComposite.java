@@ -70,6 +70,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
+import dev.comfyfluffy.caustica.rt.volumetric.RtVolumetrics;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
@@ -248,6 +249,8 @@ public final class RtComposite {
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
     private final RtExposure exposure = new RtExposure();
+    // Camera-frustum froxel volumetrics (inject/filter/integrate raygen passes, indices 2..4).
+    private final RtVolumetrics volumetrics = new RtVolumetrics();
 
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
     private int displayW = -1;
@@ -501,9 +504,10 @@ public final class RtComposite {
         frameCaptured = true;
     }
 
-    /** Reset exposure filtering after an explicit render-state invalidation such as F3+A. */
+    /** Reset exposure + volumetric filtering after an explicit render-state invalidation such as F3+A. */
     public void resetExposureHistory() {
         exposure.requestReset();
+        volumetrics.invalidateHistory();
     }
 
     /**
@@ -718,7 +722,13 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            // Volumetric passes are extra raygen records of the same pipeline so they
+                            // share the TLAS, descriptors and push constants; indices must match
+                            // RtVolumetrics.INJECT/FILTER/INTEGRATE_RAYGEN.
+                            "volumetric_inject.rgen.spv",
+                            "volumetric_filter.rgen.spv",
+                            "volumetric_integrate.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -733,6 +743,9 @@ public final class RtComposite {
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
+                if (volumetrics.available()) {
+                    volumetrics.bindAll(worldPipeline);
+                }
             }
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
@@ -834,6 +847,9 @@ public final class RtComposite {
         materialBindingsReady = false;
         setCelestialUvAtlas(0L);
         RtEntities.INSTANCE.onResourceReload();
+        // The new resource epoch replaces the scene, so the previous frame's reprojected fog history
+        // belongs to a different world; drop it rather than ghosting the old sky/textures.
+        volumetrics.invalidateHistory();
         RtContext ctx = RtContext.currentOrNull();
         if (ctx != null) {
             ctx.waitIdle();
@@ -900,7 +916,8 @@ public final class RtComposite {
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
+                && volumetrics.matches(renderW, renderH)) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -971,12 +988,17 @@ public final class RtComposite {
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
+        // Froxel volumes follow the trace (render) resolution and quality grid; device is already idle here.
+        volumetrics.ensure(ctx, renderW, renderH);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
+            if (volumetrics.available()) {
+                volumetrics.bindAll(worldPipeline);
+            }
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
@@ -1121,6 +1143,11 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            // Fog frame values are computed from the same camera state pushed below. prepareFrame also
+            // advances the temporal-history state: the history flag is armed only when record() runs.
+            var fog = volumetrics.prepareFrame(frameCounter, terrain.blockX, terrain.blockY,
+                    terrain.blockZ, level != null ? level.getSeaLevel() : 64,
+                    (flags & 0b01) != 0, waterWaveTime);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1156,7 +1183,13 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    fog.gridAndFlags(),
+                    fog.distanceParams(),
+                    fog.optics(),
+                    fog.shape(),
+                    fog.worldOffsetAndTime(),
+                    fog.lighting()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1205,7 +1238,16 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // continuation/guide writes visible to pass B
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // volume depth write visible to froxel passes
+            // Camera-frustum froxel passes run between Pass A (which wrote the fog clip depth) and
+            // Pass B (whose applyFroxelFog composites the integrated volume). Each is an extra raygen
+            // record of the same pipeline; record() orders inject -> filter -> integrate internally.
+            if (fog.enabled()) {
+                try (RtDebugLabels.Scope ignoredFog = RtDebugLabels.scope(ctx, cmd, "volumetric")) {
+                    volumetrics.record(ctx, cmd, active, pushConstants, frameCounter);
+                }
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // volume + continuation writes visible to pass B
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
@@ -1556,6 +1598,9 @@ public final class RtComposite {
             worldPipeline.destroy();
             worldPipeline = null;
         }
+        // Volumetric image views are referenced by the world pipeline's descriptor sets, so they are
+        // freed only after the pipeline above; teardown runs with the device idle (CLIENT_STOPPING waits).
+        volumetrics.destroy();
         bindlessTextureCapacity = 0;
         materialBindingsReady = false;
         materialEpochTraceGate = false;

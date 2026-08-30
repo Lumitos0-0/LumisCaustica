@@ -49,6 +49,16 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricFog(),
+            fogQuality(),
+            fogDensity(),
+            fogDistance(),
+            fogHeightFalloff(),
+            fogNoise(),
+            fogAnisotropy(),
+            godRays(),
+            temporalFog(),
+            underwaterFog(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -203,6 +213,102 @@ public final class RtVideoOptions {
             new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), Codec.INT),
             Math.clamp(setting.value(), 0, 9),
             setting::set);
+    }
+
+    private static OptionInstance<Boolean> volumetricFog() {
+        return bool("caustica.options.rt.volumetricFog", CausticaConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
+        List<Integer> steps = CausticaConfig.Rt.Volumetrics.QUALITY_STEPS;
+        int initialPosition = Math.max(steps.indexOf(setting.value()), 0);
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            (caption, position) -> Options.genericValueLabel(caption,
+                Component.translatable("caustica.options.rt.fogQuality." + steps.get(position))),
+            new OptionInstance.IntRange(0, steps.size() - 1),
+            initialPosition,
+            position -> setting.set(steps.get(position)));
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.EXTINCTION;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDensity.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                Component.literal(String.format(Locale.ROOT, "%.4f", hundredths * 0.0005f))),
+            new OptionInstance.IntRange(2, 100),
+            Math.clamp(Math.round(setting.value() / 0.0005f), 2, 100),
+            value -> setting.set(value * 0.0005f));
+    }
+
+    private static OptionInstance<Integer> fogDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDistance.tooltip")),
+            (caption, blocks) -> Options.genericValueLabel(caption, Component.literal(blocks + " blocks")),
+            new OptionInstance.IntRange(16, 1024),
+            Math.clamp(Math.round(setting.value()), 16, 1024),
+            value -> setting.set((float) value));
+    }
+
+    private static OptionInstance<Integer> fogHeightFalloff() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogHeightFalloff",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogHeightFalloff.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 100),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogNoise() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.NOISE_AMOUNT;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogNoise",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogNoise.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption,
+                Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 100),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogAnisotropy() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.ANISOTROPY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogAnisotropy",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogAnisotropy.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
+            new OptionInstance.IntRange(-95, 95),
+            Math.clamp(Math.round(setting.value() * 100.0f), -95, 95),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> godRays() {
+        return bool("caustica.options.rt.godRays", CausticaConfig.Rt.Volumetrics.GOD_RAYS);
+    }
+
+    private static OptionInstance<Integer> temporalFog() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT;
+        return new OptionInstance<>(
+            "caustica.options.rt.temporalFog",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.temporalFog.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 99),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 99),
+            value -> setting.set(value / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> underwaterFog() {
+        return bool("caustica.options.rt.underwaterFog", CausticaConfig.Rt.Volumetrics.UNDERWATER_ENABLED);
     }
 
     private static OptionInstance<Boolean> bool(String captionKey, BooleanSetting setting) {

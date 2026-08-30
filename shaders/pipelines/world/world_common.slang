@@ -88,6 +88,23 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // ---- Camera-frustum froxel participating media (volumetric_inject/filter/integrate).
+    // xyz grid dimensions; w bit 0 enables the passes, bit 1 marks a valid previous-frame history,
+    // bit 2 selects underwater behavior, bits 8..15 carry emitter RIS candidates, bits 16..19 the
+    // emitter samples per cell.
+    public int4     froxelGrid;
+    // x maximum camera-ray distance (blocks), y depth-distribution exponent,
+    // z base extinction coefficient (1/block), w exponential height falloff (1/block).
+    public float4   fogDistance;
+    // rgb single-scattering albedo (fog tint applied in Java before this is pushed), w HG anisotropy.
+    public float4   fogOptics;
+    // x base height in rebased coordinates, y noise amount, z world-noise frequency, w temporal weight.
+    public float4   fogShape;
+    // xyz rebase offset mapping rebased positions into world-stable noise coordinates; w animation
+    // time driving wind advection.
+    public float4   fogWorld;
+    // x directional sun/moon strength, y ambient sky strength, z underwater caustic strength, w reserved.
+    public float4   fogLighting;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

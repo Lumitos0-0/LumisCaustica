@@ -56,7 +56,8 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS,
+            Rt.Volumetrics.ENABLED, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
@@ -95,6 +96,10 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("volumetrics",
+                " Camera-frustum volumetric fog. Fog lighting uses the same path-traced visibility as\\n"
+                        + " surface lighting, so tinted glass and water color it. quality is 0..4; the\\n"
+                        + " underwater.* settings replace the ordinary ones while the camera is submerged.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -545,6 +550,63 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        /** Camera-frustum froxel participating media (see {@code rt/volumetric/RtVolumetrics}). */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fog", "volumetrics.enabled", true);
+            // Grid quality ladder: 0 performance, 1 balanced, 2 high, 3 ultra, 4 ultra+.
+            public static final List<Integer> QUALITY_STEPS = List.of(0, 1, 2, 3, 4);
+            public static final IntSetting QUALITY =
+                    intChoice("caustica.rt.fogQuality", "volumetrics.quality", 1, QUALITY_STEPS);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.fogDistance", "volumetrics.max-distance", 160f, 16f, 1024f);
+            public static final FloatSetting DEPTH_EXPONENT =
+                    clampedFloat("caustica.rt.fogDepthExponent", "volumetrics.depth-exponent", 3.5f, 1.2f, 8f);
+            public static final FloatSetting EXTINCTION =
+                    clampedFloat("caustica.rt.fogExtinction", "volumetrics.extinction", 0.006f, 0.0001f, 0.2f);
+            public static final FloatSetting HEIGHT_OFFSET =
+                    finiteFloat("caustica.rt.fogHeightOffset", "volumetrics.height-offset", 24f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fogHeightFalloff", "volumetrics.height-falloff", 0.012f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_AMOUNT =
+                    clampedFloat("caustica.rt.fogNoiseAmount", "volumetrics.noise-amount", 0.35f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_SCALE =
+                    clampedFloat("caustica.rt.fogNoiseScale", "volumetrics.noise-scale", 0.035f, 0.0001f, 2.0f);
+            public static final FloatSetting SCATTERING_ALBEDO =
+                    clampedFloat("caustica.rt.fogAlbedo", "volumetrics.single-scattering-albedo", 0.95f, 0.0f, 1.0f);
+            /** Per-channel tint applied to the single-scattering albedo, "r, g, b" in 0..1. */
+            public static final StringSetting TINT =
+                    string("caustica.rt.fogTint", "volumetrics.tint", "1.0, 1.0, 1.0", s -> s.trim());
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "volumetrics.anisotropy", 0.3f, -0.95f, 0.95f);
+            public static final BooleanSetting GOD_RAYS =
+                    bool("caustica.rt.fogGodRays", "volumetrics.god-rays", true);
+            public static final FloatSetting AMBIENT_STRENGTH =
+                    clampedFloat("caustica.rt.fogAmbient", "volumetrics.ambient-strength", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting TEMPORAL_WEIGHT =
+                    clampedFloat("caustica.rt.fogTemporalWeight", "volumetrics.temporal-weight", 0.9f, 0.0f, 0.99f);
+
+            public static final BooleanSetting UNDERWATER_ENABLED =
+                    bool("caustica.rt.fogUnderwater", "volumetrics.underwater.enabled", true);
+            public static final FloatSetting UNDERWATER_MAX_DISTANCE =
+                    clampedFloat("caustica.rt.fogUnderwaterDistance", "volumetrics.underwater.max-distance",
+                            48f, 8f, 256f);
+            public static final FloatSetting UNDERWATER_EXTINCTION =
+                    clampedFloat("caustica.rt.fogUnderwaterScattering", "volumetrics.underwater.extinction",
+                            0.08f, 0.001f, 1.0f);
+            public static final StringSetting UNDERWATER_TINT =
+                    string("caustica.rt.fogUnderwaterTint", "volumetrics.underwater.tint",
+                            "0.15, 0.45, 0.5", s -> s.trim());
+            public static final FloatSetting UNDERWATER_ANISOTROPY =
+                    clampedFloat("caustica.rt.fogUnderwaterAnisotropy", "volumetrics.underwater.anisotropy",
+                            0.2f, -0.5f, 0.8f);
+            public static final FloatSetting UNDERWATER_CAUSTIC_STRENGTH =
+                    clampedFloat("caustica.rt.fogUnderwaterCaustics", "volumetrics.underwater.caustic-strength",
+                            0.25f, 0.0f, 2.0f);
+
+            private Volumetrics() {
             }
         }
 

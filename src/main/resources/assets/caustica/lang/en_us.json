@@ -47,6 +47,41 @@
 	"caustica.options.rt.dlssQuality.2": "Quality",
 	"caustica.options.rt.dlssQuality.5": "DLAA",
 
+	"caustica.options.rt.volumetricFog": "Volumetric Fog",
+	"caustica.options.rt.volumetricFog.tooltip": "Ray-traced camera-frustum participating media. Light scattering, god rays and distance haze are computed per froxel with the same path-traced visibility rays as surface lighting, so tinted glass and water color the light that enters the fog.",
+
+	"caustica.options.rt.fogQuality": "Fog Quality",
+	"caustica.options.rt.fogQuality.tooltip": "Resolution and sampling budget of the froxel grid. Higher quality uses a finer grid, deeper slices and more emitter samples per cell.",
+	"caustica.options.rt.fogQuality.0": "Performance",
+	"caustica.options.rt.fogQuality.1": "Balanced",
+	"caustica.options.rt.fogQuality.2": "High",
+	"caustica.options.rt.fogQuality.3": "Ultra",
+	"caustica.options.rt.fogQuality.4": "Ultra+",
+
+	"caustica.options.rt.fogDensity": "Fog Density",
+	"caustica.options.rt.fogDensity.tooltip": "Base extinction coefficient of the fog, per block of distance. Higher values make the fog thicker and shorter range.",
+
+	"caustica.options.rt.fogDistance": "Fog Distance",
+	"caustica.options.rt.fogDistance.tooltip": "Maximum camera-ray distance the froxel grid covers. Fog fades out beyond this range.",
+
+	"caustica.options.rt.fogHeightFalloff": "Fog Height Falloff",
+	"caustica.options.rt.fogHeightFalloff.tooltip": "Exponential density falloff above the fog base height. Higher values keep fog low in valleys and clear above.",
+
+	"caustica.options.rt.fogNoise": "Fog Noise",
+	"caustica.options.rt.fogNoise.tooltip": "Amount of world-stable procedural noise modulating the fog density. High values give patchier, more organic fog.",
+
+	"caustica.options.rt.fogAnisotropy": "Fog Anisotropy",
+	"caustica.options.rt.fogAnisotropy.tooltip": "Henyey-Greenstein phase anisotropy. Positive values scatter light forward (brighter sun shafts), negative values scatter backward (softer, more diffuse fog).",
+
+	"caustica.options.rt.godRays": "God Rays",
+	"caustica.options.rt.godRays.tooltip": "Directional sun/moon in-scattering through the fog. Light shafts fall out of the same path-traced visibility as surface shadows.",
+
+	"caustica.options.rt.temporalFog": "Fog Temporal Filtering",
+	"caustica.options.rt.temporalFog.tooltip": "Blend weight for the previous frame's froxel history. Higher values are cleaner but can ghost with fast camera motion.",
+
+	"caustica.options.rt.underwaterFog": "Underwater Fog",
+	"caustica.options.rt.underwaterFog.tooltip": "Use the dedicated underwater scattering parameters when the camera is submerged.",
+
 	"caustica.options.rt.debugView": "Debug View",
 	"caustica.options.rt.debugView.tooltip": "Inspect ray-tracing buffers and exposure diagnostics after the normal frame has rendered.",
 	"caustica.options.rt.debugView.0": "Off",

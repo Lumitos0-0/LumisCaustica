@@ -158,12 +158,34 @@ public final class RtPipeline {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
+            // Froxel volumetric bindings: first-interface depth (2D), raw injection (3D), the ping-pong
+            // temporally filtered pair (A/B, frameIndex parity selects the lane), and the camera-outward
+            // integrated volume (3D). Raygen-only stages because only volumetric_inject/filter/integrate
+            // and applyFroxelFog in the indirect pass reach them.
+            binds.get(WORLD_VOLUME_DEPTH).binding(WORLD_VOLUME_DEPTH)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL_SCATTERING).binding(WORLD_FROXEL_SCATTERING)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL_FILTERED_A).binding(WORLD_FROXEL_FILTERED_A)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL_FILTERED_B).binding(WORLD_FROXEL_FILTERED_B)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL_INTEGRATED).binding(WORLD_FROXEL_INTEGRATED)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_CELESTIALS).binding(WORLD_CELESTIALS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
             binds.get(WORLD_SKY_VIEW).binding(WORLD_SKY_VIEW)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                    .descriptorCount(1)
+                    // Volumetric inject averages the sky LUT from a raygen shader, so the descriptor
+                    // must be visible to both the miss shader (visible sky) and raygen (fog ambient).
+                    .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_TRANSMITTANCE).binding(WORLD_TRANSMITTANCE)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)
@@ -176,6 +198,8 @@ public final class RtPipeline {
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(3, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
+            // Every storage-image binding is a single descriptor (the ping-pong filtered lanes are two
+            // separate bindings), so the generated binding count already matches the pool need.
             poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(RING * WORLD_SET_STORAGE_IMAGE_COUNT);
             poolSizes.get(2).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -423,6 +447,54 @@ public final class RtPipeline {
         }
     }
 
+    /**
+     * Write the size-dependent froxel images into every ring slot (set once at init / on recreation,
+     * when idle). The filtered lanes are separate bindings so the shader selects them with a branch on
+     * frameIndex parity — no update-after-bind and no dynamic resource-array indexing.
+     */
+    public void setVolumetricImages(long depthView, long scatteringView,
+                                    long filteredAView, long filteredBView, long integratedView) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(RING * 5, stack);
+            for (int i = 0; i < RING; i++) {
+                // pImageInfo takes a 1-element VkDescriptorImageInfo.Buffer per write, same convention
+                // as setStorageImage; allocate one per image so each write points at its own descriptor.
+                VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
+                depthInfo.get(0).imageView(depthView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorImageInfo.Buffer scatteringInfo = VkDescriptorImageInfo.calloc(1, stack);
+                scatteringInfo.get(0).imageView(scatteringView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorImageInfo.Buffer filteredAInfo = VkDescriptorImageInfo.calloc(1, stack);
+                filteredAInfo.get(0).imageView(filteredAView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorImageInfo.Buffer filteredBInfo = VkDescriptorImageInfo.calloc(1, stack);
+                filteredBInfo.get(0).imageView(filteredBView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorImageInfo.Buffer integratedInfo = VkDescriptorImageInfo.calloc(1, stack);
+                integratedInfo.get(0).imageView(integratedView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                int w = i * 5;
+                writes.get(w + 0).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_VOLUME_DEPTH).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(depthInfo);
+                writes.get(w + 1).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_FROXEL_SCATTERING).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(scatteringInfo);
+                writes.get(w + 2).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_FROXEL_FILTERED_A).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(filteredAInfo);
+                writes.get(w + 3).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_FROXEL_FILTERED_B).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(filteredBInfo);
+                writes.get(w + 4).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_FROXEL_INTEGRATED).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(integratedInfo);
+            }
+            VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
+        }
+    }
+
     /** Bind the block albedo atlas into every ring slot. */
     public void setBlockAlbedoAtlas(long imageView, long sampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -508,6 +580,17 @@ public final class RtPipeline {
      * hit regions are shared, so passes over the same scene differ only in this index.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex) {
+        trace(cmd, width, height, 1, pushConstants, raygenIndex);
+    }
+
+    /**
+     * Record bind (+ optional raygen push constants) + trace into the given command buffer.
+     * {@code raygenIndex} selects which raygen record of the SBT this dispatch launches; the miss and
+     * hit regions are shared, so passes over the same scene differ only in this index. {@code depth}
+     * lets the froxel passes launch a 3D workgroup (one thread per volume cell) from an RT pipeline.
+     */
+    public void trace(VkCommandBuffer cmd, int width, int height, int depth,
+                      java.nio.ByteBuffer pushConstants, int raygenIndex) {
         if (raygenIndex < 0 || raygenIndex >= raygenCount) {
             throw new IllegalArgumentException("raygen index " + raygenIndex + " out of range [0, " + raygenCount + ")");
         }
@@ -529,7 +612,7 @@ public final class RtPipeline {
             VkStridedDeviceAddressRegionKHR hit = VkStridedDeviceAddressRegionKHR.calloc(stack)
                     .deviceAddress(sbt.deviceAddress + (long) (raygenCount + missCount) * sbtStride).stride(sbtStride).size((long) hitGroupCount * sbtStride);
             VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
-            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, 1);
+            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, depth);
         }
     }
 
