@@ -19,7 +19,7 @@ import math;
 public static const uint FROXEL_ENABLED = 1u;
 public static const uint FROXEL_HISTORY_VALID = 2u;
 public static const uint FROXEL_UNDERWATER = 4u;
-// Bits 8..15 carry the emitter RIS candidate count, bits 16..19 the emitter samples per cell.
+// Bits 8..15 carry the path-traced GI samples per probe cell, bits 16..19 the GI bounce depth per sample.
 
 public bool froxelEnabled() {
     return (uint(worldPush.froxelGrid.w) & FROXEL_ENABLED) != 0u;
@@ -33,12 +33,12 @@ public bool froxelUnderwater() {
     return (uint(worldPush.froxelGrid.w) & FROXEL_UNDERWATER) != 0u;
 }
 
-public uint froxelLocalLightCandidates() {
-    return (uint(worldPush.froxelGrid.w) >> 8u) & 0xffu;
+public uint froxelGiSamples() {
+    return max(1u, (uint(worldPush.froxelGrid.w) >> 8u) & 0xffu);
 }
 
-public uint froxelEmitterSamples() {
-    return max(1u, (uint(worldPush.froxelGrid.w) >> 16u) & 0x0fu);
+public uint froxelGiBounces() {
+    return (uint(worldPush.froxelGrid.w) >> 16u) & 0x0fu;
 }
 
 public int3 froxelDimensions() {

@@ -27,9 +27,11 @@ import java.util.Arrays;
  * <ol>
  *   <li>inject — one thread per lighting-probe cell (the probe grid is half the fog grid's XY
  *       resolution, see {@code froxelInjectDimensions}) computes extinction (world-stable density field)
- *       and the single-scattering term {sigma_s·L per unit length, sigma_t}; all light reaches the media
- *       through the same path-traced {@code visibility()} rays as surface lighting, so tinted
- *       glass/water/translucent geometry filters the light that enters the fog;</li>
+ *       and the single-scattering term {sigma_s·L per unit length, sigma_t}; sun/moon light reaches the
+ *       media through the same path-traced {@code visibility()} rays as surface lighting, and the
+ *       remaining radiance (emissives, GI, skylight) is sampled by tracing the scene's own path tracer
+ *       ({@code tracePath}) from each probe cell, so tinted glass/water/translucent geometry filters
+ *       everything that enters the fog;</li>
  *   <li>filter — resamples the half-resolution probe grid to the fog grid, temporal reprojection of the
  *       previous frame's filtered result into the current camera, plus variance clipping against the
  *       current injection (ping-pong RGBA16F lanes);</li>
@@ -50,8 +52,9 @@ public final class RtVolumetrics {
 
     private static final int[] QUALITY_PIXEL_SIZE = {4, 4, 3, 2, 2};
     private static final int[] QUALITY_DEPTH_SLICES = {32, 48, 64, 96, 112};
-    private static final int[] QUALITY_LOCAL_CANDIDATES = {1, 2, 2, 4, 4};
-    private static final int[] QUALITY_EMITTER_SAMPLES = {1, 1, 1, 2, 2};
+    // Path-traced radiance probes per cell, and bounce depth each probe continues past its first hit.
+    private static final int[] QUALITY_GI_SAMPLES = {1, 1, 1, 2, 2};
+    private static final int[] QUALITY_GI_BOUNCES = {0, 1, 1, 2, 2};
 
     private RtFroxelGrid grid;
     private int deviceExtentCap;
@@ -164,7 +167,7 @@ public final class RtVolumetrics {
         float albedo = CausticaConfig.Rt.Volumetrics.SCATTERING_ALBEDO.value();
         float anisotropy = CausticaConfig.Rt.Volumetrics.ANISOTROPY.value();
         float directional = CausticaConfig.Rt.Volumetrics.GOD_RAYS.value() ? 1.0f : 0.0f;
-        float ambient = CausticaConfig.Rt.Volumetrics.AMBIENT_STRENGTH.value();
+        float giStrength = CausticaConfig.Rt.Volumetrics.AMBIENT_STRENGTH.value();
         float temporalWeight = CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value();
         float causticStrength = 0f;
         float[] tint = parseFloat3(CausticaConfig.Rt.Volumetrics.TINT.get(), new float[]{1f, 1f, 1f});
@@ -184,7 +187,7 @@ public final class RtVolumetrics {
                 Math.clamp(albedo * tint[1], 0f, 1f), Math.clamp(albedo * tint[2], 0f, 1f)};
 
         long signature = signature(maxDistance, distribution, extinction, heightFalloff, albedoTint,
-                anisotropy, noiseAmount, noiseScale, temporalWeight, causticStrength);
+                anisotropy, noiseAmount, noiseScale, temporalWeight, giStrength, causticStrength);
         if (signature != opticalSignature) {
             opticalSignature = signature;
             historyWasValid = false;
@@ -194,8 +197,8 @@ public final class RtVolumetrics {
         if (enabled) flags |= 0b01;
         if (historyWasValid) flags |= 0b10;
         if (submerged) flags |= 0b100;
-        flags |= (QUALITY_LOCAL_CANDIDATES[quality] & 0xff) << 8;
-        flags |= (QUALITY_EMITTER_SAMPLES[quality] & 0xf) << 16;
+        flags |= (QUALITY_GI_SAMPLES[quality] & 0xff) << 8;
+        flags |= (QUALITY_GI_BOUNCES[quality] & 0xf) << 16;
 
         float baseHeightRebased = seaLevel + heightOffset - rebaseY;
         return new FrameData(
@@ -204,7 +207,7 @@ public final class RtVolumetrics {
                 new Float4(albedoTint[0], albedoTint[1], albedoTint[2], anisotropy),
                 new Float4(baseHeightRebased, noiseAmount, noiseScale, temporalWeight),
                 new Float4(rebaseX, rebaseY, rebaseZ, timeSeconds),
-                new Float4(directional, ambient, causticStrength, 0f),
+                new Float4(directional, giStrength, causticStrength, 0f),
                 true, signature);
     }
 
@@ -307,7 +310,7 @@ public final class RtVolumetrics {
     private static long signature(float maxDistance, float distribution, float extinction,
                                   float heightFalloff, float[] albedoTint, float anisotropy,
                                   float noiseAmount, float noiseScale, float temporalWeight,
-                                  float causticStrength) {
+                                  float giStrength, float causticStrength) {
         long h = 0xC1;
         long[] values = {
                 Float.floatToRawIntBits(maxDistance) & 0xffffffffL,
@@ -321,6 +324,7 @@ public final class RtVolumetrics {
                 Float.floatToRawIntBits(noiseAmount) & 0xffffffffL,
                 Float.floatToRawIntBits(noiseScale) & 0xffffffffL,
                 Float.floatToRawIntBits(temporalWeight) & 0xffffffffL,
+                Float.floatToRawIntBits(giStrength) & 0xffffffffL,
                 Float.floatToRawIntBits(causticStrength) & 0xffffffffL
         };
         for (long value : values) {

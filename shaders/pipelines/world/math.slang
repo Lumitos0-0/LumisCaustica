@@ -45,6 +45,29 @@ public float hg(float cosT, float g) {
     return (1.0 - g2) / (4.0 * PI * pow(max(0.0, 1.0 + g2 - 2.0 * g * cosT), 1.5));
 }
 
+// Inverse-CDF sample of the HG phase about `axis` (the exact pdf = `hg`, so a phase-weighted integral
+// estimator is the sampled radiance itself with no extra weight). Used by the volumetric radiance probe
+// to importance-sample the in-scatter integral over incoming directions. g=0 falls back to uniform
+// sphere sampling, the limit of the closed form (and of the phase function).
+public float3 samplePhase(float3 axis, float g, inout uint s) {
+    float u = rndf(s);
+    float cosT;
+    if (abs(g) < 1.0e-3) {
+        cosT = 2.0 * u - 1.0;
+    } else {
+        float g2 = g * g;
+        float denom = 1.0 - g + 2.0 * g * u;
+        cosT = (1.0 + g2 - (1.0 - g2) * (1.0 - g2) / (denom * denom)) / (2.0 * g);
+        cosT = clamp(cosT, -1.0, 1.0);
+    }
+    float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+    float phi = 6.2831853 * rndf(s);
+    float3 t = normalize(abs(axis.x) > 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0));
+    float3 b = normalize(cross(axis, t));
+    t = cross(b, axis);
+    return normalize(t * (sinT * cos(phi)) + b * (sinT * sin(phi)) + axis * cosT);
+}
+
 // NVIDIA RR guide-buffer helper: integrated/view-dependent specular reflectivity, not raw F0.
 // alpha is GGX alpha (== the linear roughness materials store), NoV is the first-hit view cosine.
 public float3 rrSpecularAlbedo(float3 specularColor, float alpha, float NoV) {

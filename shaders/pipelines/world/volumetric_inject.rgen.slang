@@ -1,153 +1,39 @@
 // Froxel light + extinction injection. One raygen thread per lighting-probe cell (the probe grid is
 // half-resolution in XY — see froxelInjectDimensions; DispatchRaysDimensions is that 3D grid). Each cell
 // derives its camera-ray position, evaluates the world-stable density field, then lightens the
-// single-scattering term with three sources:
+// single-scattering term with two sources:
 //
 //   directional — sun/moon through the same weather-independent path-traced visibility() the surface
-//                 NEE uses, so tinted glass/water/translucent geometry colors the in-scattered light;
-//   ambient     — analytic vertical transmittance (the exponential density field has a closed-form
-//                 optical depth) times a hemisphere average of the sky LUT, with the LUT's light-view
-//                 cosine clamped so the sun's forward-scatter lobe is not double counted with the
-//                 directional term;
-//   emitters    — a small RIS reservoir over the existing power-weighted light grid, one shadow ray per
-//                 survivor. Per-cell decorrelated proposals avoid tile-shaped noise.
+//                 NEE uses, so tinted glass/water/translucent geometry colors the in-scattered light
+//                 and soft shadows break up the shafts;
+//   GI          — the path tracer itself. The in-scatter integral over incoming directions is
+//                 importance-sampled by the HG phase about the view ray (exact pdf, so the estimator is
+//                 just the sampled radiance), and each sample is traced with tracePath(): the first
+//                 hit shades exactly like a surface pixel (emission + sun NEE + emitter RIS + SSS) and
+//                 continues into the scene, so block-emitter light, terrain/canopy GI and skylight all
+//                 reach the fog with the same local lighting model as the image. A probe ray may not
+//                 see the celestial disc — the directional term represents the sun/moon directly, so a
+//                 disc sample would be a firefly on top of it — but the atmosphere LUT glow still
+//                 enters through the miss shader, giving the orange halo around the sun direction.
 //
 // All light-attenuation paths go through visibility(), whose any-hit shaders already accumulate
 // per-channel Beer-Lambert transmission (tinted glass, water, translucent blocks, entity dielectrics),
 // so fog lit through a red window pane is red — this is the path-traced advantage over shadow maps.
+// The probe path additionally traverses real dielectric volumes (glass, ice) with the same medium
+// stack as the image, so its radiance is attenuated by the surfaces it passes.
 import world_common;
 import world_core;
 import bindings;
 import sky;
 import math;
 import trace;
-import lighting;
 import water;
 import froxel;
+import medium;
+import segment;
+import path_trace;
 
 public static const float FROXEL_INJECTION_MAX = 30000.0; // per-unit-length in-scatter ceiling (fp16 safe)
-// ~20 degrees; beyond the sun's forward-scatter core, so the ambient average excludes the lobe that the
-// directional term already represents through the HG phase.
-public static const float FROXEL_AMBIENT_LIGHT_COS = 0.94;
-
-public struct FroxelReservoir {
-    public float3 samplePosition;
-    public float3 contribution;
-    public float weightSum;
-    public float target;
-}
-
-public FroxelReservoir emptyFroxelReservoir() {
-    FroxelReservoir r;
-    r.samplePosition = float3(0.0, 0.0, 0.0);
-    r.contribution = float3(0.0, 0.0, 0.0);
-    r.weightSum = 0.0;
-    r.target = 0.0;
-    return r;
-}
-
-/** Unoccluded in-scattered radiance from one uniformly sampled emitter rectangle (phase ∝ HG). */
-public float3 evaluateVolumeEmitter(float3 samplePosition, float3 lightPosition, float3 lightNormal,
-                             float3 emission, float area, float3 viewRay, float g) {
-    float3 toLight = lightPosition - samplePosition;
-    float dist2 = dot(toLight, toLight);
-    if (dist2 <= 1.0e-5) {
-        return float3(0.0);
-    }
-    float dist = sqrt(dist2);
-    float3 lightDir = toLight / dist;
-    float emitterCosine = max(0.0, dot(lightNormal, -lightDir));
-    float phase = hg(dot(lightDir, viewRay), g);
-    return emission * (emitterCosine * area * phase / dist2);
-}
-
-/**
- * RIS estimate of nearby block-emitter radiance scattered toward the camera, with one visibility ray.
- * Uses only the local light-grid span: a distant global proposal has vanishing contribution but a very
- * large inverse-PDF weight, which reads as isolated fireflies at one sample per froxel.
- */
-public float3 froxelEmitterLighting(float3 samplePosition, float3 viewRay, float g,
-                             inout uint sampleSeed, inout uint proposalSeed) {
-    uint candidateCount = min(froxelLocalLightCandidates(), worldPush.lightCount);
-    if (candidateCount == 0u || pc.lightBufAddr == 0 || pc.lightLocalAliasAddr == 0) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    LightGridCell gridCell;
-    int3 gridCellCoord;
-    if (!findLightGridCell(samplePosition, gridCell, gridCellCoord)
-            || gridCell.invWeightSum <= 0.0) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    FroxelReservoir reservoir = emptyFroxelReservoir();
-    for (uint candidate = 0u; candidate < candidateCount; ++candidate) {
-        uint lightIndex;
-        selectLightGridSpanLight(gridCell, proposalSeed, lightIndex);
-        Light light = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
-        float3 emission = lightRadiance(light);
-        float area = lightArea(light);
-        float3 rectanglePoint = light.pos + worldPush.lightRebase.xyz
-                + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfU(light)
-                + (rndf(sampleSeed) * 2.0 - 1.0) * lightHalfV(light);
-        float3 contribution = evaluateVolumeEmitter(samplePosition, rectanglePoint,
-                lightGeometricNormal(light), emission, area, viewRay, g);
-        float target = luminance(contribution);
-        if (target <= 0.0) {
-            continue;
-        }
-        // localProbability=1 reconstructs the exact weighted neighborhood proposal PDF.
-        float sourcePdf = proposalPdf(light, emission, gridCell, gridCellCoord, 1.0);
-        float candidateWeight = target / max(sourcePdf, 1.0e-20);
-        reservoir.weightSum += candidateWeight;
-        if (rndf(sampleSeed) * reservoir.weightSum < candidateWeight) {
-            reservoir.samplePosition = rectanglePoint;
-            reservoir.contribution = contribution;
-            reservoir.target = target;
-        }
-    }
-    if (reservoir.target <= 0.0) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    reservoir.weightSum *= 1.0 / max(float(candidateCount), 1.0);
-    float weight = reservoir.weightSum / max(reservoir.target, 1.0e-20);
-    float3 toLight = reservoir.samplePosition - samplePosition;
-    float dist = length(toLight);
-    if (dist <= RAY_TMIN) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    float3 visible = visibility(samplePosition, toLight / dist, dist * 0.999).transmittance;
-    return reservoir.contribution * weight * visible;
-}
-
-/**
- * Analytical hemisphere-average sky radiance (BT.709 → ACEScg). The sky LUT is parameterized by
- * view-direction zenith cosine and light-view cosine; five fixed directions (up + four at 30°
- * elevation) averaged give a stable ambient anchor with no extra rays. The light-view cosine is clamped:
- * the LUT's near-sun rows contain the forward-scatter peak of the atmosphere, which the directional term
- * already adds through the HG phase — including it here would double-count the sun and wash the fog out.
- */
-public float3 froxelAmbientSkyRadiance(SkyState state) {
-    float3 sum = float3(0.0);
-    float count = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        float az = float(i) * 1.57079632679;
-        float3 dir = normalize(float3(cos(az) * 0.866, 0.5, sin(az) * 0.866));
-        float2 sunUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
-                min(lightViewCosine(dir, state.sunDir), FROXEL_AMBIENT_LIGHT_COS), SKY_VIEW_BODY_SUN);
-        float2 moonUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
-                min(lightViewCosine(dir, state.moonDir), FROXEL_AMBIENT_LIGHT_COS), SKY_VIEW_BODY_MOON);
-        sum += skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
-        count += 1.0;
-    }
-    float2 sunUv = skyViewLutUv(state.viewerRadiusKm, 1.0,
-            min(lightViewCosine(float3(0.0, 1.0, 0.0), state.sunDir), FROXEL_AMBIENT_LIGHT_COS),
-            SKY_VIEW_BODY_SUN);
-    float2 moonUv = skyViewLutUv(state.viewerRadiusKm, 1.0,
-            min(lightViewCosine(float3(0.0, 1.0, 0.0), state.moonDir), FROXEL_AMBIENT_LIGHT_COS),
-            SKY_VIEW_BODY_MOON);
-    sum += skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
-    count += 1.0;
-    return bt709ToAcesCg(max(sum / count + state.airglowLuminance, float3(0.0)));
-}
 
 [shader("raygeneration")]
 void main() {
@@ -200,8 +86,6 @@ void main() {
     uint seed = (tid.x * 1973u + tid.y * 9277u + tid.z * 5939u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);
     seed = pcg(seed);
-    uint proposalSeed = (tid.x * 12289u + tid.y * 41521u + tid.z * 25457u) ^ (worldPush.frameIndex * 40503u);
-    proposalSeed = pcg(proposalSeed);
 
     float3 inScatter = float3(0.0, 0.0, 0.0);
 
@@ -227,30 +111,31 @@ void main() {
         inScatter += sigmaS * celestialLight.illuminance * phase * transmittance * directional;
     }
 
-    // 2) Ambient sky: analytic vertical transmittance against the hemisphere-average sky radiance. The
-    // density field is exponential in height, so the optical depth from a point to space is exactly
-    // sigma / falloff — no ray needed. This is the cost/quality trade behind the 2x2 probe decimation:
-    // canopy/cliff occlusion is dropped from the ambient term, but the sun/moon path below still carries
-    // the scene's real geometric occlusion and therefore the shafts.
-    float ambient = worldPush.fogLighting.y;
-    if (ambient > 0.0) {
-        float scaleHeight = worldPush.fogDistance.w > 1.0e-3
-                ? 1.0 / worldPush.fogDistance.w : 16.0; // 16 blocks when falloff is disabled (underwater)
-        float skyVis = exp(-min(sigmaT * scaleHeight, 8.0));
-        // Isotropic phase for the diffuse ambient term: sigma_s * L * p(1/4pi) * transmittance.
-        inScatter += sigmaS * froxelAmbientSkyRadiance(skyState(worldPush)) * skyVis * ambient
-                * (1.0 / (4.0 * SKY_PI));
-    }
-
-    // 3) Local emitter RIS, one independent reservoir per configured sample, averaged. The survivor's
-    // shadow ray is also path-traced, so a red window in front of a light colors the shaft.
-    uint emitterSamples = froxelEmitterSamples();
-    if (emitterSamples > 0u && froxelLocalLightCandidates() > 0u) {
-        float3 emitter = float3(0.0, 0.0, 0.0);
-        for (uint s = 0u; s < emitterSamples; ++s) {
-            emitter += froxelEmitterLighting(pos, dir, g, seed, proposalSeed);
+    // 2) Path-traced radiance probe (GI + emissives + skylight). Directions are sampled from the HG
+    // phase about the view ray — the exact pdf, so the average sample radiance IS the phase-weighted
+    // in-scatter integral with no extra weight. Each sample path starts at the cell and shades its first
+    // vertex like a surface pixel, then continues up to the configured GI depth; the temporal filter
+    // resolves the resulting noise over frames. The celestial disc stays hidden on probe rays (the
+    // directional term above is that light, with its own phase weight) and the first vertex emitter
+    // radiance is gathered even on hidden-disc rays, because an emissive surface seen directly by the
+    // fog is the light being sampled — no previous RIS along this path accounted for it.
+    float giStrength = worldPush.fogLighting.y;
+    uint giSamples = froxelGiSamples();
+    if (giSamples > 0u && giStrength > 0.0) {
+        float3 radiance = float3(0.0, 0.0, 0.0);
+        MediumStack probeMedium = makeMediumStack(froxelUnderwater()
+                ? makeDielectricMedium(true, WATER_IOR, worldPush.waterParams.xyz, 1.0)
+                : airMedium());
+        int probeBounce = max(1, int(worldPush.maxBounces) - int(froxelGiBounces()));
+        for (uint s = 0u; s < giSamples; ++s) {
+            // u points from the cell toward the sampled light (like the directional term's lightDir);
+            // the incoming photon direction is -u and the collected radiance is exactly L from -u.
+            float3 u = samplePhase(dir, g, seed);
+            PathSegment probe = makePathSegment(pos, u, float3(1.0, 1.0, 1.0), probeMedium,
+                    0.0, 0.0, seed, probeBounce, false, true);
+            radiance += tracePath(probe, tid.xy, s);
         }
-        inScatter += emitter * (1.0 / float(emitterSamples));
+        inScatter += sigmaS * radiance * giStrength * (1.0 / float(giSamples));
     }
 
     froxelScattering[itid] = float4(clamp(inScatter, float3(0.0), float3(FROXEL_INJECTION_MAX)),

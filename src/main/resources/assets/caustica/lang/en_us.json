@@ -48,10 +48,10 @@
 	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.volumetricFog": "Volumetric Fog",
-	"caustica.options.rt.volumetricFog.tooltip": "Ray-traced camera-frustum participating media. Light scattering, god rays and distance haze are computed per froxel with the same path-traced visibility rays as surface lighting, so tinted glass and water color the light that enters the fog.",
+	"caustica.options.rt.volumetricFog.tooltip": "Ray-traced camera-frustum participating media. Light scattering, god rays and distance haze are computed per froxel with the same path tracer as surface lighting, so block emitters, global illumination and tinted glass all color the light that enters the fog.",
 
 	"caustica.options.rt.fogQuality": "Fog Quality",
-	"caustica.options.rt.fogQuality.tooltip": "Resolution and sampling budget of the froxel grid. Higher quality uses a finer grid, deeper slices and more emitter samples per cell.",
+	"caustica.options.rt.fogQuality.tooltip": "Resolution and sampling budget of the froxel grid. Higher quality uses a finer grid, deeper slices and more path-traced GI probes per cell.",
 	"caustica.options.rt.fogQuality.0": "Performance",
 	"caustica.options.rt.fogQuality.1": "Balanced",
 	"caustica.options.rt.fogQuality.2": "High",
