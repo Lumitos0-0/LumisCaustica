@@ -187,7 +187,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                     mediumPop(medium);
                 }
             }
-            showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
+            // Specular interface: an ordinary path may see the sun/moon disc. Probe paths never do —
+            // their sun/moon is the fog directional term, and a glass bounce onto the disc would be a
+            // per-cell HDR spike (a "dot" through windows).
+            showCelestial = !seg.probePath;
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
                 if (rndf(seed) > q) {
@@ -391,7 +394,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             }
             ro = p;
             rd = l;
-            showCelestial = true; // specular lobe: this ray is a (glossy) mirror — show the disc
+            showCelestial = !seg.probePath; // specular lobe: show the disc on ordinary paths only
         } else {
             throughput *= diffAlb / (1.0 - ps);
             ro = p;
