@@ -177,6 +177,12 @@ public final class RtPipeline {
             binds.get(WORLD_FROXEL_INTEGRATED).binding(WORLD_FROXEL_INTEGRATED)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
                     .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL_LIGHT_A).binding(WORLD_FROXEL_LIGHT_A)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FROXEL_LIGHT_B).binding(WORLD_FROXEL_LIGHT_B)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_CELESTIALS).binding(WORLD_CELESTIALS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
@@ -453,9 +459,10 @@ public final class RtPipeline {
      * frameIndex parity — no update-after-bind and no dynamic resource-array indexing.
      */
     public void setVolumetricImages(long depthView, long scatteringView,
-                                    long filteredAView, long filteredBView, long integratedView) {
+                                    long filteredAView, long filteredBView, long integratedView,
+                                    long lightAView, long lightBView) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(RING * 5, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(RING * 7, stack);
             for (int i = 0; i < RING; i++) {
                 // pImageInfo takes a 1-element VkDescriptorImageInfo.Buffer per write, same convention
                 // as setStorageImage; allocate one per image so each write points at its own descriptor.
@@ -469,7 +476,11 @@ public final class RtPipeline {
                 filteredBInfo.get(0).imageView(filteredBView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 VkDescriptorImageInfo.Buffer integratedInfo = VkDescriptorImageInfo.calloc(1, stack);
                 integratedInfo.get(0).imageView(integratedView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-                int w = i * 5;
+                VkDescriptorImageInfo.Buffer lightAInfo = VkDescriptorImageInfo.calloc(1, stack);
+                lightAInfo.get(0).imageView(lightAView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorImageInfo.Buffer lightBInfo = VkDescriptorImageInfo.calloc(1, stack);
+                lightBInfo.get(0).imageView(lightBView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                int w = i * 7;
                 writes.get(w + 0).sType$Default().dstSet(descriptorSets[i])
                         .dstBinding(WORLD_VOLUME_DEPTH).descriptorCount(1)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -490,6 +501,14 @@ public final class RtPipeline {
                         .dstBinding(WORLD_FROXEL_INTEGRATED).descriptorCount(1)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .pImageInfo(integratedInfo);
+                writes.get(w + 5).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_FROXEL_LIGHT_A).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(lightAInfo);
+                writes.get(w + 6).sType$Default().dstSet(descriptorSets[i])
+                        .dstBinding(WORLD_FROXEL_LIGHT_B).descriptorCount(1)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(lightBInfo);
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }

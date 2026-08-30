@@ -21,39 +21,48 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 /**
- * Frustum-froxel participating media, path-traced per froxel. Owns the 3D volumes and the three
- * ray-generation passes that update them:
+ * Frustum-froxel participating media, path-traced. Owns the 3D volumes and the four ray-generation
+ * passes that update them:
  *
  * <ol>
- *   <li>inject — one thread per lighting-probe cell (the probe grid is decimated in XY and Z relative
- *       to the fog grid, see {@code froxelInjectDimensions}) computes extinction (world-stable density
- *       field) and the single-scattering term {sigma_s·L per unit length, sigma_t}; sun/moon light
- *       reaches the media through the same path-traced {@code visibility()} rays as surface lighting,
- *       block emitters enter through a pdf-correct next-event sample over the light grid, and the
- *       remaining radiance is sampled by tracing the scene's own path tracer ({@code tracePath}) from
- *       each probe cell under a restricted probe path (no surface RIS/emission gather/SSS, diffuse-only
- *       continuation) — so terrain GI, skylight and tinted glass/water/translucent geometry filter
- *       everything that enters the fog without the single-sample HDR spikes those restrictions
- *       remove;</li>
- *   <li>filter — resamples the decimated probe grid to the fog grid, temporal reprojection of the
+ *   <li>light — the world-anchored radiance probe volume (fixed 32x32x16 probes, 4-block cells, see
+ *       {@code froxelLightDimensions}): each probe traces a uniform-sphere GI path plus pdf-correct
+ *       emitter next-event samples and accumulates them gamma-encoded (the production DDGI
+ *       probe-update curve) into a ping-pong pair, so the fog's GI/emitter light field is stable under
+ *       camera motion and progressively converges instead of per-cell single-sample noise;</li>
+ *   <li>inject — one thread per sun-shaft cell (the shaft grid is decimated in XY and Z relative to the
+ *       fog grid, see {@code froxelInjectDimensions}) computes extinction (world-stable density field)
+ *       and the single-scattering term {sigma_s·L per unit length, sigma_t}: the analytic sun/moon
+ *       term through the same path-traced {@code visibility()} rays as surface lighting (tinted
+ *       glass/water/translucent geometry filters the shafts), plus a trilinear query of the probe
+ *       volume for skylight, terrain GI and block emitters;</li>
+ *   <li>filter — resamples the decimated shaft grid to the fog grid, temporal reprojection of the
  *       previous frame's filtered result into the current camera, gamma-encoded temporal accumulation
- *       (the DDGI/RTXGI probe curve: high-DR single samples are compressed before blending so they
- *       cannot read as per-cell dots), plus variance clipping against the current injection (ping-pong
- *       RGBA16F lanes);</li>
+ *       plus variance clipping against the current injection (ping-pong RGBA16F lanes);</li>
  *   <li>integrate — camera-outward march applying the analytic Beer–Lambert slice integral, producing a
  *       per-column {cumulative in-scatter, transmittance} volume that {@code applyFroxelFog} composites
  *       scene-linearly before pre-exposure.</li>
  * </ol>
  *
  * <p>All frame values are serialized into {@code WorldPush} by the caller using {@link FrameData};
- * the passes are extra raygen records (index 2/3/4) of the existing world pipeline, so they share the
- * TLAS, descriptors, and push constants with the trace itself. Volumes are recreated on render-size or
+ * the passes are extra raygen records (index 2..5) of the existing world pipeline, so they share the
+ * TLAS, descriptors, and push constants with the trace itself. The light probe volume is fixed-size
+ * and independent of the render dimensions; the frustum volumes are recreated on render-size or
  * quality changes with the device idle (same discipline as every other {@code RtComposite} image).
  */
 public final class RtVolumetrics {
-    public static final int INJECT_RAYGEN = 2;
-    public static final int FILTER_RAYGEN = 3;
-    public static final int INTEGRATE_RAYGEN = 4;
+    // Raygen record indices must match the order in RtComposite's world pipeline creation.
+    public static final int LIGHT_RAYGEN = 2;
+    public static final int INJECT_RAYGEN = 3;
+    public static final int FILTER_RAYGEN = 4;
+    public static final int INTEGRATE_RAYGEN = 5;
+
+    // World-anchored radiance probe volume (fixed, not render-size dependent). Must match
+    // FROXEL_LIGHT_DIM_* and FROXEL_LIGHT_CELL in froxel.slang.
+    public static final int LIGHT_DIM_X = 32;
+    public static final int LIGHT_DIM_Y = 32;
+    public static final int LIGHT_DIM_Z = 16;
+    public static final float LIGHT_CELL_BLOCKS = 4.0f;
 
     private static final int[] QUALITY_PIXEL_SIZE = {4, 4, 3, 2, 2};
     private static final int[] QUALITY_DEPTH_SLICES = {32, 48, 64, 96, 112};
@@ -73,6 +82,8 @@ public final class RtVolumetrics {
     private RtVolume scattering;
     private final RtVolume[] filtered = new RtVolume[2];
     private RtVolume integrated;
+    private RtVolume lightA;
+    private RtVolume lightB;
     private long lastRecordedFrame = Long.MIN_VALUE;
     private long opticalSignature = Long.MIN_VALUE;
     private boolean historyValid;
@@ -88,7 +99,7 @@ public final class RtVolumetrics {
 
     public boolean matches(int renderWidth, int renderHeight) {
         if (grid == null || volumeDepth == null || scattering == null || filtered[0] == null
-                || filtered[1] == null || integrated == null) {
+                || filtered[1] == null || integrated == null || lightA == null || lightB == null) {
             return false;
         }
         // Recompute the same clamped grid ensure() derives; a device-extent clamp changes the stored
@@ -135,6 +146,12 @@ public final class RtVolumetrics {
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel filtered B " + extent);
         integrated = ctx.createStorageVolume(wanted.width(), wanted.height(), wanted.depth(),
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel integrated " + extent);
+        String lightExtent = LIGHT_DIM_X + "x" + LIGHT_DIM_Y + "x" + LIGHT_DIM_Z
+                + " @" + (int) LIGHT_CELL_BLOCKS + " blocks";
+        lightA = ctx.createStorageVolume(LIGHT_DIM_X, LIGHT_DIM_Y, LIGHT_DIM_Z,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel light volume A " + lightExtent);
+        lightB = ctx.createStorageVolume(LIGHT_DIM_X, LIGHT_DIM_Y, LIGHT_DIM_Z,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel light volume B " + lightExtent);
         invalidateHistory();
     }
 
@@ -142,7 +159,8 @@ public final class RtVolumetrics {
     public void bindAll(RtPipeline pipeline) {
         requireReady();
         pipeline.setVolumetricImages(volumeDepth.view, scattering.view,
-                filtered[0].view, filtered[1].view, integrated.view);
+                filtered[0].view, filtered[1].view, integrated.view,
+                lightA.view, lightB.view);
     }
 
     /**
@@ -230,7 +248,7 @@ public final class RtVolumetrics {
     }
 
     /**
-     * Record the three volumetric passes between Pass A and Pass B. Pass A wrote volumeDepth (fog clip)
+     * Record the four volumetric passes between Pass A and Pass B. Pass A wrote volumeDepth (fog clip)
      * immediately before; the guards and barriers here keep volume writes ordered before the read by the
      * next pass and by the final trace's {@code applyFroxelFog}.
      */
@@ -238,9 +256,17 @@ public final class RtVolumetrics {
                        ByteBuffer pushConstants, long frameIndex) {
         requireReady();
         try (MemoryStack stack = MemoryStack.stackPush()) {
+            try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric light");
+                 RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricLight")) {
+                // World-anchored probe volume: fixed 3D dispatch, one thread per probe, writes the
+                // gamma-encoded accumulated radiance field the inject pass samples below.
+                active.trace(cmd, LIGHT_DIM_X, LIGHT_DIM_Y, LIGHT_DIM_Z,
+                        pushConstants, LIGHT_RAYGEN);
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric inject");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricInject")) {
-                // Inject at the lighting probe grid (half XY), filter/integrate at the full fog grid.
+                // Inject at the sun-shaft grid (decimated XY/Z), filter/integrate at the full fog grid.
                 active.trace(cmd, scattering.width, scattering.height, scattering.depth,
                         pushConstants, INJECT_RAYGEN);
             }
@@ -303,12 +329,21 @@ public final class RtVolumetrics {
             integrated.destroy();
             integrated = null;
         }
+        if (lightA != null) {
+            lightA.destroy();
+            lightA = null;
+        }
+        if (lightB != null) {
+            lightB.destroy();
+            lightB = null;
+        }
         lastRecordedFrame = Long.MIN_VALUE;
     }
 
     private void requireReady() {
         if (grid == null || volumeDepth == null || scattering == null
-                || filtered[0] == null || filtered[1] == null || integrated == null) {
+                || filtered[0] == null || filtered[1] == null || integrated == null
+                || lightA == null || lightB == null) {
             throw new IllegalStateException("Volumetric resources are not ready");
         }
     }

@@ -1,7 +1,8 @@
 // Temporal filtering of the injected froxel lighting. One raygen thread per fog cell.
 //
-// The injection is a single-sample estimate per lighting-probe cell (sun ray + emitter next-event +
-// radiance probe), so it is noisy; this pass resamples the decimated probe grid back to the fog grid,
+// The injection is per-cell only in its analytic sun/moon term (the GI and emitter terms come from the
+// already-smooth world-anchored light volume), so this pass resamples the decimated grid back to the
+// fog grid,
 // reprojects the previous frame's filtered result into the current camera (same prevViewProj + camDelta
 // convention as the reflection motion vectors) and blends, the standard technique for removing ghosting
 // without letting noise accumulate. The pair of filtered volumes ping-pongs on frameIndex parity; bit 1

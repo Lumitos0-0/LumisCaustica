@@ -25,12 +25,16 @@ import world_common;
 // froxelScattering is this frame's injected {sigma_s*L per unit length, scalar extinction};
 // froxelFilteredA/B are the ping-pong temporally filtered result (frameIndex parity selects the lane,
 // as two bindings rather than a descriptor array so the shader never has to index a resource array);
-// froxelIntegrated is the camera-outward cumulative {in-scattering.rgb, transmittance}.
+// froxelIntegrated is the camera-outward cumulative {in-scattering.rgb, transmittance};
+// froxelLightA/B are the world-anchored radiance probe volume (gamma-encoded accumulated average
+// radiance + sample count; see volumetric_light — the fog's GI/emitter light field).
 [[vk::binding(12, 0)]] [format("r32f")] public RWTexture2D<float> volumeDepth;
 [[vk::binding(13, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelScattering;
 [[vk::binding(14, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFilteredA;
 [[vk::binding(15, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelFilteredB;
 [[vk::binding(16, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelIntegrated;
+[[vk::binding(17, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelLightA;
+[[vk::binding(18, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelLightB;
 
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];

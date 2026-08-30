@@ -9,8 +9,8 @@
 // Sky / ambient light needs no separate AO pass: continuation rays that escape land in world.rmiss,
 // which returns sky radiance — so soft sky fill and contact AO both fall out of the path integral.
 //
-// The volumetric inject pass calls this function directly for each light probe: phase-sampled
-// directions from a fog cell are traced with the SAME shading rules as a surface pixel, so terrain GI,
+// The volumetric light-volume pass calls this function directly for each world-anchored probe:
+// uniform-sphere directions are traced with the SAME shading rules as a surface pixel, so terrain GI,
 // skylight and tinted transmission reach the fog with no fog-specific lighting model of their own.
 // Probe-path restrictions (seg.probePath) are deliberate: no surface RIS, no direct-emitter gather, no
 // SSS, diffuse-only continuation — those are single-sample HDR terms that showed up as fog fireflies,

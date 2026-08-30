@@ -69,6 +69,7 @@ public final class RtFrameStats {
                     "frame.tracePrimary",
                     "frame.traceIndirect",
                     // Froxel volumetric passes (between Pass A and Pass B).
+                    "frame.volumetricLight",
                     "frame.volumetricInject",
                     "frame.volumetricFilter",
                     "frame.volumetricIntegrate",

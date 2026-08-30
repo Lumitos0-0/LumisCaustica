@@ -1,14 +1,20 @@
 // Frustum-aligned froxel participating media: grid geometry, world-stable procedural density, temporal
 // history access and the camera-ray fog composite. Depends on core, bindings, sky and math.
 //
-// One grid per frame, aligned to the camera frustum: xy cells cover square blocks of render pixels and
-// Z follows a power distribution so nearby air gets more samples than distant haze. Each cell stores
+// One fog grid per frame, aligned to the camera frustum: xy cells cover square blocks of render pixels
+// and Z follows a power distribution so nearby air gets more samples than distant haze. Each cell stores
 //   froxelScattering  {sigma_s * L per unit length, scalar extinction}
 //   froxelFilteredA/B the same quantity after temporal reprojection+variance clipping (ping-pong)
 //   froxelIntegrated  {cumulative in-scattering.rgb, cumulative transmittance} along each XY column
 // The injected "light" term is a per-unit-length radiance (sigma_s * L), so the integrate pass can apply
 // the analytic Beer-Lambert slice integral and conserve energy across Z slices; nothing here is
 // pre-multiplied by step length.
+//
+// The fog's light is split by frequency: the analytic sun/moon term lives in the frustum grid (sharp
+// shafts, one visibility ray per decimated cell), while skylight/terrain GI/emitters live in the
+// world-anchored probe volume below (froxelLightA/B) — low-frequency, progressively accumulated, stable
+// under camera motion. This mirrors the production path-traced stack (Minecraft RTX keeps its GI data
+// in the fog volume; NVIDIA's RTXGI probes use gamma-encoded accumulation to suppress fireflies).
 import world_common;
 import world_core;
 import bindings;
@@ -19,8 +25,8 @@ import math;
 public static const uint FROXEL_ENABLED = 1u;
 public static const uint FROXEL_HISTORY_VALID = 2u;
 public static const uint FROXEL_UNDERWATER = 4u;
-// Bits 8..15 carry the path-traced GI samples per probe cell, bits 16..19 the GI bounce depth per
-// sample, bits 20..23 the XY probe decimation and bits 24..27 the Z probe decimation.
+// Bits 8..15 carry the GI samples per light-volume probe per frame, bits 16..19 the probe bounce depth,
+// bits 20..23 the fog-grid XY decimation and bits 24..27 the Z decimation (the sun-shaft grid).
 
 public bool froxelEnabled() {
     return (uint(worldPush.froxelGrid.w) & FROXEL_ENABLED) != 0u;
@@ -55,12 +61,11 @@ public int3 froxelDimensions() {
 }
 
 /**
- * Resolution of the lighting probe grid. The inject pass shades one cell per divXY x divXY fog cells in
- * XY and per divZ Z slices; the filter/integrate passes run at full grid. The light field is
- * low-frequency (skylight, soft emitter halos, terrain GI) and the filter temporally accumulates and
- * trilinearly resamples it, so the rays — the dominant cost of the inject pass — can be decimated hard
- * without the fog itself losing density resolution. The decimation is pushed per quality so the user's
- * quality slider trades rays against lighting resolution directly.
+ * Resolution of the sun-shaft lighting grid. The inject pass shades one cell per divXY x divXY fog
+ * cells in XY and per divZ Z slices; the filter/integrate passes run at full grid. Only the analytic
+ * sun/moon term lives here (one visibility ray per cell); the GI/emitter light field comes from the
+ * world-anchored probe volume below, so this grid can stay coarse without the fog itself losing detail.
+ * The decimation is pushed per quality so the user's quality slider trades rays against shaft resolution.
  */
 public int3 froxelInjectDimensions() {
     int3 dims = froxelDimensions();
@@ -69,6 +74,43 @@ public int3 froxelInjectDimensions() {
     return int3((dims.x + int(divXY) - 1) / int(divXY),
             (dims.y + int(divXY) - 1) / int(divXY),
             (dims.z + int(divZ) - 1) / int(divZ));
+}
+
+// ---- World-anchored light probe volume -----------------------------------
+// A regular world-space grid snapped to FROXEL_LIGHT_CELL: probes stay at fixed world positions while
+// the camera moves, so the accumulated light field is stable (a frustum-aligned grid would re-sample
+// new world positions every frame — that is the grid wobble). RtVolumetrics allocates the matching
+// volume and both ping-pong lanes carry {gamma-encoded accumulated radiance, sample count}.
+public static const float FROXEL_LIGHT_CELL = 4.0;
+public static const int FROXEL_LIGHT_DIM_X = 32; // must match RtVolumetrics.LIGHT_DIM_*
+public static const int FROXEL_LIGHT_DIM_Y = 32;
+public static const int FROXEL_LIGHT_DIM_Z = 16;
+
+public int3 froxelLightDimensions() {
+    return int3(FROXEL_LIGHT_DIM_X, FROXEL_LIGHT_DIM_Y, FROXEL_LIGHT_DIM_Z);
+}
+
+/** Grid origin of the probe volume for a given camera position (quantized to the probe cell size). */
+public float3 froxelLightAnchor(float3 camera) {
+    int3 dims = froxelLightDimensions();
+    float3 half = float3(dims) * FROXEL_LIGHT_CELL * 0.5;
+    return floor((camera - half) / FROXEL_LIGHT_CELL) * FROXEL_LIGHT_CELL;
+}
+
+/**
+ * Decode the probe volume interpolation at a world position (returns linear average radiance). The
+ * volume is written gamma-encoded (see volumetric_light) so the decode must happen here, at the single
+ * place the field is queried. The current frame's lane is selected by frameIndex parity, the same
+ * convention the update pass writes with.
+ */
+public float3 froxelLightSample(float3 pos) {
+    int3 dims = froxelLightDimensions();
+    float3 anchor = froxelLightAnchor(worldPush.camOffset);
+    float3 coord = (pos - anchor) / FROXEL_LIGHT_CELL - 0.5;
+    float4 encoded = (worldPush.frameIndex & 1u) == 0u
+            ? froxelTrilinear(froxelLightA, dims, coord)
+            : froxelTrilinear(froxelLightB, dims, coord);
+    return pow(max(encoded.rgb, float3(0.0)), float3(5.0));
 }
 
 /** Camera-ray distance at one nonlinear Z boundary (boundary 0 = camera, depth = max distance). */

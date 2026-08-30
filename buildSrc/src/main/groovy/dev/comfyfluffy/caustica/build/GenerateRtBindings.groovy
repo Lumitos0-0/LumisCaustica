@@ -35,6 +35,7 @@ abstract class GenerateRtBindings extends DefaultTask {
                     VOLUME_DEPTH: "volumeDepth", FROXEL_SCATTERING: "froxelScattering",
                     FROXEL_FILTERED_A: "froxelFilteredA", FROXEL_FILTERED_B: "froxelFilteredB",
                     FROXEL_INTEGRATED: "froxelIntegrated",
+                    FROXEL_LIGHT_A: "froxelLightA", FROXEL_LIGHT_B: "froxelLightB",
                     ENTITY_ALBEDO: "entityAlbedoTex", MATERIAL_SURFACE0: "materialSurface0Tex",
                     MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],
             [prefix: "DISPLAY", source: "pipelines/display/main.comp.slang", resources: [

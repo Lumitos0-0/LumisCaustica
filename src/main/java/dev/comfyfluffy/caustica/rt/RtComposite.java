@@ -725,7 +725,8 @@ public final class RtComposite {
                             RtDeviceBringup.worldRaygenShader(),
                             // Volumetric passes are extra raygen records of the same pipeline so they
                             // share the TLAS, descriptors and push constants; indices must match
-                            // RtVolumetrics.INJECT/FILTER/INTEGRATE_RAYGEN.
+                            // RtVolumetrics.LIGHT/INJECT/FILTER/INTEGRATE_RAYGEN.
+                            "volumetric_light.rgen.spv",
                             "volumetric_inject.rgen.spv",
                             "volumetric_filter.rgen.spv",
                             "volumetric_integrate.rgen.spv"},
