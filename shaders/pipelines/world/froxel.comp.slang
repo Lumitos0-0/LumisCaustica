@@ -83,7 +83,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float3 source = cell.rgb;
         float sigma = max(cell.a, 0.0);
         float segT = exp(-sigma * ds);
-        float integ = sigma > 1.0e-6 ? source * ((1.0 - segT) / sigma) : source * ds;
+        float3 integ = sigma > 1.0e-6 ? source * ((1.0 - segT) / sigma) : source * ds;
         fog += T * integ;
         T *= segT;
         if (T < 1.0e-4) {
