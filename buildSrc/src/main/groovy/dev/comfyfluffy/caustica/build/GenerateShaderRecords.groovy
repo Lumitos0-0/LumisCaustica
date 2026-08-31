@@ -308,6 +308,16 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map diReservoirRecordType = diReservoirRecordProbeArray.type.elementType as Map
         int diReservoirRecordByteSize = diReservoirRecordProbeArray.type.uniformStride as int
 
+        // Same reasoning for the ReSTIR GI radiance grid: Java sizes the allocation from this stride and
+        // nothing in Java writes a record, so the reflected layout is the only thing tying the two together.
+        def giRadianceRecordParameter = reflection.parameters.find { it.name == "giRadianceRecordLayoutProbe" }
+        def giRadianceRecordProbeArray = giRadianceRecordParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (giRadianceRecordProbeArray?.type?.kind != "array" || giRadianceRecordProbeArray.type.elementType?.name != "GiRadianceRecord") {
+            throw new GradleException("unexpected GiRadianceRecord reflection probe shape")
+        }
+        Map giRadianceRecordType = giRadianceRecordProbeArray.type.elementType as Map
+        int giRadianceRecordByteSize = giRadianceRecordProbeArray.type.uniformStride as int
+
         def generatedRoot = outDir.get().asFile
         if (generatedRoot.exists() && !generatedRoot.deleteDir()) {
             throw new GradleException("failed to clear generated shader record sources under ${generatedRoot}")
@@ -322,6 +332,9 @@ abstract class GenerateShaderRecords extends DefaultTask {
                 generateJava(exposureStateType, exposureStateByteSize, "ExposureStateData", true), "UTF-8")
         new File(packageDir, "DiReservoirRecordData.java").setText(
                 generateJava(diReservoirRecordType, diReservoirRecordByteSize, "DiReservoirRecordData",
+                        true), "UTF-8")
+        new File(packageDir, "GiRadianceRecordData.java").setText(
+                generateJava(giRadianceRecordType, giRadianceRecordByteSize, "GiRadianceRecordData",
                         true), "UTF-8")
 
         PUSH_CONSTANT_PROBES.each { probeName, structName, className ->

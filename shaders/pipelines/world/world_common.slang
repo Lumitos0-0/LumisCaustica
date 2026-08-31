@@ -107,6 +107,16 @@ public struct WorldPush {
     public uint     diGenTag;       // the published light generation; a mismatch means reject
     public uint     diHistoryWidth; // history grid extent in cells, after the divisor
     public uint     diHistoryHeight;
+    // ---- ReSTIR GI world grid. Published by Java in the same rebased block space every position in this
+    // shader lives in, so a cell index is one subtraction and a floor divide, and a cell means the same
+    // piece of the world for every frame of one terrain rebuild. Step one of the GI work only publishes it:
+    // nothing reads a cell yet, so these lanes cannot change a lit pixel.
+    // xyz = the window's minimum corner in rebased blocks, already aligned down to the cell lattice;
+    // w = cell edge in blocks. Both come from one Java decision, never from the config directly.
+    public float4   giGrid;
+    // xyz = cells per axis, and any zero component means the grid is off, which is the only off switch the
+    // shader looks at. w is reserved.
+    public int4     giDims;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
@@ -160,6 +170,33 @@ public struct LightGridSpan {
 // The position and normal are the surface the reservoir was gathered ON, not part of the sample: they exist
 // so the next frame can tell whether it is still the same surface. genTag records the published light
 // generation, so a rebase or a republish invalidates every stored index instead of reusing a stale light.
+// One direction bin of one cell of the ReSTIR GI radiance grid: a low-frequency answer to "what light is
+// arriving here from that general direction", gathered from every surface that fell in this cell this frame
+// and the frames before it. Like the DI record it is trusted only after its tag and its validation data
+// agree with the surface asking, and it is never cleared: a fresh allocation holds whatever its previous
+// owner left, and a record that survives the checks is usable regardless of where it came from.
+//
+// The radiance is stored PRE-exposed, in halves, because the grid is written before the frame's exposure
+// scalar is final and read after: the display pass divides the same latched value back out. Storing it
+// post-exposure would bake a number that changes from frame to frame into a cache that outlives the frame.
+public struct GiRadianceRecord {
+    // Written as three scalars rather than a float3, the way DiReservoirRecord does it: a vec3's alignment
+    // decides whether the members after it pack into its tail or start on the next 16-byte boundary, which is
+    // a 16-byte difference in a stride both Java's allocation and the debug pass's word map depend on.
+    public float  surfaceX;         // rebased position the radiance was gathered at — the entry describes
+    public float  surfaceY;         // one surface in this cell rather than the middle of it, which is the
+    public float  surfaceZ;         // difference between a radiance cache and a smear
+    public uint   normalOct;        // packHalf2(octEncode(surface normal)), for the same reason
+    public uint   packedRG;         // packHalf2(r, g) of the pre-exposed radiance
+    public uint   packedBHT;        // packHalf2(b, hit distance / cell size): the cache's own occlusion test
+    public float  weight;           // finalized W = wSum / (M * phat)
+    public float  m;                // accumulated effective sample count, capped by the temporal ceiling
+    public uint   genTag;           // 0 = never written; any other mismatch = reject
+    public uint   pad0;             // 36 used of 48 bytes: three words of room before this record has to be
+    public uint   pad1;             // resized, which is a reflected-stride change in Java and a buffer-size
+    public uint   pad2;             // change in the allocation policy, not an edit in one file
+};
+
 public struct DiReservoirRecord {
     public float  hitX, hitY, hitZ; // rebased shading position at store time
     public uint   normalOct;      // packHalf2(octEncode(surface normal))
@@ -170,8 +207,11 @@ public struct DiReservoirRecord {
     public float  phat;           // target function at that surface, for diagnostics only
     public uint   genTag;         // 0 = never written; any other mismatch = reject
     public float  spatial;        // neighbours the spatial round merged this frame: diagnostics, not reuse
-    public float  pad1;           // 44 used of 48 keeps the stride a multiple of 16 and leaves a lane for
-                                  // the next thing this pass wants before the record has to be resized
+    // The radiance-grid cell this surface falls in, plus one (0 = the grid is off or the surface is outside
+    // its window). Nothing that decides a lighting value reads it: it is here because this record is the only
+    // per-surface state the trace already validates and the debug pass already knows how to read, which is
+    // what makes the grid's addressing observable before any cell has content. See gi_grid.slang.
+    public uint   giCell;
 };
 
 // TerrainPrim.flags bit 0: this emissive quad is in the light buffer (RtLightCollector membership).

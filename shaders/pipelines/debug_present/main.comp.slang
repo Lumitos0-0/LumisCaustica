@@ -16,7 +16,7 @@ import bindings;
 // ray-tracing type set into a compute entry point for one read. The word map, from DiReservoirRecord in
 // pipelines/world/world_common.slang: 0..2 hit position, 3 oct-encoded normal, 4 light index,
 // 5 emitter (s,t), 6 W, 7 M, 8 p-hat, 9 generation tag, 10 neighbours merged by the spatial round,
-// 11 unused.
+// 11 the ReSTIR GI cell this surface falls in (plus one, 0 = none).
 // The word count and these indices have to keep agreeing with the reflected record stride Java sizes the
 // history from; RtRestirDiTest is what pins them together.
 public static const uint DI_RECORD_WORDS = 12u;
@@ -24,6 +24,7 @@ public static const uint DI_LIGHT_INDEX_WORD = 4u;
 public static const uint DI_M_WORD = 7u;
 public static const uint DI_GEN_TAG_WORD = 9u;
 public static const uint DI_SPATIAL_WORD = 10u;
+public static const uint DI_GI_CELL_WORD = 11u;   // radiance-grid cell index plus one, or 0
 
 public typealias DiWords = Ptr<uint, Access.Read, AddressSpace.Device, Std430DataLayout>;
 
@@ -104,7 +105,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float4 normalRough = gNormal[guidePix];
     float3 dbg;
-    if (pc.debugView >= 10u && pc.debugView <= 12u) {
+    if (pc.debugView >= 10u && pc.debugView <= 13u) {
         // These views index the history by this pixel's uv into the CELL grid, so what is shown is the cell
         // the sampler would have read at the same place, including whether this pixel was the cell's writer.
         if (pc.diHistoryAddr == 0 || pc.diHistoryWidth == 0u || pc.diHistoryHeight == 0u) {
@@ -116,7 +117,36 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             DiWords history = DiWords(pc.diHistoryAddr);
             uint tag = history[base + DI_GEN_TAG_WORD];
             uint lightIndex = history[base + DI_LIGHT_INDEX_WORD];
-            if (pc.debugView == 12u) {
+            if (pc.debugView == 13u) {
+                // The ReSTIR GI cell this surface belongs to. The record already carries the position the
+                // trace stored it at and the cell it derived, so this view recomputes the index from the
+                // position with the pushed geometry and compares. It has no surface of its own to ask about:
+                // the DI history is what says which surfaces were shaded at all, which is why the view needs
+                // restir.enabled as well as a published grid. A hash of the cell id is the fill: a still
+                // camera must give a still image, and walking must slide the patchwork in whole-cell steps —
+                // shimmer or a rescale means the extent policy and the floor divide do not agree.
+                // Magenta = the two derivations disagree, which is the bug this view exists to catch. Deep
+                // blue = no cell, either because the grid is off or because this surface is outside its
+                // window, which is a normal answer and shows how far the reach actually goes.
+                float3 stored = float3(asfloat(history[base + 0u]), asfloat(history[base + 1u]),
+                        asfloat(history[base + 2u]));
+                uint storedCell = history[base + DI_GI_CELL_WORD];
+                int3 c = int3(floor((stored - float3(pc.giOriginX, pc.giOriginY, pc.giOriginZ))
+                        / max(pc.giCellSize, 1.0e-6)));
+                bool inside = pc.giCellSize > 0.0 && pc.giDimX > 0u && pc.giDimY > 0u && pc.giDimZ > 0u
+                        && c.x >= 0 && c.y >= 0 && c.z >= 0
+                        && uint(c.x) < pc.giDimX && uint(c.y) < pc.giDimY && uint(c.z) < pc.giDimZ;
+                uint here = inside ? ((uint(c.z) * pc.giDimY + uint(c.y)) * pc.giDimX + uint(c.x)) + 1u : 0u;
+                // Knuth's multiplicative hash in uints rather than a frac() of a float: cell indices reach
+                // millions in a big window and a float cannot tell them apart at that size, which would make
+                // neighbouring cells the same colour and hide exactly the rescaling this view is for.
+                uint giHash = storedCell * 2654435761u;
+                dbg = tag == 0u ? float3(0.0, 0.0, 0.05)
+                        : here != storedCell ? float3(0.85, 0.0, 0.85)
+                        : storedCell == 0u ? float3(0.04, 0.12, 0.4)
+                        : 0.2 + 0.8 * (float3(float((giHash >> 20) & 1023u), float((giHash >> 10) & 1023u),
+                                float(giHash & 1023u)) / 1023.0);
+            } else if (pc.debugView == 12u) {
                 // How many of the spatial rounds actually merged a neighbour into this cell's reservoir. A
                 // flat black field with rounds configured above zero means the validators are rejecting every
                 // neighbour — usually the coplanarity tolerance, not a broken reuse.

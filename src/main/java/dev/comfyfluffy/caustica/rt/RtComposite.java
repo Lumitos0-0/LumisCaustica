@@ -195,6 +195,15 @@ public final class RtComposite {
     private RtBuffer diHistoryCurr;
     private int diHistoryW, diHistoryH;
     private int diHistoryDivisor = 1;
+    // ReSTIR GI grid geometry handed to the trace: the window's minimum corner in rebased blocks, its cell
+    // edge, and the extent in cells. Held as fields because the debug present pass has to be shown the same
+    // numbers the trace divided by, not a second reading of the config that a memory budget may have changed.
+    private float giOriginX, giOriginY, giOriginZ;
+    private int giCellSizeBlocks, giDimX, giDimY, giDimZ;
+    // The camera block the GI window is centred on, in absolute blocks, kept between frames so the window
+    // slides rarely instead of every time the camera moves.
+    private int giAnchorX, giAnchorY, giAnchorZ;
+    private boolean giAnchorValid;
     // Published light generation the stored records belong to, and the tag they are matched against. The
     // generation alone is not enough: see RtRestirDi#generationTag.
     private long diGeneration = Long.MIN_VALUE;
@@ -531,6 +540,54 @@ public final class RtComposite {
      */
     private static boolean diHistoryEnabled() {
         return CausticaConfig.Rt.ReStir.ENABLED.value();
+    }
+
+    /**
+     * Publishes the ReSTIR GI grid's geometry for this frame: a window around the terrain rebase origin,
+     * aligned down to the grid's own cell lattice so a rebase cannot change what a cell index means. All
+     * three axes get the same span, including the vertical one, which costs allocation in the empty air above
+     * a flat world and is the first thing to clip to the loaded height when the grid starts being written.
+     *
+     * <p>Off is zero extents, which is the only thing the shader checks; there is no buffer behind it yet.
+     */
+    private void updateGiGrid(RtTerrain terrain) {
+        if (!CausticaConfig.Rt.Gi.ENABLED.value()) {
+            giAnchorValid = false;
+            giCellSizeBlocks = 0;
+            giOriginX = 0.0f;
+            giOriginY = 0.0f;
+            giOriginZ = 0.0f;
+            giDimX = 0;
+            giDimY = 0;
+            giDimZ = 0;
+            return;
+        }
+        int radius = CausticaConfig.Rt.Gi.RADIUS_BLOCKS.value();
+        // The size the memory budget settled on, not the one that was asked for: everything downstream —
+        // this frame's push, the debug view, and later the allocation — divides by this value. A size change
+        // renumbers every cell, so it is also the moment the retained anchor is thrown away rather than
+        // quietly reinterpreted on a lattice that no longer exists.
+        int cell = RtGiGrid.cellBlocks(CausticaConfig.Rt.Gi.CELL_BLOCKS.value(), radius);
+        if (cell != giCellSizeBlocks) {
+            giAnchorValid = false;
+        }
+        int axis = RtGiGrid.cellsPerAxis(radius, cell);
+        giCellSizeBlocks = cell;
+        giDimX = axis;
+        giDimY = axis;
+        giDimZ = axis;
+        // An anchor is only ever chosen from a camera block, never a sentinel, so the first frame after a
+        // grid appears is centred on the player rather than wherever the last one happened to be left.
+        int fromX = giAnchorValid ? giAnchorX : terrain.blockX;
+        int fromY = giAnchorValid ? giAnchorY : terrain.blockY;
+        int fromZ = giAnchorValid ? giAnchorZ : terrain.blockZ;
+        giAnchorValid = true;
+        giAnchorX = RtGiGrid.anchorFor(fromX, terrain.blockX, radius, cell);
+        giAnchorY = RtGiGrid.anchorFor(fromY, terrain.blockY, radius, cell);
+        giAnchorZ = RtGiGrid.anchorFor(fromZ, terrain.blockZ, radius, cell);
+        giOriginX = RtGiGrid.windowOriginBlocks(giAnchorX, terrain.blockX, radius, cell);
+        giOriginY = RtGiGrid.windowOriginBlocks(giAnchorY, terrain.blockY, radius, cell);
+        giOriginZ = RtGiGrid.windowOriginBlocks(giAnchorZ, terrain.blockZ, radius, cell);
     }
 
     private void ensureDiHistory(RtContext ctx, int renderW, int renderH) {
@@ -1243,6 +1300,7 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            updateGiGrid(terrain);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1296,7 +1354,11 @@ public final class RtComposite {
                     new Float4(Math.cos(Math.toRadians(CausticaConfig.Rt.ReStir.NORMAL_TOLERANCE.value())),
                             (float) CausticaConfig.Rt.ReStir.SPATIAL_ROUNDS.value(),
                             (float) CausticaConfig.Rt.ReStir.SPATIAL_RADIUS.value(), 0.0f),
-                    diGenTag, diGenTag != 0 ? diHistoryW : 0, diGenTag != 0 ? diHistoryH : 0
+                    diGenTag, diGenTag != 0 ? diHistoryW : 0, diGenTag != 0 ? diHistoryH : 0,
+                    // ReSTIR GI grid: the window and its cell size, both as decided above, and the extent in
+                    // cells. Off is a zero extent, and the shader reads nothing else when it sees one.
+                    new Float4(giOriginX, giOriginY, giOriginZ, (float) giCellSizeBlocks),
+                    new Int4(giDimX, giDimY, giDimZ, 0)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1435,7 +1497,11 @@ public final class RtComposite {
                             // Views 10 and 11 show the history this frame just wrote, not the one it read: what
                             // they are for is seeing what the next frame is about to be offered.
                             diHistoryCurr != null ? diHistoryCurr.deviceAddress : 0L, diHistoryW, diHistoryH,
-                            diGenTag, terrain.lightCount());
+                            diGenTag, terrain.lightCount(),
+                            // View 13 re-derives the cell of the position the trace stored, so it needs the
+                            // geometry the trace used. Passing the same fields is the point: a disagreement
+                            // between the two implementations is the bug this view is for.
+                            giCellSizeBlocks, giOriginX, giOriginY, giOriginZ, giDimX, giDimY, giDimZ);
                 }
                 hdrWrittenThisFrame = false;
             }

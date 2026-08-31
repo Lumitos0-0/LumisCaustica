@@ -87,7 +87,7 @@ public struct BloomPush {
 };
 
 public struct DebugPresentPush {
-    // 1..9 are the guide/exposure views; 10..12 read the ReSTIR DI history below. This pass is only
+    // 1..9 are the guide/exposure views; 10..13 read the ReSTIR DI history below. This pass is only
     // dispatched for debugView != 0.
     public uint debugView;
     public float centerWeightSigma;
@@ -96,9 +96,23 @@ public struct DebugPresentPush {
     // straight out of the buffer, bypassing the sampler, so a bug in the reuse can be seen even when the
     // lighting looks plausible. Reached by device address rather than a descriptor binding for exactly the
     // reason the world pipeline's push block does it: this pass owns no other view of that buffer.
-    public uint64_t diHistoryAddr;   // 0 = no history allocated; both views then show black
+    public uint64_t diHistoryAddr;   // 0 = no history allocated; the reuse views then show black
     public uint diHistoryWidth;      // history grid extent in cells, not in screen pixels
     public uint diHistoryHeight;
     public uint diGenTag;            // the generation a record must carry to count as current
     public uint diLightCount;        // a record naming a light at or above this is out of range
+    // The radiance-grid geometry the trace published, for view 13, which re-derives a cell from the position
+    // a record stores and shows where the two derivations part company. The cell rides in the DI history, so
+    // the view needs restir.enabled as well as gi.enabled: there is no per-surface record to annotate
+    // otherwise, and inventing a second buffer to hold one diagnostic word is not worth the plumbing. The arithmetic is duplicated on
+    // purpose: this pass cannot import the world's gi_grid module any more than it can import restir_di, and
+    // that redundancy is the whole value of the view — a shared module would agree with itself by
+    // construction and prove nothing.
+    public float giCellSize;         // cell edge in rebased blocks; 0 = no grid published
+    public float giOriginX;          // the window's minimum corner, in rebased blocks
+    public float giOriginY;
+    public float giOriginZ;
+    public uint giDimX;              // cells per axis; any zero means the grid is off
+    public uint giDimY;
+    public uint giDimZ;
 };

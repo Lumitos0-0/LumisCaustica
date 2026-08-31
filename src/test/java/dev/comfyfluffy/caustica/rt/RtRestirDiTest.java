@@ -65,7 +65,7 @@ final class RtRestirDiTest {
     void debugViewWordMapMatchesTheReflectedRecordLayout() {
         ByteBuffer buffer = ByteBuffer.allocateDirect(RtRestirDi.RECORD_BYTES);
         new DiReservoirRecordData(1.5f, -2.25f, 300.0f, 0x11223344, 0x55667788, 0x99AABBCC,
-                1.75f, 42.0f, 0.125f, 0x0BADF00D, 3.0f, 0.0f).write(buffer);
+                1.75f, 42.0f, 0.125f, 0x0BADF00D, 3.0f, 617).write(buffer);
 
         assertEquals(48, RtRestirDi.RECORD_BYTES);
         assertEquals(1.5f, buffer.getFloat(0), 0.0f);
@@ -78,13 +78,24 @@ final class RtRestirDiTest {
         assertEquals(0.125f, buffer.getFloat(RtRestirDi.PHAT_WORD * Integer.BYTES), 0.0f);
         assertEquals(0x0BADF00D, buffer.getInt(RtRestirDi.GEN_TAG_WORD * Integer.BYTES));
         assertEquals(3.0f, buffer.getFloat(RtRestirDi.SPATIAL_WORD * Integer.BYTES), 0.0f);
+        assertEquals(617, buffer.getInt(RtRestirDi.GI_CELL_WORD * Integer.BYTES));
+    }
+
+    /**
+     * The ReSTIR GI cell a surface falls in rides in the DI record's last word, so the record the debug pass
+     * reads has to stay 48 bytes with that word at 44 — the stride is reflected, and the word index is not.
+     */
+    @Test
+    void theRadianceGridCellIsTheLastWordOfARecordThatHasNoRoomLeft() {
+        assertEquals(RtRestirDi.RECORD_BYTES - Integer.BYTES, RtRestirDi.GI_CELL_WORD * Integer.BYTES);
+        assertEquals(48, RtRestirDi.RECORD_BYTES);
     }
 
     @Test
     void roundTripsAStoredReservoirThroughTheGeneratedRecord() {
         ByteBuffer buffer = ByteBuffer.allocateDirect(RtRestirDi.RECORD_BYTES);
         DiReservoirRecordData written = new DiReservoirRecordData(0.0f, 0.0f, 0.0f, 0, 3, 0,
-                2.0f, 8.0f, 0.5f, 1, 0.0f, 0.0f);
+                2.0f, 8.0f, 0.5f, 1, 0.0f, 0);
         written.write(buffer);
 
         DiReservoirRecordData read = DiReservoirRecordData.read(buffer);

@@ -32,6 +32,9 @@ public final class RtRestirDi {
     public static final int PHAT_WORD = 8;
     public static final int GEN_TAG_WORD = 9;
     public static final int SPATIAL_WORD = 10;
+    /** The ReSTIR GI cell this surface falls in, plus one; 0 means the grid is off or the surface is out of
+     * reach. Diagnostic only — no validator reads it — and {@code RtGiGrid} is what computes the same box. */
+    public static final int GI_CELL_WORD = 11;
 
     /**
      * Ceiling on one dimension of the history grid. The divisor normally keeps the grid far below this; it

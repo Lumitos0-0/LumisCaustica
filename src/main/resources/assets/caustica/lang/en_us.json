@@ -61,5 +61,6 @@
 	"caustica.options.rt.debugView.9": "Metering Weight",
 	"caustica.options.rt.debugView.10": "ReSTIR Sample Count",
 	"caustica.options.rt.debugView.11": "ReSTIR History Validity",
-	"caustica.options.rt.debugView.12": "ReSTIR Spatial Merges"
+	"caustica.options.rt.debugView.12": "ReSTIR Spatial Merges",
+	"caustica.options.rt.debugView.13": "ReSTIR GI Grid Cells"
 }

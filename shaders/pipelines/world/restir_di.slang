@@ -34,6 +34,7 @@
 // are per pixel too — and the reason SPP stays at its default of 1 with DLSS-RR accumulating.
 
 import world_common;
+import gi_grid;
 import world_core;
 import bindings;
 import lighting;
@@ -278,7 +279,12 @@ public Reservoir restirDiResample(Reservoir cur, uint2 pix, float3 hitPos, float
         rec.phat = cur.phat;
         rec.genTag = worldPush.diGenTag;
         rec.spatial = float(accepted);
-        rec.pad1 = 0.0;
+        // Which radiance-grid cell this surface belongs to, offset by one so 0 can keep meaning "no cell".
+        // Diagnostic for now: the grid is published and read by nothing, and no validator below looks at this
+        // word, so writing it cannot move a lit pixel. It is the cheapest way to see whether the addressing
+        // agrees with the surface it claims to describe before step 2 puts a value in the cell it names.
+        uint giCell = giCellIndex(hitPos);
+        rec.giCell = giCell == GI_NO_CELL ? 0u : giCell + 1u;
         outHistory[diHistoryIndex(ownCell)] = rec;
     }
     return cur;

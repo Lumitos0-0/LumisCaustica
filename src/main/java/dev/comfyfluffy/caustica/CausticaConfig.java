@@ -62,6 +62,7 @@ public final class CausticaConfig {
             Rt.ReStir.ENABLED, Rt.ReStir.TEMPORAL_MAX_M, Rt.ReStir.HISTORY_DIVISOR,
             Rt.ReStir.POSITION_TOLERANCE, Rt.ReStir.NORMAL_TOLERANCE,
             Rt.ReStir.SPATIAL_ROUNDS, Rt.ReStir.SPATIAL_RADIUS,
+            Rt.Gi.ENABLED, Rt.Gi.CELL_BLOCKS, Rt.Gi.RADIUS_BLOCKS,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -107,6 +108,16 @@ public final class CausticaConfig {
                         + " steadier but sticks to what was visible longer. spatial-rounds spreads each\n"
                         + " surface's answer to its neighbours, which converges faster but is biased by\n"
                         + " how far it reaches; 0 turns that part off.");
+        FILE.setComment("gi",
+                " ReSTIR GI: a world-space grid of cached radiance per direction, which bounce rays can\n"
+                        + " sample instead of tracing. Off by default, and while it is being built up it also\n"
+                        + " changes nothing when on: gi.enabled only publishes the grid, so its extent can be\n"
+                        + " inspected before there is anything worth caching in it. The ReSTIR GI Grid Cells\n"
+                        + " debug view (13) shows the cell the trace computed for each surface, and it reads\n"
+                        + " the ReSTIR DI history to find those surfaces, so restir.enabled has to be on too.\n"
+                        + " cell-blocks is how far apart two surfaces can be and still share an answer;\n"
+                        + " radius-blocks is how far around the player that reaches. A memory budget may\n"
+                        + " coarsen cell-blocks, and the view is drawn with the size actually settled on.\n");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -667,6 +678,30 @@ public final class CausticaConfig {
                             0.0f, 89.0f);
 
             private ReStir() {
+            }
+        }
+
+        /**
+         * The world-space radiance grid ReSTIR GI samples from. This step publishes the grid only — its
+         * extent policy, its addressing, and a debug view of what the trace computed for each surface — so no
+         * setting here can change a lit pixel yet. It exists first because a world cache lives or dies on
+         * where its boundaries fall, and that is checkable before there is anything worth caching in it.
+         */
+        public static final class Gi {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.gi", "gi.enabled", false);
+            // Edge of one cell in blocks. A small cell answers "what light is arriving here" more precisely
+            // and converges slower, because fewer surfaces share it; the config's request is a starting point
+            // and RtGiGrid's memory budget can coarsen it.
+            public static final IntSetting CELL_BLOCKS =
+                    clampedInt("caustica.rt.giCellBlocks", "gi.cell-blocks", 4, 1, 64);
+            // Half-width of the box the grid covers, in blocks. The box is centred on where the camera was
+            // when it last had to slide rather than on the camera itself, so walking does not renumber the
+            // grid out from under the cache; surfaces outside it are reported as having no cell, which is a
+            // fall back to tracing rather than an error, so this trades memory for reach while walking.
+            public static final IntSetting RADIUS_BLOCKS =
+                    clampedInt("caustica.rt.giRadiusBlocks", "gi.radius-blocks", 64, 8, 512);
+
+            private Gi() {
             }
         }
 
