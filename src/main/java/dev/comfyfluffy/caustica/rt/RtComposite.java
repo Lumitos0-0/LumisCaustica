@@ -63,6 +63,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
+import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetricFog;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
@@ -174,6 +175,7 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtVolumetricFog volumetricFog;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -594,6 +596,9 @@ public final class RtComposite {
             if (bloomPipeline == null) {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
+            if (volumetricFog == null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+                volumetricFog = RtVolumetricFog.create(ctx);
+            }
             if (skyLut == null) {
                 // Normally already created by ensureWorld before the pipeline exists at all; this only
                 // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
@@ -648,9 +653,19 @@ public final class RtComposite {
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
             RtToneLut boundLookLut = lookLut;
+            long fogViewComp = 0L;
+            long fogSamplerComp = 0L;
+            if (volumetricFog != null && volumetricFog.fogImage() != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+                fogViewComp = volumetricFog.fogImage().view;
+                fogSamplerComp = bloomPipeline.sampler();
+            } else {
+                fogViewComp = bloomLevels[0].view;
+                fogSamplerComp = bloomPipeline.sampler();
+            }
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
+                    fogViewComp, fogSamplerComp);
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -979,9 +994,25 @@ public final class RtComposite {
             bindGuideImages();
         }
         RtToneLut boundLookLut = lookLut;
+        // Volumetric fog images
+        if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+            volumetricFog.ensureImages(width, height);
+            volumetricFog.setInjectionImage();
+        }
+        long fogView = 0L;
+        long fogSampler = 0L;
+        if (volumetricFog != null && volumetricFog.fogImage() != null) {
+            fogView = volumetricFog.fogImage().view;
+            fogSampler = bloomPipeline.sampler(); // reuse linear sampler
+        } else {
+            // dummy fallback: use bloom level 0
+            fogView = bloomLevels[0].view;
+            fogSampler = bloomPipeline.sampler();
+        }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
+                fogView, fogSampler);
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -1233,7 +1264,69 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog + exposure
+
+            // ---- Volumetric fog: injection + integration with HW RT shadows for crepuscular rays ----
+            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, \"volumetric fog\");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage(\"frame.volumetricFog\")) {
+                    // Ensure images if display size changed after ensureOutput early-return path
+                    if (volumetricFog.fogImage() == null || volumetricFog.fogImage().width != displayW || volumetricFog.fogImage().height != displayH) {
+                        volumetricFog.ensureImages(displayW, displayH);
+                        volumetricFog.setInjectionImage();
+                    }
+                    long blockAlbedoView = boundBlockAlbedoAtlasHandle;
+                    long blockSampler = atlasSampler(ctx);
+                    // Bind TLAS + froxel + gDepth + fogOutput + blockAlbedo
+                    volumetricFog.setIntegrationImages(frameTlas.accel.handle, gDepth.view, blockAlbedoView, blockSampler);
+
+                    float[] terrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
+                    float[] camWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
+                    float[] jitterOffset = new float[]{jitterX, jitterY};
+
+                    // Sun / moon directions from same celestial math as sky.slang: celestialDirection(angle, tilt)
+                    // dir = (-sin(angle), cos(tilt)*cos(angle), sin(tilt)*cos(angle))
+                    float sunAngle = sky.celestial().x();
+                    float moonAngle = sky.celestial().y();
+                    float sunTilt = sky.look1().x();
+                    float cosTilt = (float) Math.cos(sunTilt);
+                    float sinTilt = (float) Math.sin(sunTilt);
+                    float sinSun = (float) Math.sin(sunAngle);
+                    float cosSun = (float) Math.cos(sunAngle);
+                    float sinMoon = (float) Math.sin(moonAngle);
+                    float cosMoon = (float) Math.cos(moonAngle);
+                    float[] sunDir = new float[]{-sinSun, cosTilt * cosSun, sinTilt * cosSun};
+                    float[] moonDir = new float[]{-sinMoon, cosTilt * cosMoon, sinTilt * cosMoon};
+
+                    float sunIllumLux = sky.look0().x();
+                    float moonIllumLux = sky.look0().y();
+                    float phaseFixed = sky.look1().w();
+                    float moonPhaseIdx = sky.look2().w();
+                    float moonLitFrac = Math.abs(moonPhaseIdx - 4.0f) / 4.0f;
+                    float moonIllumFactor = phaseFixed + (1.0f - phaseFixed) * moonLitFrac;
+
+                    // Scale lux to fog illuminance (normalize ~100k lux noon to ~1.0)
+                    float sunScale = CausticaConfig.Rt.VolumetricFog.SUN_INTENSITY.value() * (sunIllumLux / 100000.0f);
+                    float moonScale = CausticaConfig.Rt.VolumetricFog.MOON_INTENSITY.value() * (moonIllumLux / 100000.0f) * moonIllumFactor;
+                    // Keep a minimum so moon rays still visible at night
+                    sunScale = Math.max(sunScale, 0.0f);
+                    moonScale = Math.max(moonScale, 0.0f);
+                    float[] sunIllum = new float[]{sunScale, sunScale, sunScale};
+                    float[] moonIllum = new float[]{moonScale, moonScale, moonScale};
+
+                    // Injection
+                    volumetricFog.dispatchInjection(cmd, pushBuf.deviceAddress, (int) frameCounter, terrainOrigin, camWorldPos, jitterOffset);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+
+                    // Integration
+                    volumetricFog.dispatchIntegration(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            displayW, displayH, (int) frameCounter, exposure.preExposure(),
+                            terrainOrigin, camWorldPos, jitterOffset,
+                            sunDir, sunIllum, moonDir, moonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1260,9 +1353,10 @@ public final class RtComposite {
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
+                boolean fogEnabled = volumetricFog != null && volumetricFog.fogImage() != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value();
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
-                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length);
+                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length, fogEnabled);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
@@ -1552,6 +1646,10 @@ public final class RtComposite {
         fgInterpW = -1;
         fgInterpH = -1;
         fgInterpFormat = Integer.MIN_VALUE;
+        if (volumetricFog != null) {
+            volumetricFog.destroy();
+            volumetricFog = null;
+        }
         if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;

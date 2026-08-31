@@ -141,6 +141,14 @@ float3 tonemapHdr(float3 lookedAcesCg) {
     return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);
 }
 
+float4 sampleFog(int2 pix, uint w, uint h) {
+    if (pc.fogEnabled == 0) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    float2 uv = (float2(pix) + 0.5) / float2(w, h);
+    return fogImage.SampleLevel(uv, 0.0);
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -152,8 +160,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     float4 rt = rtImage[pix];
+    float4 fog = sampleFog(pix, w, h);
+    float3 fogScattering = fog.rgb;
+    float fogTransmittance = fog.a;
+
+    // Composite volumetric fog: scene * transmittance + scattering, both in scene-linear ACEScg
+    float3 foggedScene = rt.rgb * fogTransmittance + fogScattering;
+
     float exposure = max(exposureImage[int2(0, 0)], 0.0);
-    float3 exposedAcesCg = max(rt.rgb * exposure, float3(0.0));
+    float3 exposedAcesCg = max(foggedScene * exposure, float3(0.0));
     exposedAcesCg += sampleBloom(pix, w, h) * max(pc.bloomStrength, 0.0);
     float3 lookedAcesCg = applyLook(exposedAcesCg);
     outputImage[pix] = float4(tonemap(lookedAcesCg), 1.0);

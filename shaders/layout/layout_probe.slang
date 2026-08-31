@@ -3,6 +3,7 @@
 // complete Std430DataLayout: field types, byte offsets, total size, matrix mode, and array counts.
 import world_common;
 import display_common;
+import volumetric_fog_common;
 
 struct WorldPushLayoutProbe {
     WorldPush values[2]; // array stride is the complete, tail-padded WorldPush byte size
@@ -92,5 +93,23 @@ void probePushAddr(uint3 id : SV_DispatchThreadID) {
 void probeBloomPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
+    }
+}
+
+[[vk::push_constant]] FogInjectionPush fogInjectionPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogInjectionPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(fogInjectionPushProbe.worldPushAddr) + fogInjectionPushProbe.density;
+    }
+}
+
+[[vk::push_constant]] FogIntegrationPush fogIntegrationPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogIntegrationPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(fogIntegrationPushProbe.worldPushAddr) + fogIntegrationPushProbe.density;
     }
 }
