@@ -297,6 +297,17 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map exposureStateType = exposureStateProbeArray.type.elementType as Map
         int exposureStateByteSize = exposureStateProbeArray.type.uniformStride as int
 
+        // The ReSTIR DI history is addressed by device pointer, so no Java code writes a record; the
+        // generated type exists so the allocation stride comes from the same reflected layout the shaders
+        // index with, and so the debug view's fixed word map can be asserted against it.
+        def diReservoirRecordParameter = reflection.parameters.find { it.name == "diReservoirRecordLayoutProbe" }
+        def diReservoirRecordProbeArray = diReservoirRecordParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (diReservoirRecordProbeArray?.type?.kind != "array" || diReservoirRecordProbeArray.type.elementType?.name != "DiReservoirRecord") {
+            throw new GradleException("unexpected DiReservoirRecord reflection probe shape")
+        }
+        Map diReservoirRecordType = diReservoirRecordProbeArray.type.elementType as Map
+        int diReservoirRecordByteSize = diReservoirRecordProbeArray.type.uniformStride as int
+
         def generatedRoot = outDir.get().asFile
         if (generatedRoot.exists() && !generatedRoot.deleteDir()) {
             throw new GradleException("failed to clear generated shader record sources under ${generatedRoot}")
@@ -309,6 +320,9 @@ abstract class GenerateShaderRecords extends DefaultTask {
                 generateJava(materialHeaderType, materialHeaderByteSize, "MaterialHeaderData"), "UTF-8")
         new File(packageDir, "ExposureStateData.java").setText(
                 generateJava(exposureStateType, exposureStateByteSize, "ExposureStateData", true), "UTF-8")
+        new File(packageDir, "DiReservoirRecordData.java").setText(
+                generateJava(diReservoirRecordType, diReservoirRecordByteSize, "DiReservoirRecordData",
+                        true), "UTF-8")
 
         PUSH_CONSTANT_PROBES.each { probeName, structName, className ->
             Map type = extractPushConstantType(reflection, probeName, structName)

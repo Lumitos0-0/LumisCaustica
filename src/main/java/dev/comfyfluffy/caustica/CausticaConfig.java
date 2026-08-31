@@ -59,6 +59,8 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
+            Rt.ReStir.ENABLED, Rt.ReStir.TEMPORAL_MAX_M, Rt.ReStir.HISTORY_DIVISOR,
+            Rt.ReStir.POSITION_TOLERANCE, Rt.ReStir.NORMAL_TOLERANCE,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -95,6 +97,13 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("restir",
+                " Reuses torches and other glowing blocks' direct lighting from frame to frame (ReSTIR DI).\n"
+                        + " Off by default. When on, lighting converges over a few frames instead of\n"
+                        + " re-deciding every light from scratch each frame, at the cost of a reservoir\n"
+                        + " history buffer and a slightly slower response to lighting changes.\n"
+                        + " Lower history-divisor is sharper but costs more; higher temporal-max-m is\n"
+                        + " steadier but sticks to what was visible longer.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -580,6 +589,43 @@ public final class CausticaConfig {
                     intAtLeast("caustica.rt.lightDumpRadius", "lights.dump-radius", 12, 1);
 
             private Lights() {
+            }
+        }
+
+        /**
+         * ReSTIR DI: temporal reuse of the block-emitter direct-lighting reservoirs {@link Lights} builds.
+         * Off by default; with it off the trace is bit-identical to the same build without it, because the
+         * shader returns the current frame's reservoir before consuming any random number.
+         */
+        public static final class ReStir {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.restir", "restir.enabled", false);
+            // Ceiling on how many effective samples one reservoir may carry, which is how much of it can
+            // come from the past. The bound caps how long a light that stopped being visible can keep
+            // lighting a surface, so lowering it makes the reuse more responsive and noisier; raising it is
+            // the opposite.
+            public static final IntSetting TEMPORAL_MAX_M =
+                    clampedInt("caustica.rt.restir.temporalMaxM", "restir.temporal-max-m", 20, 1, 256);
+            // Reservoirs are stored once per block of this many pixels per side, which is both the memory
+            // control and the blur radius of the reuse: a divisor of 2 stores a quarter as many records and
+            // lets the four pixels of a block share one, at 1 every pixel has its own (and the history costs
+            // about as much bandwidth as the guides do).
+            public static final List<Integer> HISTORY_DIVISOR_STEPS = List.of(1, 2, 4);
+            public static final IntSetting HISTORY_DIVISOR =
+                    intChoice("caustica.rt.restir.historyDivisor", "restir.history-divisor", 2,
+                            HISTORY_DIVISOR_STEPS);
+            // A stored reservoir is reused only if the surface it was gathered on is still there. This is
+            // how far that surface may have moved, in blocks, before the reservoir is thrown away.
+            public static final FloatSetting POSITION_TOLERANCE =
+                    clampedFloat("caustica.rt.restir.positionTolerance", "restir.position-tolerance",
+                            0.25f, 0.0f, 8.0f);
+            // How far that surface's normal may have turned, in degrees, before the stored reservoir is
+            // rejected. Compared as a dot product, so this is the one place the angle is authored instead of
+            // the cosine the shader needs.
+            public static final FloatSetting NORMAL_TOLERANCE =
+                    clampedFloat("caustica.rt.restir.normalTolerance", "restir.normal-tolerance", 25.0f,
+                            0.0f, 89.0f);
+
+            private ReStir() {
             }
         }
 

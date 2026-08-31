@@ -58,5 +58,7 @@
 	"caustica.options.rt.debugView.6": "Specular",
 	"caustica.options.rt.debugView.7": "Specular Motion",
 	"caustica.options.rt.debugView.8": "Exposure False Color",
-	"caustica.options.rt.debugView.9": "Metering Weight"
+	"caustica.options.rt.debugView.9": "Metering Weight",
+	"caustica.options.rt.debugView.10": "ReSTIR Sample Count",
+	"caustica.options.rt.debugView.11": "ReSTIR History Validity"
 }

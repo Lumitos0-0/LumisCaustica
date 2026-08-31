@@ -186,6 +186,20 @@ public final class RtComposite {
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
+    // ReSTIR DI history: the reservoir the previous frame left at each surface, so this frame can merge it
+    // instead of resampling every published light. Two buffers swapped per frame rather than one shared
+    // buffer, because a lane reading a cell another lane is storing in the same dispatch would make the
+    // reuse depend on which of them arrived first. At the default divisor this is a few megabytes per
+    // buffer; at a divisor of 1 it is on the order of the guide set, which is what the divisor is for.
+    private RtBuffer diHistoryPrev;
+    private RtBuffer diHistoryCurr;
+    private int diHistoryW, diHistoryH;
+    private int diHistoryDivisor = 1;
+    // Published light generation the stored records belong to, and the tag they are matched against. The
+    // generation alone is not enough: see RtRestirDi#generationTag.
+    private long diGeneration = Long.MIN_VALUE;
+    private int diResets;
+    private int diGenTag;
     private RtImage displayImage;
     // Bloom pyramid, finest first: level 0 is half display resolution and each level halves again. The
     // display mapper reads level 0, which the upsample sweep leaves holding the sum of every band.
@@ -504,6 +518,99 @@ public final class RtComposite {
     /** Reset exposure filtering after an explicit render-state invalidation such as F3+A. */
     public void resetExposureHistory() {
         exposure.requestReset();
+        // ReSTIR DI reuses by screen position, so the same invalidations that make an averaged exposure
+        // meaningless make a stored reservoir's provenance unverifiable.
+        resetDiHistory();
+    }
+
+    /**
+     * Whether the ReSTIR DI history is allocated at all. RIS has to be sampling emitters for a reservoir to
+     * have come from anywhere, so a zero candidate count makes reuse meaningless rather than merely off;
+     * the published light count is per frame rather than per resize and is checked in
+     * {@link #updateDiGeneration(RtTerrain)}.
+     */
+    private static boolean diHistoryEnabled() {
+        return CausticaConfig.Rt.ReStir.ENABLED.value();
+    }
+
+    private void ensureDiHistory(RtContext ctx, int renderW, int renderH) {
+        if (!diHistoryEnabled()) {
+            destroyDiHistory();
+            return;
+        }
+        int divisor = Math.max(1, CausticaConfig.Rt.ReStir.HISTORY_DIVISOR.value());
+        int w = Math.min(RtRestirDi.historyExtent(renderW, divisor), RtRestirDi.MAX_DIMENSION);
+        int h = Math.min(RtRestirDi.historyExtent(renderH, divisor), RtRestirDi.MAX_DIMENSION);
+        if (diHistoryCurr != null && diHistoryPrev != null && diHistoryDivisor == divisor
+                && diHistoryW == w && diHistoryH == h) {
+            return;
+        }
+        destroyDiHistory();
+        if (w < 1 || h < 1) {
+            // A degenerate render target gets no history at all, which reads as "reuse off" because the
+            // pushed addresses stay zero. Allocating a zero-byte buffer to represent that would be worse.
+            return;
+        }
+        long bytes = RtRestirDi.historyBytes(Math.multiplyExact(w, h));
+        diHistoryCurr = ctx.createBuffer(bytes, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+                "restir di history " + w + "x" + h);
+        diHistoryPrev = ctx.createBuffer(bytes, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+                "restir di history " + w + "x" + h);
+        diHistoryW = w;
+        diHistoryH = h;
+        diHistoryDivisor = divisor;
+        // Freshly allocated memory holds whatever its previous owner left, and nothing is cleared, because
+        // nothing needs to be: a record is trusted only after it survives a tag match, a light index range
+        // check, a positivity check on both reservoir scalars and a position/normal comparison, and one that
+        // passed all of those describes a usable sample even if it came from the allocator. What must not
+        // survive is the tag. The light generation alone would not be enough, because a reallocation can land
+        // on the memory the buffer it replaced just returned with the generation unmoved, so the reset
+        // counter advances here too and the new tag cannot agree with the record this cell held last frame.
+        diResets++;
+        diGeneration = Long.MIN_VALUE;
+    }
+
+    private void destroyDiHistory() {
+        if (diHistoryCurr != null) {
+            diHistoryCurr.destroy();
+            diHistoryCurr = null;
+        }
+        if (diHistoryPrev != null) {
+            diHistoryPrev.destroy();
+            diHistoryPrev = null;
+        }
+        diHistoryW = 0;
+        diHistoryH = 0;
+        diGenTag = 0;
+        diGeneration = Long.MIN_VALUE;
+    }
+
+    /**
+     * Drops every stored reservoir without touching the buffers, by making this frame's tag one no stored
+     * record can carry. The frames that follow rebuild the history from their own candidates.
+     */
+    public void resetDiHistory() {
+        diGeneration = Long.MIN_VALUE;
+        diResets++;
+    }
+
+    /**
+     * Publishes this frame's generation tag, or zero to switch reuse off. Off is the default and the
+     * cheapest path: a zero tag makes the trace return the initial reservoir before it consumes any random
+     * number or touches the history, so a frame with ReSTIR disabled draws exactly the numbers the same
+     * build without it would have drawn.
+     */
+    private void updateDiGeneration(RtTerrain terrain) {
+        if (!diHistoryEnabled() || diHistoryCurr == null || terrain.lightCount() == 0
+                || CausticaConfig.Rt.Lights.RIS_CANDIDATES.value() <= 0) {
+            diGenTag = 0;
+            return;
+        }
+        long generation = terrain.lightGeneration();
+        if (generation != diGeneration) {
+            diGeneration = generation;
+            diGenTag = RtRestirDi.generationTag(generation, diResets);
+        }
     }
 
     /**
@@ -830,6 +937,10 @@ public final class RtComposite {
      * atlas is ready (gated in {@link #composite}). The new material epoch clears terrain before trace.
      */
     public void onResourceReloadStart() {
+        // Every material is about to be replaced, so every published light may have changed what it is, and
+        // the surfaces the stored records were validated against are being rebuilt underneath them. The tag
+        // would reject them a frame later anyway; this skips a frame of reasoning about which came first.
+        resetDiHistory();
         reloadRebindRequested = true;
         materialBindingsReady = false;
         setCelestialUvAtlas(0L);
@@ -901,6 +1012,10 @@ public final class RtComposite {
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+            // The ReSTIR DI history is sized by the divisor as well as by the render extent, and the divisor
+            // and the enable flag can both change without a resize, so the history is reconciled here on the
+            // unchanged-frame path too. It returns immediately when the shape already matches.
+            ensureDiHistory(ctx, renderW, renderH);
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -918,6 +1033,10 @@ public final class RtComposite {
             continuationQueue.destroy();
             continuationQueue = null;
         }
+        // The history is indexed in render pixels, so a resize that changes them changes the addressing.
+        // Freed with the rest of the render-resolution set rather than kept: unlike the queue it has no
+        // content worth preserving across a resize, since every stored position is in the old frame's space.
+        destroyDiHistory();
         destroyGuideImages();
 
         displayW = width;
@@ -944,6 +1063,7 @@ public final class RtComposite {
         continuationQueue = ctx.createBuffer(continuationBytes,
                 VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                 "path continuation queue " + renderW + "x" + renderH + "x2");
+        ensureDiHistory(ctx, renderW, renderH);
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
         hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
@@ -1156,7 +1276,18 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    // ReSTIR DI: history divisor, temporal M cap and position tolerance in blocks, then the
+                    // cosine of the normal tolerance because the shader compares dot products, then the
+                    // generation tag and the cell extent the lookup is bounded by. The divisor is floored at
+                    // 1 rather than left at its pre-allocation value because the shader divides by it, and
+                    // the extent is reported as zero with reuse off so nothing can index a cell by it.
+                    new Float4(Math.max(1, diHistoryDivisor),
+                            CausticaConfig.Rt.ReStir.TEMPORAL_MAX_M.value(),
+                            CausticaConfig.Rt.ReStir.POSITION_TOLERANCE.value(), 0.0f),
+                    new Float4(Math.cos(Math.toRadians(CausticaConfig.Rt.ReStir.NORMAL_TOLERANCE.value())),
+                            0.0f, 0.0f, 0.0f),
+                    diGenTag, diGenTag != 0 ? diHistoryW : 0, diGenTag != 0 ? diHistoryH : 0
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1186,13 +1317,19 @@ public final class RtComposite {
             // section/entity/material tables are read from world.rahit/world.rchit, which never load
             // WorldPush at all, and the RIS light buffers are read from world.rgen's hot inner loop, so
             // none of them should cost an extra BDA dereference to find.
+            updateDiGeneration(terrain);
             ByteBuffer pushConstants = stack.malloc(WorldPushConstantsData.BYTE_SIZE);
             new WorldPushConstantsData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                     RtMaterialRegistry.INSTANCE.tableAddress(),
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
-                    (int) frameCounter).write(pushConstants);
+                    (int) frameCounter,
+                    // Last frame's records are read, this frame's are written; both zero with reuse off,
+                    // which is the first thing the shader looks at.
+                    diGenTag != 0 && diHistoryPrev != null ? diHistoryPrev.deviceAddress : 0L,
+                    diGenTag != 0 && diHistoryCurr != null ? diHistoryCurr.deviceAddress : 0L)
+                    .write(pushConstants);
             // Sky LUTs, from the same WorldPush slot the trace is about to read: the sky the LUT holds and
             // the sky the frame shades are built from one set of angles, not two. Recorded here (after the
             // push flush, before the trace) so the miss shader's very first fetch sees this frame's dome.
@@ -1209,6 +1346,15 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
+            }
+            // Both traces have now read the previous frame's reservoirs and written this frame's, so what
+            // the next frame reads is what this one wrote. Swapped here rather than at the top of the frame
+            // because the push slots live in a ring addressed by frame index, and a slot still in flight has
+            // to keep pointing at the buffers it was recorded against.
+            if (diGenTag != 0) {
+                RtBuffer previous = diHistoryPrev;
+                diHistoryPrev = diHistoryCurr;
+                diHistoryCurr = previous;
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
@@ -1276,7 +1422,11 @@ public final class RtComposite {
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.debugPresent")) {
                     debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView,
                             CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
-                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value());
+                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
+                            // Views 10 and 11 show the history this frame just wrote, not the one it read: what
+                            // they are for is seeing what the next frame is about to be offered.
+                            diHistoryCurr != null ? diHistoryCurr.deviceAddress : 0L, diHistoryW, diHistoryH,
+                            diGenTag, terrain.lightCount());
                 }
                 hdrWrittenThisFrame = false;
             }
@@ -1484,6 +1634,7 @@ public final class RtComposite {
             fgHdrHudlessImage.destroy();
             fgHdrHudlessImage = null;
         }
+        destroyDiHistory();
         RtWorldOverlay.INSTANCE.destroy(); // overlay features/pipelines/scratch live on the same device lifetime
         if (output != null) {
             output.destroy();

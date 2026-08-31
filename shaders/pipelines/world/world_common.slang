@@ -28,6 +28,11 @@ public struct WorldPushConstants {
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
     public uint frameIndex;
+    // ---- ReSTIR DI history. Read and write are separate buffers of one ping-pong pair so a lane can
+    // never read a cell another lane is storing in the same dispatch. Either address being 0 disables
+    // temporal reuse, which is also how a cold start after a resize or a reallocation is signalled.
+    public uint64_t diHistoryReadAddr;
+    public uint64_t diHistoryWriteAddr;
 };
 
 // Minimal push block for the compute passes that only need to dereference the frame's WorldPush: the sky
@@ -88,6 +93,17 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // ---- ReSTIR DI temporal reuse of block-emitter direct light. Whether it happens at all is decided by
+    // pc.diHistoryReadAddr/diHistoryWriteAddr, which the shader checks before consuming any RNG: with
+    // reuse off, no random number is drawn here and no history is touched, so the frame is bit-identical to
+    // one with ReSTIR DI absent. These lanes are the parameters of a pass that is already on.
+    // x history divisor (render pixels per history cell), y temporal M cap, z how far a stored hit position
+    // may drift and still count as the same surface, in blocks, w unused.
+    public float4   diParams;
+    public float4   diValidate;     // x minimum dot(normal, stored normal); y..w unused
+    public uint     diGenTag;       // the published light generation; a mismatch means reject
+    public uint     diHistoryWidth; // history grid extent in cells, after the divisor
+    public uint     diHistoryHeight;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
@@ -131,8 +147,35 @@ public struct LightGridSpan {
     public float accept;
 };
 
+// One persisted ReSTIR DI reservoir, deliberately packed as twelve 4-byte scalars rather than vectors: a
+// float3 member would push std430 alignment to 16 and round the whole record up, while this shape is
+// exactly 48 bytes and every field is a plain scalar the generated Java record can write and read. The
+// record is one read and one write per primary diffuse vertex, so unlike the light buffer it is fetched by
+// coherent 2D tiles rather than at random, which is why straddling a cache line here is not worth the
+// gymnastics a 32-byte form would need.
+//
+// The position and normal are the surface the reservoir was gathered ON, not part of the sample: they exist
+// so the next frame can tell whether it is still the same surface. genTag records the published light
+// generation, so a rebase or a republish invalidates every stored index instead of reusing a stale light.
+public struct DiReservoirRecord {
+    public float  hitX, hitY, hitZ; // rebased shading position at store time
+    public uint   normalOct;      // packHalf2(octEncode(surface normal))
+    public uint   lightIndex;     // index into the published Light buffer of that generation
+    public uint   packedST;       // packHalf2(emitter rectangle parameters)
+    public float  weight;         // finalized W = wSum / (M * phat)
+    public float  m;              // accumulated effective sample count
+    public float  phat;           // target function at that surface, for diagnostics only
+    public uint   genTag;         // 0 = never written; any other mismatch = reject
+    public float  pad0, pad1;     // 40 used of 48: rounds the stride to a vec4 multiple and leaves the
+                                  // two lanes a spatial round will want before it has to resize the history
+};
+
 // TerrainPrim.flags bit 0: this emissive quad is in the light buffer (RtLightCollector membership).
 public static const uint TERRAIN_PRIM_IN_LIGHT_BUFFER = 1u;
+
+// A reservoir with no selected emitter yet. Kept out of the representable index range so reuse can tell
+// "nothing was sampled" from "light zero was sampled" without inspecting any other field.
+public static const uint DI_NO_LIGHT = 0xffffffffu;
 
 // Largest finite half. Producers of fp16 HDR storage clamp to this instead of letting the conversion
 // round up to +inf and propagate as NaN — world.rgen's rgba16f outImage store most of all, which is the

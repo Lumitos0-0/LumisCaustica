@@ -11,6 +11,20 @@ import bindings;
 
 [[vk::push_constant]] DebugPresentPush pc;
 
+// ReSTIR DI history words, read as a flat uint array instead of through the DiReservoirRecord struct: this
+// pass wants four words of a 48-byte record, and importing the world module here would drag the whole
+// ray-tracing type set into a compute entry point for one read. The word map, from DiReservoirRecord in
+// pipelines/world/world_common.slang: 0..2 hit position, 3 oct-encoded normal, 4 light index,
+// 5 emitter (s,t), 6 W, 7 M, 8 p-hat, 9 generation tag, 10..11 padding.
+// The word count and these indices have to keep agreeing with the reflected record stride Java sizes the
+// history from; RtRestirDiTest is what pins them together.
+public static const uint DI_RECORD_WORDS = 12u;
+public static const uint DI_LIGHT_INDEX_WORD = 4u;
+public static const uint DI_M_WORD = 7u;
+public static const uint DI_GEN_TAG_WORD = 9u;
+
+public typealias DiWords = Ptr<uint, Access.Read, AddressSpace.Device, Std430DataLayout>;
+
 static const float3 ACESCG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
 
 // OCIO cg-config-v4.0.0 ACES 2.0: ACEScg/AP1/D60 to Linear Rec.709/D65. Debug guide colors cross
@@ -88,6 +102,39 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float4 normalRough = gNormal[guidePix];
     float3 dbg;
+    if (pc.debugView == 10u || pc.debugView == 11u) {
+        // Both views index the history by this pixel's uv into the CELL grid, so what is shown is the cell
+        // the sampler would have read at the same place, including whether this pixel was the cell's writer.
+        if (pc.diHistoryAddr == 0 || pc.diHistoryWidth == 0u || pc.diHistoryHeight == 0u) {
+            dbg = float3(0.0, 0.0, 0.0);
+        } else {
+            uint2 cells = uint2(pc.diHistoryWidth, pc.diHistoryHeight);
+            uint2 cell = min(uint2(uv * float2(cells)), cells - 1u);
+            uint base = (cell.y * pc.diHistoryWidth + cell.x) * DI_RECORD_WORDS;
+            DiWords history = DiWords(pc.diHistoryAddr);
+            uint tag = history[base + DI_GEN_TAG_WORD];
+            uint lightIndex = history[base + DI_LIGHT_INDEX_WORD];
+            if (pc.debugView == 10u) {
+                // Effective sample count the reservoir ended the frame with. Dark means the history was
+                // rejected and only this frame's candidates carry it; bright means reuse is accumulating.
+                // Saturates at 64 so a runaway cap shows up as a flat field.
+                float m = asfloat(history[base + DI_M_WORD]);
+                float t = m > 1.0 ? clamp(log2(m) / 6.0, 0.0, 1.0) : 0.0;
+                dbg = lerp(float3(0.02, 0.02, 0.06), float3(1.0, 0.85, 0.2), t);
+            } else {
+                // Black = never written since the last reset, green = current and in range, orange = a real
+                // record from a superseded light generation, red = a record naming a light that does not
+                // exist. The last two should never appear; orange in particular means a reset was missed.
+                bool inRange = lightIndex < pc.diLightCount;
+                dbg = tag == 0u ? float3(0.0, 0.0, 0.1)
+                        : tag == pc.diGenTag && inRange ? float3(0.0, 0.9, 0.2)
+                        : inRange ? float3(0.9, 0.55, 0.0)
+                        : float3(0.9, 0.05, 0.05);
+            }
+        }
+        outputImage[pix] = float4(clamp(dbg, 0.0, 1.0), 1.0);
+        return;
+    }
     if (pc.debugView == 8u) {
         float luminance = dot(max(sceneImage[pix].rgb, float3(0.0)), ACESCG_LUMA);
         float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0);

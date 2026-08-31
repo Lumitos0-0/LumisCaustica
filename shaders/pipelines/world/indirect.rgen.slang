@@ -29,6 +29,7 @@ import trace;
 import trace_ser;
 #endif
 import lighting;
+import restir_di;
 import sky;
 import bindings;
 
@@ -308,15 +309,23 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             }
         }
 
-        // RIS direct lighting from block emitters (single-frame only, no temporal reservoir reuse).
-        // Front lobe + SSS backlighting are resampled together and share ONE shadow ray — a light can
-        // only be in front of n or behind it, never both, so combining them into one target function is
-        // exact, not an approximation. The SSS term is gated off past MAX_SSS_INDIRECT_DEPTH by passing
-        // sss=0 there (falls back to plain front-only RIS).
+        // RIS direct lighting from block emitters (temporal reservoir reuse where the ReSTIR DI history
+        // covers this vertex). Front lobe + SSS backlighting are resampled together and share ONE shadow
+        // ray — a light can only be in front of n or behind it, never both, so combining them into one
+        // target function is exact, not an approximation. The SSS term is gated off past
+        // MAX_SSS_INDIRECT_DEPTH by passing sss=0 there (falls back to plain front-only RIS).
         if (risOn) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                      seed, proposalSeed);
+            // Only the primary vertex, because it is the only one this pass can reproject: a reservoir is
+            // addressed by screen position, and Pass A records no depth for what a bounce ray hit, so a
+            // reservoir gathered at a secondary vertex has no previous-frame position to be found at. The
+            // reuse itself is gated on the history addresses being set, before any RNG is drawn, so a frame
+            // with ReSTIR off still draws exactly the numbers a build without it would have.
+            if (hitDepth == 0) {
+                r = restirDiTemporal(r, pix, hitPos, n, v, rd, diffAlb, F0, rough, activeSss, seed);
+            }
             L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
                                              activeSss);
         }

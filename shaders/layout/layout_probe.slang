@@ -16,9 +16,14 @@ struct ExposureStateLayoutProbe {
     ExposureState values[2]; // array stride is the complete, tail-padded ExposureState byte size
 };
 
+struct DiReservoirRecordLayoutProbe {
+    DiReservoirRecord values[2]; // array stride is the complete, tail-padded record byte size
+};
+
 [[vk::binding(0, 0)]] StructuredBuffer<WorldPushLayoutProbe, Std430DataLayout> worldPushLayoutProbe;
 [[vk::binding(1, 0)]] StructuredBuffer<MaterialHeaderLayoutProbe, Std430DataLayout> materialHeaderLayoutProbe;
 [[vk::binding(2, 0)]] StructuredBuffer<ExposureStateLayoutProbe, Std430DataLayout> exposureStateLayoutProbe;
+[[vk::binding(3, 0)]] StructuredBuffer<DiReservoirRecordLayoutProbe, Std430DataLayout> diReservoirRecordLayoutProbe;
 [[vk::push_constant]] WorldPushConstants pushConstantsLayoutProbe;
 
 [shader("compute")]
@@ -29,6 +34,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         float sink = worldPushLayoutProbe[0].values[0].invViewProj[0][0]
                 + materialHeaderLayoutProbe[0].values[0].params.x
                 + exposureStateLayoutProbe[0].values[0].previous
+                + float(diReservoirRecordLayoutProbe[0].values[0].genTag)
                 + float(pushConstantsLayoutProbe.frameIndex);
     }
 }

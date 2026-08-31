@@ -168,13 +168,26 @@ public final class RtDebugPresentPipeline {
         boundExposureStateBuffer = exposureState.handle;
     }
 
+    /**
+     * The ReSTIR DI arguments describe the history the trace just wrote and are only read by views 10
+     * and 11.
+     * They travel as a device address rather than a descriptor binding because this pass owns no other view
+     * of that buffer, which is the same reason every address in the world pipeline's push block does.
+     *
+     * @param diHistoryAddr  reservoir history, or 0 when ReSTIR DI is off or unallocated
+     * @param diHistoryWidth history extent in cells, not in screen pixels
+     * @param diGenTag       the light generation a record must carry to count as current
+     */
     public void dispatch(VkCommandBuffer cmd, int width, int height, int debugView,
-                         float centerWeightSigma, float centerWeightFloor) {
+                         float centerWeightSigma, float centerWeightFloor,
+                         long diHistoryAddr, int diHistoryWidth, int diHistoryHeight,
+                         int diGenTag, int diLightCount) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(DebugPresentPushData.BYTE_SIZE);
-            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor).write(push);
+            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor, diHistoryAddr,
+                    diHistoryWidth, diHistoryHeight, diGenTag, diLightCount).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

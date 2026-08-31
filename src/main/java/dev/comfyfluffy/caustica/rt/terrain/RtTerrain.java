@@ -276,6 +276,16 @@ public final class RtTerrain {
         return hierarchy.originZ() + hierarchy.rebaseZ() - blockZ;
     }
 
+    /**
+     * Which publish produced the current light buffer and light grid: the request id carried into
+     * {@code PublishedState.generation}, so it moves on every republish and to zero when the world is
+     * reset. Anything that caches a light <em>index</em> across frames needs it, because a rebase republishes
+     * the same lights at new indices and nothing else in the frame reveals that the index space was rebuilt.
+     */
+    public long lightGeneration() {
+        return lightGrid.published().generation();
+    }
+
     public int lightRebaseOffsetX() {
         return lightGrid.published().rebaseX() - blockX;
     }

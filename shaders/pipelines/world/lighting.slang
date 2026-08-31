@@ -18,6 +18,11 @@ public struct Reservoir {
     public float W;
     public float wSum;
     public float phat;
+    // Which emitter and which point on it the survivor is. pos is all the shading path needs, but a
+    // reservoir that outlives the frame has to be re-derived from the light table instead, and the sample
+    // point alone does not identify the (light, rectangle parameters) pair that produced it.
+    public uint  lightIndex;
+    public float s, t;
 };
 
 public Reservoir resEmpty() {
@@ -30,7 +35,21 @@ public Reservoir resEmpty() {
     r.W = 0.0;
     r.wSum = 0.0;
     r.phat = 0.0;
+    r.lightIndex = DI_NO_LIGHT;
+    r.s = 0.0;
+    r.t = 0.0;
     return r;
+}
+
+// The one light record behind a sample point, unpacked. risInitial and the ReSTIR DI temporal resampler
+// both resolve a (light, rectangle parameter) pair into a shading sample through this, so the two paths
+// cannot drift apart into disagreeing about where a survivor actually sits.
+public void evalLightSample(Light lg, float s, float t, out float3 sp, out float3 lnrm,
+                            out float3 le, out float area) {
+    sp = lg.pos + worldPush.lightRebase.xyz + s * lightHalfU(lg) + t * lightHalfV(lg);
+    lnrm = lightGeometricNormal(lg);
+    le = lightRadiance(lg);
+    area = lightArea(lg);
 }
 
 // Unshadowed contribution of a fixed light sample point at surface (hitPos,n,v); out p-hat = its
@@ -265,11 +284,11 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
         // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
         float s = rndf(seed) * 2.0 - 1.0;
         float t = rndf(seed) * 2.0 - 1.0;
-        float3 sp = lg.pos + worldPush.lightRebase.xyz
-                + s * lightHalfU(lg) + t * lightHalfV(lg);
-        float3 le = lightRadiance(lg);
-        float3 lightNormal = lightGeometricNormal(lg);
-        float area = lightArea(lg);
+        float3 sp;
+        float3 lightNormal;
+        float3 le;
+        float area;
+        evalLightSample(lg, s, t, sp, lightNormal, le, area);
         float phat;
         evalSampleContrib(sp, lightNormal, le, area, hitPos, n, v, rd,
                 diffAlb, F0, rough, twoSided, sss, phat);
@@ -285,10 +304,24 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
             r.le = le;
             r.area = area;
             r.phat = phat;
+            r.lightIndex = li;
+            r.s = s;
+            r.t = t;
         }
     }
     r.W = r.phat > 0.0 ? (r.wSum / (r.M * r.phat)) : 0.0;
     return r;
+}
+
+// p-hat of a sample point whose record fields are already unpacked. evalSampleContrib returns both the
+// radiance and the target value; reuse only ever needs the latter, because it is scoring a candidate it did
+// not draw and has no use for that candidate's colour until it survives.
+public float reservoirPhat(float3 sp, float3 lnrm, float3 le, float area, float3 hitPos, float3 n,
+                           float3 v, float3 rd, float3 diffAlb, float3 F0, float rough, bool twoSided,
+                           float sss) {
+    float phat;
+    evalSampleContrib(sp, lnrm, le, area, hitPos, n, v, rd, diffAlb, F0, rough, twoSided, sss, phat);
+    return phat;
 }
 
 // Shade a finalized reservoir: recompute the survivor's contribution at (hitPos,n,v), cast ONE shadow
