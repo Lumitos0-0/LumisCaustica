@@ -601,6 +601,8 @@ public final class RtComposite {
      * build without it would have drawn.
      */
     private void updateDiGeneration(RtTerrain terrain) {
+        // Only the primary budget matters here: reuse happens at the primary vertex, so a zero there leaves
+        // no reservoir to store even if bounce vertices are still sampling emitters.
         if (!diHistoryEnabled() || diHistoryCurr == null || terrain.lightCount() == 0
                 || CausticaConfig.Rt.Lights.RIS_CANDIDATES.value() <= 0) {
             diGenTag = 0;
@@ -1273,20 +1275,27 @@ public final class RtComposite {
                     new Float4(terrain.lightGridOriginX(), terrain.lightGridOriginY(), terrain.lightGridOriginZ(), 16f),
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
+                    // The primary budget and the bounce budget: the primary is the only vertex with a
+                    // ReSTIR history, so its candidates buy something across frames while a bounce vertex's
+                    // buy nothing but noise reduction for this frame. The helper keeps them equal unless the
+                    // split was asked for.
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
+                    CausticaConfig.Rt.Lights.risCandidatesSecondary(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
                     exposure.preExposure(),
                     // ReSTIR DI: history divisor, temporal M cap and position tolerance in blocks, then the
-                    // cosine of the normal tolerance because the shader compares dot products, then the
-                    // generation tag and the cell extent the lookup is bounded by. The divisor is floored at
-                    // 1 rather than left at its pre-allocation value because the shader divides by it, and
-                    // the extent is reported as zero with reuse off so nothing can index a cell by it.
+                    // cosine of the normal tolerance (the shader compares dot products), the spatial round
+                    // count and its radius in cells, then the generation tag and the cell extent the lookup is
+                    // bounded by. The divisor is floored at 1 rather than left at its pre-allocation value
+                    // because the shader divides by it, and the extent is reported as zero with reuse off so
+                    // nothing can index a cell by it.
                     new Float4(Math.max(1, diHistoryDivisor),
                             CausticaConfig.Rt.ReStir.TEMPORAL_MAX_M.value(),
                             CausticaConfig.Rt.ReStir.POSITION_TOLERANCE.value(), 0.0f),
                     new Float4(Math.cos(Math.toRadians(CausticaConfig.Rt.ReStir.NORMAL_TOLERANCE.value())),
-                            0.0f, 0.0f, 0.0f),
+                            (float) CausticaConfig.Rt.ReStir.SPATIAL_ROUNDS.value(),
+                            (float) CausticaConfig.Rt.ReStir.SPATIAL_RADIUS.value(), 0.0f),
                     diGenTag, diGenTag != 0 ? diHistoryW : 0, diGenTag != 0 ? diHistoryH : 0
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);

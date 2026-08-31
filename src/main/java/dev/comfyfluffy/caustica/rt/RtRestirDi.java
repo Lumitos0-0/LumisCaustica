@@ -31,6 +31,7 @@ public final class RtRestirDi {
     public static final int M_WORD = 7;
     public static final int PHAT_WORD = 8;
     public static final int GEN_TAG_WORD = 9;
+    public static final int SPATIAL_WORD = 10;
 
     /**
      * Ceiling on one dimension of the history grid. The divisor normally keeps the grid far below this; it

@@ -87,7 +87,8 @@ public struct WorldPush {
     public float4   lightGridOrigin;     // xyz minimum cell origin in rebased blocks, w cell size
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
-    public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+    public uint     risCandidates;    // RIS candidate count M at the primary vertex (0 = emitter NEE off)
+    public uint     risCandidatesSecondary; // M at every bounce vertex; -1 in the config keeps it equal to the above
     // Pre-exposure scalar applied to radiance at the outImage write
     // ONLY, so all light transport above stays in absolute scene units. Keeps stored fp16 values
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
@@ -100,7 +101,9 @@ public struct WorldPush {
     // x history divisor (render pixels per history cell), y temporal M cap, z how far a stored hit position
     // may drift and still count as the same surface, in blocks, w unused.
     public float4   diParams;
-    public float4   diValidate;     // x minimum dot(normal, stored normal); y..w unused
+    // x minimum dot(normal, stored normal) for a temporal match, y spatial rounds, z spatial radius in
+    // history cells, w unused. A round count of 0 leaves the spatial pass out entirely.
+    public float4   diValidate;
     public uint     diGenTag;       // the published light generation; a mismatch means reject
     public uint     diHistoryWidth; // history grid extent in cells, after the divisor
     public uint     diHistoryHeight;
@@ -166,8 +169,9 @@ public struct DiReservoirRecord {
     public float  m;              // accumulated effective sample count
     public float  phat;           // target function at that surface, for diagnostics only
     public uint   genTag;         // 0 = never written; any other mismatch = reject
-    public float  pad0, pad1;     // 40 used of 48: rounds the stride to a vec4 multiple and leaves the
-                                  // two lanes a spatial round will want before it has to resize the history
+    public float  spatial;        // neighbours the spatial round merged this frame: diagnostics, not reuse
+    public float  pad1;           // 44 used of 48 keeps the stride a multiple of 16 and leaves a lane for
+                                  // the next thing this pass wants before the record has to be resized
 };
 
 // TerrainPrim.flags bit 0: this emissive quad is in the light buffer (RtLightCollector membership).

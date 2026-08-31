@@ -50,7 +50,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     int rrStart = maxBounces <= 3 ? 1 : 2;
     // RIS emitter NEE: direct lighting from block emitters is active when lights are published and the
     // candidate count is non-zero. Otherwise emitters contribute only when a path hits them.
-    bool risOn = worldPush.risCandidates > 0u && worldPush.lightCount > 0u && pc.lightBufAddr != 0;
+    bool risOn = worldPush.lightCount > 0u && pc.lightBufAddr != 0;
     // Independent light-proposal RNG. Screen-space coherent selection is intentionally deferred until
     // there is a real presampled RIS tile buffer; direct sharing made tile-shaped lighting noise visible.
     // Measured: making a 16x16 tile share this seed recovers at most 1.3ms, so a future pool should share
@@ -119,6 +119,14 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
         int hitDepth = indirectDepth++;
+        // Which candidate budget this vertex draws from. The primary has a ReSTIR reservoir history to
+        // merge, so its candidates are an investment that pays off across frames; a bounce vertex rebuilds
+        // its reservoir from nothing every frame, so there its candidate count is pure cost — a chain of
+        // dependent light-table loads that the RIS cost profile measured as most of the frame's RIS time.
+        // Trimming it trades bounce-emitter noise, which DLSS-RR accumulates like the rest of the path
+        // trace, for that chain. See CausticaConfig's ris-candidates-secondary for the default.
+        uint risBudget = hitDepth == 0 ? worldPush.risCandidates : worldPush.risCandidatesSecondary;
+        bool risActive = risOn && risBudget > 0u;
 
         // ---- Dielectric interface: water, stained glass, ice. ONE handler and one behaviour — every
         // dielectric is a volume. Fresnel from the relative index across the face, then reflect or
@@ -221,10 +229,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // RIS direct lighting from block emitters (lava, glowstone, torches, ...) — same reservoir
             // sampler as terrain/entities, but two-sided: a billboard has no back face, so light
             // striking either side of the quad should still land (matches the sun/moon NEE above).
-            if (risOn) {
+            if (risActive) {
                 float3 v = -rd;
                 Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
-                                         true, 0.0, seed, proposalSeed);
+                                         true, 0.0, risBudget, seed, proposalSeed);
                 L += throughput * shadeReservoir(r, hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
                                                  true, 0.0);
             }
@@ -270,7 +278,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // One gate drives both the RIS call below and the direct-hit emission suppression here. They must
         // agree: gateEmitter exists only because RIS already accounted for this emitter, so a bounce where
         // RIS is skipped must also gather emission directly or that light is lost outright.
-        bool gateEmitter = risOn && payloadEmitterInList();
+        bool gateEmitter = risActive && payloadEmitterInList();
         if (emission > 0.0 && (!gateEmitter || showCelestial)) {
             L += throughput * albedo * emission;
         }
@@ -309,22 +317,23 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             }
         }
 
-        // RIS direct lighting from block emitters (temporal reservoir reuse where the ReSTIR DI history
-        // covers this vertex). Front lobe + SSS backlighting are resampled together and share ONE shadow
+        // RIS direct lighting from block emitters (with ReSTIR reuse where the history covers this
+        // vertex, which is the primary one). Front lobe + SSS backlighting are resampled together and share ONE shadow
         // ray — a light can only be in front of n or behind it, never both, so combining them into one
         // target function is exact, not an approximation. The SSS term is gated off past
         // MAX_SSS_INDIRECT_DEPTH by passing sss=0 there (falls back to plain front-only RIS).
-        if (risOn) {
+        if (risActive) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
-                                     seed, proposalSeed);
-            // Only the primary vertex, because it is the only one this pass can reproject: a reservoir is
-            // addressed by screen position, and Pass A records no depth for what a bounce ray hit, so a
-            // reservoir gathered at a secondary vertex has no previous-frame position to be found at. The
-            // reuse itself is gated on the history addresses being set, before any RNG is drawn, so a frame
-            // with ReSTIR off still draws exactly the numbers a build without it would have.
+                                     risBudget, seed, proposalSeed);
+            // Only the primary vertex, because it is the only one this pass can locate a stored reservoir
+            // at: the history is addressed by screen position, and Pass A records no depth for what a bounce
+            // ray hit, so a reservoir gathered at a secondary vertex has no previous-frame position to be
+            // found at and no neighbouring cell that means the same thing. Both rounds are gated on the
+            // history addresses being set, before any RNG is drawn, so a frame with ReSTIR off still draws
+            // exactly the numbers a build without it would have.
             if (hitDepth == 0) {
-                r = restirDiTemporal(r, pix, hitPos, n, v, rd, diffAlb, F0, rough, activeSss, seed);
+                r = restirDiResample(r, pix, hitPos, n, v, rd, diffAlb, F0, rough, activeSss, seed);
             }
             L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
                                              activeSss);

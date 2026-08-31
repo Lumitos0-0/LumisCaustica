@@ -87,12 +87,12 @@ public struct BloomPush {
 };
 
 public struct DebugPresentPush {
-    // 1..9 are the guide/exposure views; 10 and 11 read the ReSTIR DI history below. This pass is only
+    // 1..9 are the guide/exposure views; 10..12 read the ReSTIR DI history below. This pass is only
     // dispatched for debugView != 0.
     public uint debugView;
     public float centerWeightSigma;
     public float centerWeightFloor;
-    // ReSTIR DI history, shown raw: views 10 and 11 read the reservoir records the trace wrote THIS frame
+    // ReSTIR DI history, shown raw: views 10..12 read the reservoir records the trace wrote THIS frame
     // straight out of the buffer, bypassing the sampler, so a bug in the reuse can be seen even when the
     // lighting looks plausible. Reached by device address rather than a descriptor binding for exactly the
     // reason the world pipeline's push block does it: this pass owns no other view of that buffer.

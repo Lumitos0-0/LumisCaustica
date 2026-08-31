@@ -15,13 +15,15 @@ import bindings;
 // pass wants four words of a 48-byte record, and importing the world module here would drag the whole
 // ray-tracing type set into a compute entry point for one read. The word map, from DiReservoirRecord in
 // pipelines/world/world_common.slang: 0..2 hit position, 3 oct-encoded normal, 4 light index,
-// 5 emitter (s,t), 6 W, 7 M, 8 p-hat, 9 generation tag, 10..11 padding.
+// 5 emitter (s,t), 6 W, 7 M, 8 p-hat, 9 generation tag, 10 neighbours merged by the spatial round,
+// 11 unused.
 // The word count and these indices have to keep agreeing with the reflected record stride Java sizes the
 // history from; RtRestirDiTest is what pins them together.
 public static const uint DI_RECORD_WORDS = 12u;
 public static const uint DI_LIGHT_INDEX_WORD = 4u;
 public static const uint DI_M_WORD = 7u;
 public static const uint DI_GEN_TAG_WORD = 9u;
+public static const uint DI_SPATIAL_WORD = 10u;
 
 public typealias DiWords = Ptr<uint, Access.Read, AddressSpace.Device, Std430DataLayout>;
 
@@ -102,8 +104,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float4 normalRough = gNormal[guidePix];
     float3 dbg;
-    if (pc.debugView == 10u || pc.debugView == 11u) {
-        // Both views index the history by this pixel's uv into the CELL grid, so what is shown is the cell
+    if (pc.debugView >= 10u && pc.debugView <= 12u) {
+        // These views index the history by this pixel's uv into the CELL grid, so what is shown is the cell
         // the sampler would have read at the same place, including whether this pixel was the cell's writer.
         if (pc.diHistoryAddr == 0 || pc.diHistoryWidth == 0u || pc.diHistoryHeight == 0u) {
             dbg = float3(0.0, 0.0, 0.0);
@@ -114,7 +116,14 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             DiWords history = DiWords(pc.diHistoryAddr);
             uint tag = history[base + DI_GEN_TAG_WORD];
             uint lightIndex = history[base + DI_LIGHT_INDEX_WORD];
-            if (pc.debugView == 10u) {
+            if (pc.debugView == 12u) {
+                // How many of the spatial rounds actually merged a neighbour into this cell's reservoir. A
+                // flat black field with rounds configured above zero means the validators are rejecting every
+                // neighbour — usually the coplanarity tolerance, not a broken reuse.
+                float merged = asfloat(history[base + DI_SPATIAL_WORD]);
+                dbg = merged > 0.0 ? float3(clamp(merged / 4.0, 0.15, 1.0), 0.0, 1.0 - clamp(merged / 4.0, 0.0, 1.0))
+                        : float3(0.0, 0.0, 0.0);
+            } else if (pc.debugView == 10u) {
                 // Effective sample count the reservoir ended the frame with. Dark means the history was
                 // rejected and only this frame's candidates carry it; bright means reuse is accumulating.
                 // Saturates at 64 so a runaway cap shows up as a flat field.

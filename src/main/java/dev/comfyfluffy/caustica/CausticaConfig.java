@@ -61,6 +61,7 @@ public final class CausticaConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.ReStir.ENABLED, Rt.ReStir.TEMPORAL_MAX_M, Rt.ReStir.HISTORY_DIVISOR,
             Rt.ReStir.POSITION_TOLERANCE, Rt.ReStir.NORMAL_TOLERANCE,
+            Rt.ReStir.SPATIAL_ROUNDS, Rt.ReStir.SPATIAL_RADIUS,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -103,7 +104,9 @@ public final class CausticaConfig {
                         + " re-deciding every light from scratch each frame, at the cost of a reservoir\n"
                         + " history buffer and a slightly slower response to lighting changes.\n"
                         + " Lower history-divisor is sharper but costs more; higher temporal-max-m is\n"
-                        + " steadier but sticks to what was visible longer.");
+                        + " steadier but sticks to what was visible longer. spatial-rounds spreads each\n"
+                        + " surface's answer to its neighbours, which converges faster but is biased by\n"
+                        + " how far it reaches; 0 turns that part off.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -577,12 +580,39 @@ public final class CausticaConfig {
             }
         }
 
-        /** RIS block-emitter lights. {@code ris-candidates = 0} disables everything. */
+        /**
+         * RIS block-emitter lights. Emitter NEE runs at any vertex whose budget is non-zero; setting both to
+         * 0 disables it entirely, and the light buffer is only collected while at least one of them is on.
+         */
         public static final class Lights {
             public static final IntSetting RIS_CANDIDATES =
                     intAtLeast("caustica.rt.risCandidates", "lights.ris-candidates", 8, 0);
+            // Candidate count at bounce vertices, which is where the walk costs the frame: each candidate is a
+            // dependent chain of grid -> span -> alias -> light-record loads at a divergent address, and every
+            // bounce vertex pays it again. -1 follows ris-candidates, so the split is inert until asked for.
+            public static final IntSetting RIS_CANDIDATES_SECONDARY =
+                    intAtLeast("caustica.rt.risCandidatesSecondary", "lights.ris-candidates-secondary", -1, -1);
             public static final FloatSetting MIN_FILL_RATIO =
                     finiteFloat("caustica.rt.lightMinFillRatio", "lights.min-fill-ratio", 0.25f);
+            /**
+             * The candidate count a bounce vertex draws. {@code -1} follows {@link #RIS_CANDIDATES}, which
+             * keeps the split inert for anyone who has not asked for it; anything below that floor turns
+             * bounce-vertex emitter NEE off, the way {@code ris-candidates = 0} turns it off everywhere.
+             */
+            public static int risCandidatesSecondary() {
+                int configured = RIS_CANDIDATES_SECONDARY.value();
+                return configured < 0 ? RIS_CANDIDATES.value() : configured;
+            }
+
+            /**
+             * Whether emitter NEE will run at any vertex. Light collection is a meshing-time decision and has
+             * to outlive the question of which vertex budget is non-zero, so a meshed section that will be
+             * sampled by bounce rays alone still needs its emitters gathered.
+             */
+            public static boolean risRequestedAnywhere() {
+                return RIS_CANDIDATES.value() > 0 || risCandidatesSecondary() > 0;
+            }
+
             public static final BooleanSetting STATS = bool("caustica.rt.lightStats", "lights.stats", false);
             public static final BooleanSetting DUMP = bool("caustica.rt.lightDump", "lights.dump", false);
             public static final IntSetting DUMP_RADIUS =
@@ -618,6 +648,17 @@ public final class CausticaConfig {
             public static final FloatSetting POSITION_TOLERANCE =
                     clampedFloat("caustica.rt.restir.positionTolerance", "restir.position-tolerance",
                             0.25f, 0.0f, 8.0f);
+            // Neighbours merged into each primary reservoir per frame, each one drawn from a random cell
+            // within the radius below. A borrowed neighbour contributes one sample, so this is also the
+            // number of extra reservoir reads per primary vertex; 0 leaves the spatial round out.
+            public static final IntSetting SPATIAL_ROUNDS =
+                    clampedInt("caustica.rt.restir.spatialRounds", "restir.spatial-rounds", 4, 0, 8);
+            // Radius of that search in history cells, so its real size in pixels scales with
+            // history-divisor. The round is biased by how far it reaches — a neighbour across a corner is a
+            // different surface, and only the coplanarity check stands between that and light smeared
+            // through a wall.
+            public static final IntSetting SPATIAL_RADIUS =
+                    clampedInt("caustica.rt.restir.spatialRadius", "restir.spatial-radius", 8, 1, 64);
             // How far that surface's normal may have turned, in degrees, before the stored reservoir is
             // rejected. Compared as a dot product, so this is the one place the angle is authored instead of
             // the cosine the shader needs.

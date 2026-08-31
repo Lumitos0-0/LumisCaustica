@@ -251,8 +251,12 @@ public void selectLightGridLight(LightGridCell cell, bool useLocal, inout uint p
 
 // Initial RIS over M power-weighted candidates -> one resampled sample, no shadow ray yet. The chosen
 // sample's W = wSum / (M * p-hat); M counts every candidate, including zero-weight ones.
+// candidateCount is a parameter rather than a read of worldPush.risCandidates because it is no longer one
+// number per frame: the primary vertex and the bounce vertices have separate budgets, and only the primary
+// has a ReSTIR history, so the caller has to say which budget this vertex draws from.
 public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3 diffAlb, float3 F0,
-                     float rough, bool twoSided, float sss, inout uint seed, inout uint proposalSeed) {
+                     float rough, bool twoSided, float sss, uint candidateCount, inout uint seed,
+                     inout uint proposalSeed) {
     Reservoir r = resEmpty();
     LightGridCell gridCell;
     int3 gridCellCoord;
@@ -264,7 +268,6 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
                 * worldPush.lightGridOrigin.w;
     }
     bool hasGridCell = findLightGridCell(gridLookup, gridCell, gridCellCoord);
-    uint candidateCount = worldPush.risCandidates;
     r.M = float(candidateCount);
     // Deterministically stratify the proposal mixture. At the default M=8 this schedules exactly six
     // local and two global candidates, with every lane taking the same branch for a given candidate.

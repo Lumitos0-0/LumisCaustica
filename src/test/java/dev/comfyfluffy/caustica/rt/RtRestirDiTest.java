@@ -65,7 +65,7 @@ final class RtRestirDiTest {
     void debugViewWordMapMatchesTheReflectedRecordLayout() {
         ByteBuffer buffer = ByteBuffer.allocateDirect(RtRestirDi.RECORD_BYTES);
         new DiReservoirRecordData(1.5f, -2.25f, 300.0f, 0x11223344, 0x55667788, 0x99AABBCC,
-                1.75f, 42.0f, 0.125f, 0x0BADF00D, 0.0f, 0.0f).write(buffer);
+                1.75f, 42.0f, 0.125f, 0x0BADF00D, 3.0f, 0.0f).write(buffer);
 
         assertEquals(48, RtRestirDi.RECORD_BYTES);
         assertEquals(1.5f, buffer.getFloat(0), 0.0f);
@@ -77,6 +77,7 @@ final class RtRestirDiTest {
         assertEquals(42.0f, buffer.getFloat(RtRestirDi.M_WORD * Integer.BYTES), 0.0f);
         assertEquals(0.125f, buffer.getFloat(RtRestirDi.PHAT_WORD * Integer.BYTES), 0.0f);
         assertEquals(0x0BADF00D, buffer.getInt(RtRestirDi.GEN_TAG_WORD * Integer.BYTES));
+        assertEquals(3.0f, buffer.getFloat(RtRestirDi.SPATIAL_WORD * Integer.BYTES), 0.0f);
     }
 
     @Test

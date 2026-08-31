@@ -107,7 +107,7 @@ final class RtTerrainMesher {
         // records, which packSection then copies out. Only opaque + cutout can emit (glass is shaded
         // emission-free, water never emits; lava lives in the opaque bucket).
         float[] lights = EMPTY_LIGHTS;
-        if (CausticaConfig.Rt.Lights.RIS_CANDIDATES.value() > 0) {
+        if (CausticaConfig.Rt.Lights.risRequestedAnywhere()) {
             FloatArrayList collected = new FloatArrayList();
             float minFill = CausticaConfig.Rt.Lights.MIN_FILL_RATIO.value();
             collectLights(collected, mesh.opaque, materials, minFill);
