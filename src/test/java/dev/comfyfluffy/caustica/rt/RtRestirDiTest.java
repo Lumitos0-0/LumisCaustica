@@ -36,8 +36,8 @@ final class RtRestirDiTest {
 
     @Test
     void sizesTheHistoryFromTheCellCountAndRejectsAnImpossibleGrid() {
-        // A quarter-resolution 1280x720 grid is 640x360 cells of 48 bytes: 11 MB, against the 88 MB a
-        // per-pixel history at the same extent would cost.
+        // A quarter-resolution 1280x720 grid is 640x360 cells of 48 bytes: 11 MB per buffer, against the
+        // 44 MB per buffer a per-pixel history at the same extent costs (and there are always two).
         assertEquals(640 * 360L * 48L, RtRestirDi.historyBytes(640 * 360));
         assertThrows(IllegalArgumentException.class, () -> RtRestirDi.historyBytes(-1));
     }
