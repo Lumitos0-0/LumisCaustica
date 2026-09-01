@@ -3,10 +3,6 @@
 // Supports color transmission through translucent materials.
 
 import world_common;
-import world_core;
-import math;
-import medium;
-import trace;
 import volumetric_fog_common;
 
 [[vk::push_constant]] FogIntegrationPush pc;
@@ -18,6 +14,9 @@ import volumetric_fog_common;
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> fogOutput;
 [[vk::binding(4, 0)]] Sampler2D blockAlbedoAtlas;
 
+static const float PI = 3.14159265359;
+static const uint CULL_SECONDARY = 0x01u;
+static const float RAY_TMIN = 0.001;
 static const float ALPHA_CUTOFF = 0.5;
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float WATER_SHADOW_TINT = 0.5;
