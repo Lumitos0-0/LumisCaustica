@@ -226,9 +226,6 @@ final class RtTerrainMesher {
                     blockRandom.setSeed(state.getSeed(m));
                     model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.cullTest);
                     capture.flushBlock(); // resolve coplanar ties (grass overlay / cross faces), then emit
-                    blockRandom.setSeed(state.getSeed(m)); // second pass must see the same randomised quad set
-                    model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.captureAllFaces);
-                    capture.flushInsetCullRescue(); // add back materially inset cull-faces that vanilla shape culling would drop
                 }
             }
         }
@@ -410,10 +407,6 @@ final class RtTerrainMesher {
         float originX, originY, originZ;
         private final BlockPos.MutableBlockPos cullPos = new BlockPos.MutableBlockPos();
         private final java.util.function.Predicate<Direction> cullTest = this::isCulled;
-        // Second pass used only to rescue materially inset cull-faces. Vanilla/Fabric culling is shape-based,
-        // not mesh-based, so a resource-pack model can tag a face as neighbour-culled even when the visible
-        // geometry sits measurably behind the block boundary and would otherwise leave a slit in RT.
-        private final java.util.function.Predicate<Direction> captureAllFaces = direction -> false;
 
         // Coplanar-resolution: vanilla emits coincident quads that tie on depth in the BVH and flicker —
         // a block face's opaque base + its tinted cutout overlay (grass/snowy sides), and a cross model's
@@ -424,8 +417,6 @@ final class RtTerrainMesher {
         private static final float OFFSET = 2.0e-4f;         // outward nudge (blocks) to break coplanar depth ties
         private static final float TRANSLUCENT_INSET = 2.0e-4f; // inward recess (blocks) for glass/ice vs coplanar neighbours
         private static final float COINCIDENT_EPS = 1.0e-4f; // verts this close are "the same" point
-        private static final float CULL_BOUNDARY_EPS = 1.0e-4f; // treat only truly flush faces as sitting on the boundary plane
-        private static final float INSET_CULL_RESCUE_MIN = 1.0f / 32.0f; // rescue only materially recessed faces, not tiny model epsilons
         private static final int RESOLVE_CAP = 128;          // skip the O(n^2) resolve for pathological blocks
         private final List<PendingQuad> pending = new ArrayList<>(8);
         private int pendingCount;
@@ -434,17 +425,12 @@ final class RtTerrainMesher {
         /** Capture a final Fabric Renderer API quad before raster AO/directional lighting is applied. */
         private void putFabric(MutableQuadView quad) {
             PendingQuad q = acquire();
-            q.originX = originX;
-            q.originY = originY;
-            q.originZ = originZ;
-            q.cullFace = quad.cullFace();
             for (int i = 0; i < 4; i++) {
                 q.x[i] = quad.x(i) + originX;
                 q.y[i] = quad.y(i) + originY;
                 q.z[i] = quad.z(i) + originZ;
                 q.uv[i] = UVPair.pack(quad.u(i), quad.v(i));
             }
-            q.cullableBoundary = isOnOwnBlockBoundary(q, q.cullFace);
 
             float ex1 = q.x[1] - q.x[0], ey1 = q.y[1] - q.y[0], ez1 = q.z[1] - q.z[0];
             float ex2 = q.x[2] - q.x[0], ey2 = q.y[2] - q.y[0], ez2 = q.z[2] - q.z[0];
@@ -488,41 +474,6 @@ final class RtTerrainMesher {
             q.materialId = materials.resolve(sprite, state, q.translucent);
         }
 
-        private static float signedInsetFromBoundary(PendingQuad q, Direction direction, int i) {
-            return switch (direction) {
-                case DOWN -> q.y[i] - q.originY;
-                case UP -> (q.originY + 1.0f) - q.y[i];
-                case NORTH -> q.z[i] - q.originZ;
-                case SOUTH -> (q.originZ + 1.0f) - q.z[i];
-                case WEST -> q.x[i] - q.originX;
-                case EAST -> (q.originX + 1.0f) - q.x[i];
-            };
-        }
-
-        private static float maxInwardInset(PendingQuad q, Direction direction) {
-            float inset = 0.0f;
-            for (int i = 0; i < 4; i++) {
-                inset = Math.max(inset, signedInsetFromBoundary(q, direction, i));
-            }
-            return inset;
-        }
-
-        private static float maxOutwardOvershoot(PendingQuad q, Direction direction) {
-            float overshoot = 0.0f;
-            for (int i = 0; i < 4; i++) {
-                overshoot = Math.max(overshoot, -signedInsetFromBoundary(q, direction, i));
-            }
-            return overshoot;
-        }
-
-        private static boolean isOnOwnBlockBoundary(PendingQuad q, Direction direction) {
-            if (direction == null) {
-                return false;
-            }
-            return maxInwardInset(q, direction) <= CULL_BOUNDARY_EPS
-                    && maxOutwardOvershoot(q, direction) <= CULL_BOUNDARY_EPS;
-        }
-
         /** Fabric's cull predicate returns true when the nominal face should be discarded. */
         private boolean isCulled(Direction direction) {
             if (direction == null) {
@@ -530,38 +481,6 @@ final class RtTerrainMesher {
             }
             BlockState neighbor = view.getBlockState(cullPos.setWithOffset(pos, direction));
             return !Block.shouldRenderFace(state, neighbor, direction);
-        }
-
-        private boolean shouldRescueInsetCullFace(PendingQuad q) {
-            if (q.cullFace == null || q.cullableBoundary) {
-                return false;
-            }
-            float inwardInset = maxInwardInset(q, q.cullFace);
-            if (inwardInset < INSET_CULL_RESCUE_MIN || maxOutwardOvershoot(q, q.cullFace) > CULL_BOUNDARY_EPS) {
-                return false;
-            }
-            return isCulled(q.cullFace);
-        }
-
-        private static void projectToCullBoundary(PendingQuad q) {
-            if (q.cullFace == null) {
-                return;
-            }
-            float plane = switch (q.cullFace) {
-                case DOWN -> q.originY;
-                case UP -> q.originY + 1.0f;
-                case NORTH -> q.originZ;
-                case SOUTH -> q.originZ + 1.0f;
-                case WEST -> q.originX;
-                case EAST -> q.originX + 1.0f;
-            };
-            for (int i = 0; i < 4; i++) {
-                switch (q.cullFace) {
-                    case DOWN, UP -> q.y[i] = plane;
-                    case NORTH, SOUTH -> q.z[i] = plane;
-                    case WEST, EAST -> q.x[i] = plane;
-                }
-            }
         }
 
         /** Acquire a pooled PendingQuad for the current block (grown on demand, count reset by flushBlock). */
@@ -587,37 +506,6 @@ final class RtTerrainMesher {
                 resolveCoplanar(n);
             }
             for (int i = 0; i < n; i++) {
-                emit(pending.get(i));
-            }
-            pendingCount = 0;
-        }
-
-        /**
-         * Add back only materially inset cull-faces that the normal cull predicate would have discarded.
-         * They are projected onto the nominal block boundary instead of emitted at their recessed visual
-         * position: the goal is to seal RT-only light leaks between adjacent blocks, not to expose the
-         * resource pack's hidden interior cavity faces themselves.
-         */
-        void flushInsetCullRescue() {
-            int n = pendingCount;
-            if (n == 0) {
-                return;
-            }
-            int survivors = 0;
-            for (int i = 0; i < n; i++) {
-                PendingQuad q = pending.get(i);
-                if (shouldRescueInsetCullFace(q)) {
-                    projectToCullBoundary(q);
-                    if (survivors != i) {
-                        pending.set(survivors, q);
-                    }
-                    survivors++;
-                }
-            }
-            if (survivors >= 2 && survivors <= RESOLVE_CAP) {
-                resolveCoplanar(survivors);
-            }
-            for (int i = 0; i < survivors; i++) {
                 emit(pending.get(i));
             }
             pendingCount = 0;
@@ -752,10 +640,7 @@ final class RtTerrainMesher {
     private static final class PendingQuad {
         final float[] x = new float[4], y = new float[4], z = new float[4];
         final long[] uv = new long[4];
-        float originX, originY, originZ;
         float nx, ny, nz;
-        Direction cullFace;
-        boolean cullableBoundary;
         boolean cutout; // non-SOLID render layer (alpha-tested) — also an overlay candidate
         boolean translucent; // TRANSLUCENT layer (stained glass / ice): colored-transmission dielectric
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair
