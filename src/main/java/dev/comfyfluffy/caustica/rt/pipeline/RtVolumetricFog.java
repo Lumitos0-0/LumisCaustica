@@ -284,7 +284,7 @@ public final class RtVolumetricFog {
                     CausticaConfig.Rt.VolumetricFog.JITTER_STRENGTH.value(),
                     CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value(),
                     frameIndex,
-                    frameIndex * 2654435761,
+                    (int) (Integer.toUnsignedLong(frameIndex) * 2654435761L),
                     CausticaConfig.Rt.VolumetricFog.TEMPORAL.value() ? 1 : 0,
                     CausticaConfig.Rt.VolumetricFog.COLOR_TRANSMISSION.value() ? 1 : 0,
                     new FogInjectionPushData.Float2(jitterOffset[0], jitterOffset[1]),

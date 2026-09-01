@@ -1268,8 +1268,8 @@ public final class RtComposite {
 
             // ---- Volumetric fog: injection + integration with HW RT shadows for crepuscular rays ----
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, \"volumetric fog\");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage(\"frame.volumetricFog\")) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFog")) {
                     // Ensure images if display size changed after ensureOutput early-return path
                     if (volumetricFog.fogImage() == null || volumetricFog.fogImage().width != displayW || volumetricFog.fogImage().height != displayH) {
                         volumetricFog.ensureImages(displayW, displayH);
@@ -1305,12 +1305,11 @@ public final class RtComposite {
                     float moonLitFrac = Math.abs(moonPhaseIdx - 4.0f) / 4.0f;
                     float moonIllumFactor = phaseFixed + (1.0f - phaseFixed) * moonLitFrac;
 
-                    // Scale lux to fog illuminance (normalize ~100k lux noon to ~1.0)
-                    float sunScale = CausticaConfig.Rt.VolumetricFog.SUN_INTENSITY.value() * (sunIllumLux / 100000.0f);
-                    float moonScale = CausticaConfig.Rt.VolumetricFog.MOON_INTENSITY.value() * (moonIllumLux / 100000.0f) * moonIllumFactor;
-                    // Keep a minimum so moon rays still visible at night
-                    sunScale = Math.max(sunScale, 0.0f);
-                    moonScale = Math.max(moonScale, 0.0f);
+                    // Normalize physical lux to the fog shader's working scale (~100k lux noon -> ~1.0).
+                    // The shader applies pc.sunIntensity / pc.moonIntensity from the push constants, so do
+                    // not multiply the config again here or the user-facing intensity sliders are squared.
+                    float sunScale = Math.max(sunIllumLux / 100000.0f, 0.0f);
+                    float moonScale = Math.max((moonIllumLux / 100000.0f) * moonIllumFactor, 0.0f);
                     float[] sunIllum = new float[]{sunScale, sunScale, sunScale};
                     float[] moonIllum = new float[]{moonScale, moonScale, moonScale};
 
