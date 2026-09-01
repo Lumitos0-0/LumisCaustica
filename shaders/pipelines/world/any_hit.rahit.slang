@@ -23,6 +23,8 @@ static const float ENTITY_ALPHA_CUTOFF = 0.1; // entities: only discard near-ful
 // tinted pane still absorbs its own color on top of this.
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float WATER_SHADOW_TINT = 0.5;
+static const float TRANSMISSION_COLOR_EPSILON = 1.0e-3;
+static const float SHADOW_TRANSMITTANCE_CUTOFF = 0.01;
 
 // Progressive 8x8 blue-noise-style alpha threshold pattern, with a golden-ratio temporal rotation. This keeps
 // translucent entity hits stochastic, but trades per-pixel white noise for a stable spatial distribution
@@ -42,6 +44,12 @@ float alphaDitherThreshold(uint salt) {
     uint2 p = (DispatchRaysIndex().xy + uint2(salt * 3u, salt * 5u)) & uint2(7u, 7u);
     float base = ALPHA_DITHER_8X8[int(p.y * 8u + p.x)];
     return frac(base + float((pc.frameIndex + salt) & 255u) * 0.61803398875);
+}
+
+float3 dielectricTransmissionFilter(float3 color, float alpha) {
+    float3 safeColor = max(color, float3(TRANSMISSION_COLOR_EPSILON));
+    float coverage = clamp(alpha, 0.0, 1.0);
+    return exp(-max(-log(safeColor), float3(0.0)) * coverage);
 }
 
 [shader("anyhit")]
@@ -84,10 +92,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         // model here so entity dielectrics transmit instead of becoming opaque shadow blockers.
         bool shadowRay = (RayFlags() & RAY_FLAG_SKIP_CLOSEST_HIT_SHADER) != 0u;
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_DIELECTRIC) {
-            float3 tint709 = lerp(float3(1.0),
+            float3 tint709 = dielectricTransmissionFilter(
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb), texel.a);
             float3 tint = bt709ToAcesCg(tint709);
             packAlbedo(payload, unpackAlbedo(payload) * tint * clamp(materialHeader.params.w, 0.0, 1.0));
+            float3 remainingTrans = unpackAlbedo(payload);
+            if (max(remainingTrans.r, max(remainingTrans.g, remainingTrans.b)) < SHADOW_TRANSMITTANCE_CUTOFF) {
+                return;
+            }
             IgnoreHit();
         }
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_WATER) {
@@ -142,6 +154,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         packAlbedo(payload, unpackAlbedo(payload)
                 * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION)
                 * transmissionFactor);
+        // Shadow rays use AcceptFirstHit, so returning without IgnoreHit conservatively terminates once
+        // the remaining light is already negligible instead of paying for more near-black glass crossings.
+        float3 remainingTrans = unpackAlbedo(payload);
+        if (max(remainingTrans.r, max(remainingTrans.g, remainingTrans.b)) < SHADOW_TRANSMITTANCE_CUTOFF) {
+            return;
+        }
         IgnoreHit();
     }
 

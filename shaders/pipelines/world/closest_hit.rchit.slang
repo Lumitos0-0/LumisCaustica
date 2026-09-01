@@ -39,6 +39,7 @@ static const float NORMAL_AO_STRENGTH = 0.5;
 static const float RAY_CONE_MIN_WIDTH = 1.0e-5;
 static const float RAY_CONE_MIN_TEXEL_FOOTPRINT = 1.0e-4;
 static const float RAY_CONE_MAX_LOD = 12.0;
+static const float TRANSMISSION_COLOR_EPSILON = 1.0e-3;
 
 float2 texSizePx(Sampler2D t) {
     uint w, h;
@@ -70,6 +71,15 @@ float rayConeTextureLod(uint rayCone, float2 textureSizePx, float3 p0, float3 p1
 float rayConeUnitUvLod(uint rayCone, float2 textureSizePx) {
     float footprint = max(rayConeHitWidth(rayCone) * max(textureSizePx.x, textureSizePx.y), RAY_CONE_MIN_TEXEL_FOOTPRINT);
     return clamp(log2(footprint), 0.0, RAY_CONE_MAX_LOD);
+}
+
+// A dielectric texture's alpha is better treated as filter coverage/thickness than as a linear lerp to
+// white. Beer-Lambert in log space preserves stronger hue, composes multiplicatively across stacked panes,
+// and still leaves alpha=0 fully clear.
+float3 dielectricTransmissionFilter(float3 color709, float alpha) {
+    float3 safeColor = max(color709, float3(TRANSMISSION_COLOR_EPSILON));
+    float coverage = clamp(alpha, 0.0, 1.0);
+    return exp(-max(-log(safeColor), float3(0.0)) * coverage);
 }
 
 // LabPBR _n decode (shared): rotate the tangent-space normal into world space via a TBN built from the
@@ -297,7 +307,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         uint material = header.model;
         float3 baseAlbedo709 = srgbToLinear(entityTexel.rgb) * srgbToLinear(pr.tint.rgb);
         float3 opticalColor709 = material == MATERIAL_DIELECTRIC
-                ? lerp(float3(1.0), baseAlbedo709, entityTexel.a) : baseAlbedo709;
+                ? dielectricTransmissionFilter(baseAlbedo709, entityTexel.a) : baseAlbedo709;
         float3 albedo = bt709ToAcesCg(opticalColor709);
         Surface surface = evaluateMaterial(header, euvCoord, entityLod, albedo, n,
                 ep0, ep1, ep2, euv[e0], euv[e1], euv[e2], vdir,
@@ -368,14 +378,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         n = -n;
     }
 
-    // Stained glass / ice: a thin colored filter resolved in raygen
-    // (material 3). albedo carries the transmission tint = texel rgb mixed toward white by (1 − opacity),
-    // so a more opaque texel tints transmitted light more strongly.
+    // Stained glass / ice: a thin colored filter resolved in raygen (material 3). The texel alpha acts
+    // as filter coverage/thickness in Beer-Lambert space rather than a plain lerp to white, so the pane's
+    // hue reads more clearly and stacked colors compose multiplicatively.
     if (materialHeader.model == MATERIAL_DIELECTRIC) {
         float4 gtex = blockAlbedoAtlas.SampleLevel(uv, blockLod);
         float3 gtex709 = srgbToLinear(gtex.rgb);
         float3 tint709 = srgbToLinear(tint);
-        float3 opticalColor709 = lerp(float3(1.0), gtex709 * tint709, gtex.a);
+        float3 opticalColor709 = dielectricTransmissionFilter(gtex709 * tint709, gtex.a);
         float3 glassAlbedo = bt709ToAcesCg(opticalColor709);
         Surface glassSurface = evaluateMaterial(materialHeader, uv, blockLod, glassAlbedo, n,
                 tp0, tp1, tp2, uv0, uv1, uv2, vdir,

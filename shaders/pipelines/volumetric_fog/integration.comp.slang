@@ -20,6 +20,7 @@ static const float RAY_TMIN = 0.001;
 static const float ALPHA_CUTOFF = 0.5;
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float TRANSMITTANCE_CUTOFF = 0.01;
+static const uint MAX_TRANSMISSIVE_CROSSINGS = 8u;
 
 uint pcgHash(uint v) {
     v = v * 747796405u + 2891336453u;
@@ -96,6 +97,10 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, ray);
 
+    // Tinted shafts are the worst-case cost path here because the ray must keep walking past each
+    // transmissive surface instead of terminating on the first opaque blocker. Cap the number of
+    // visually relevant crossings so glass-heavy scenes do not explode the per-sample shadow cost.
+    uint transmissiveCrossings = 0u;
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) continue;
 
@@ -133,10 +138,14 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
                     float lum = dot(trans, float3(0.2126, 0.7152, 0.0722));
                     result.transmittance *= lum;
                 }
+                transmissiveCrossings++;
                 if (max(result.transmittance.r, max(result.transmittance.g, result.transmittance.b))
                         < TRANSMITTANCE_CUTOFF) {
                     result.hitOpaque = true;
                     result.transmittance = float3(0.0);
+                    break;
+                }
+                if (transmissiveCrossings >= MAX_TRANSMISSIVE_CROSSINGS) {
                     break;
                 }
                 query.CommitNonOpaqueTriangleHit();
@@ -175,10 +184,14 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
                 } else {
                     result.transmittance *= transFactor;
                 }
+                transmissiveCrossings++;
                 if (max(result.transmittance.r, max(result.transmittance.g, result.transmittance.b))
                         < TRANSMITTANCE_CUTOFF) {
                     result.hitOpaque = true;
                     result.transmittance = float3(0.0);
+                    break;
+                }
+                if (transmissiveCrossings >= MAX_TRANSMISSIVE_CROSSINGS) {
                     break;
                 }
                 query.CommitNonOpaqueTriangleHit();
