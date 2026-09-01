@@ -1,6 +1,6 @@
 // Froxel volumetric fog integration with stratified jittered raymarching
 // and hardware ray-traced shadows for razor-sharp crepuscular rays.
-// Supports color transmission through translucent materials.
+// Supports color transmission through thin translucent materials; water is handled as a separate medium.
 
 import world_common;
 import volumetric_fog_common;
@@ -19,7 +19,6 @@ static const uint CULL_SECONDARY = 0x01u;
 static const float RAY_TMIN = 0.001;
 static const float ALPHA_CUTOFF = 0.5;
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
-static const float WATER_SHADOW_TINT = 0.5;
 
 uint pcgHash(uint v) {
     v = v * 747796405u + 2891336453u;
@@ -110,15 +109,14 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
             uint tri = primId + sec.triBase[bucket];
 
             if (bucket == 3u) { // water
-                TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
-                float3 tint = bt709ToAcesCg(srgbToLinear(pr.tint.rgb));
-                if (pc.colorTransmissionEnabled != 0) {
-                    result.transmittance *= lerp(float3(1.0), tint, WATER_SHADOW_TINT);
-                } else {
-                    result.transmittance *= 0.9;
-                }
-                query.CommitNonOpaqueTriangleHit();
-                continue;
+                // Atmospheric fog is an air medium, not an underwater one. Letting a sun shadow ray walk
+                // straight through water makes cave waterfalls/light pools behave like stained-glass panes
+                // and creates impossible shafts even when the sun never actually reaches that water.
+                // Keep colored transmission for thin translucent materials, but treat water as an opaque
+                // blocker for aerial fog lighting; underwater views are handled separately below.
+                result.hitOpaque = true;
+                result.transmittance = float3(0.0);
+                break;
             }
             if (bucket == 2u) { // translucent
                 TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
@@ -170,6 +168,11 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
                 }
                 query.CommitNonOpaqueTriangleHit();
                 continue;
+            }
+            if (header.model == MATERIAL_WATER) {
+                result.hitOpaque = true;
+                result.transmittance = float3(0.0);
+                break;
             }
             result.hitOpaque = true;
             result.transmittance = float3(0.0);
@@ -270,6 +273,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float3 rayDir = primaryRayDirFromPush(jndc, worldPush);
     float3 rayOrigin = worldPush.camOffset;
+
+    // This pass models aerial/air fog only. When the camera is submerged, rendering the same white air
+    // volume inside water produces impossible underground sun shafts and a glowing "sky" in dark pools,
+    // so leave the traced scene unchanged instead.
+    if ((worldPush.flags & 1u) != 0u) {
+        return;
+    }
 
     // March fog against a dedicated render-resolution fog-stop depth guide. Most pixels reuse the RR guide
     // depth, but water locks this to the first water interface so aerial fog does not leak through water
