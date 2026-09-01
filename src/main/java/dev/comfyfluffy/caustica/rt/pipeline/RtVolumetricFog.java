@@ -226,8 +226,9 @@ public final class RtVolumetricFog {
     public void setIntegrationImages(long tlas, long gDepthView, long blockAlbedoView, long blockAlbedoSampler) {
         if (froxelVolume == null || fogImage == null) return;
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkWriteDescriptorSetAccelerationStructureKHR tlasInfo = VkWriteDescriptorSetAccelerationStructureKHR.calloc(1, stack)
-                    .sType$Default().pAccelerationStructures(stack.longs(tlas));
+            VkWriteDescriptorSetAccelerationStructureKHR tlasInfo = VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
+                    .sType(KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR)
+                    .pAccelerationStructures(stack.longs(tlas));
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
 
             writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
