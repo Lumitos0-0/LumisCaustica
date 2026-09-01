@@ -19,6 +19,7 @@ static const uint CULL_SECONDARY = 0x01u;
 static const float RAY_TMIN = 0.001;
 static const float ALPHA_CUTOFF = 0.5;
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
+static const float TRANSMITTANCE_CUTOFF = 0.01;
 
 uint pcgHash(uint v) {
     v = v * 747796405u + 2891336453u;
@@ -123,12 +124,20 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
                 MaterialHeader header = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
                 float3 avgColor = max(bt709ToAcesCg(header.average.rgb * srgbToLinear(pr.tint.rgb)), float3(1.0e-3));
                 float3 colorExtinction = max(-log(avgColor), float3(0.0));
-                float3 trans = exp(-colorExtinction * header.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION);
+                float transmissionFactor = clamp(header.params.w, 0.0, 1.0);
+                float3 trans = exp(-colorExtinction * header.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION)
+                        * transmissionFactor;
                 if (pc.colorTransmissionEnabled != 0) {
                     result.transmittance *= trans;
                 } else {
                     float lum = dot(trans, float3(0.2126, 0.7152, 0.0722));
                     result.transmittance *= lum;
+                }
+                if (max(result.transmittance.r, max(result.transmittance.g, result.transmittance.b))
+                        < TRANSMITTANCE_CUTOFF) {
+                    result.hitOpaque = true;
+                    result.transmittance = float3(0.0);
+                    break;
                 }
                 query.CommitNonOpaqueTriangleHit();
                 continue;
@@ -165,6 +174,12 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
                     result.transmittance *= lerp(float3(1.0), tint, 0.8) * transFactor;
                 } else {
                     result.transmittance *= transFactor;
+                }
+                if (max(result.transmittance.r, max(result.transmittance.g, result.transmittance.b))
+                        < TRANSMITTANCE_CUTOFF) {
+                    result.hitOpaque = true;
+                    result.transmittance = float3(0.0);
+                    break;
                 }
                 query.CommitNonOpaqueTriangleHit();
                 continue;

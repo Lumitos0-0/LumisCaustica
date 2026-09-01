@@ -120,9 +120,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     }
 
     // Translucent radiance rays use a closest-hit-only SBT record; shadow rays tint and pass through here.
-    // This doesn't touch the atlas at all: a shadow ray only needs the pane's overall tint/opacity, so
-    // MaterialHeader carries a precomputed whole-sprite average {r,g,b,a}; per-primitive biome tint is
-    // applied here. The average is compiled once per resource epoch rather than copied per triangle.
+    // This doesn't touch the atlas at all: a shadow ray only needs the pane's overall filter color and
+    // coverage, so MaterialHeader carries a precomputed linear transmission tint {r,g,b} plus coverage
+    // alpha {a}; per-primitive biome tint is applied here. The summary is compiled once per resource
+    // epoch rather than copied per triangle.
     //
     // Modeled as Beer-Lambert absorption (matching the water medium in world.rgen): a per-channel
     // extinction derived from how dark the average is, scaled by the average alpha (how much of the
@@ -134,11 +135,13 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float3 avgColor = max(bt709ToAcesCg(
                 materialHeader.average.rgb * srgbToLinear(pr.tint.rgb)), float3(1.0e-3));
         float3 colorExtinction = max(-log(avgColor), float3(0.0, 0.0, 0.0));
+        float transmissionFactor = clamp(materialHeader.params.w, 0.0, 1.0);
         // The neutral floor is a flat per-hit dimming, NOT scaled by alpha: vanilla clear glass has a low
         // natural alpha, so folding it into the alpha-scaled term crushed it to near-zero for exactly the
         // white/clear-glass case it's meant to cover.
         packAlbedo(payload, unpackAlbedo(payload)
-                * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION));
+                * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION)
+                * transmissionFactor);
         IgnoreHit();
     }
 
