@@ -20,7 +20,7 @@ static const float RAY_TMIN = 0.001;
 static const float ALPHA_CUTOFF = 0.5;
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float TRANSMITTANCE_CUTOFF = 0.01;
-static const uint MAX_TRANSMISSIVE_CROSSINGS = 8u;
+static const uint MAX_TRANSMISSIVE_CROSSINGS = 4u;
 
 uint pcgHash(uint v) {
     v = v * 747796405u + 2891336453u;

@@ -236,7 +236,7 @@ public struct MaterialHeader {
     public float4 materialUv; // packed-page uvMin.xy + uvExtent.xy
     public float4 albedoUv;   // vanilla atlas uvMin.xy + inverse uvExtent.xy
     public float4 params;  // roughness, metalness, IOR, transmission
-    public float4 average; // whole-sprite linear-input average RGBA for translucent shadow filtering
+    public float4 average; // translucent-filter summary: optical-density-derived tint rgb + coverage a
 };
 
 public static const uint MATERIAL_FEATURE_SPEC = 1u;

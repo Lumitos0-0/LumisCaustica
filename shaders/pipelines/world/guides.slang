@@ -30,6 +30,8 @@ public static float3 gv_motionObjDisp = float3(0.0, 0.0, 0.0);
 // interface, while thin dielectrics like glass should still reveal the air/fog behind them.
 public static float gv_fogDepth = 0.0;
 public static bool gv_fogDepthLocked = false;
+public static const float GUIDE_FILTER_CUTOFF = 0.01;
+public static const uint MAX_GUIDE_TRANSMISSIVE_CROSSINGS = 6u;
 // Transmission replaces the ordinary guide tuple with the visible destination, so RR's specular inputs
 // (specular albedo + reflection MV) need the foreground glass/water interface kept separately. This is
 // the surface the reflection physically lives on; for an opaque primary hit it is that hit itself.
@@ -177,6 +179,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
 
     float3 direction = normalize(transmittedDir);
     float3 ro = offsetSurfaceOrigin(surfacePos, surfaceBiasNormal, direction, rayBias);
+    uint transmissiveCrossings = 0u;
 
     // The camera interface consumed bounce 0; the remaining configured bounce budget is the natural
     // cap for deterministic guide crossings too.
@@ -232,6 +235,14 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         }
         if (!isWater && entering) {
             guideFilter *= payloadAlbedo();
+            transmissiveCrossings++;
+            // RR's ordinary guide is not worth chasing through many dark panes: once almost no light is
+            // left, or the stack is already deep, keeping the original foreground interface is both
+            // cheaper and more stable than tracing a barely visible destination farther away.
+            if (max(guideFilter.r, max(guideFilter.g, guideFilter.b)) < GUIDE_FILTER_CUTOFF
+                    || transmissiveCrossings >= MAX_GUIDE_TRANSMISSIVE_CROSSINGS) {
+                return;
+            }
         }
         if (entering) {
             mediumPush(medium, entered);

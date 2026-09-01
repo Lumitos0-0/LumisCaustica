@@ -111,6 +111,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // the ordinary case costs one comparison.
         if (any(medium.current.extinction > 0.0)) {
             throughput *= exp(-medium.current.extinction * payload.hitT);
+            // Once a transmitted path is already near-black, tracing more dielectric crossings or deep
+            // interior bounces contributes less than the renderer's existing noise floor while still
+            // costing full ray traversal work.
+            if (max(throughput.r, max(throughput.g, throughput.b)) < 1.0e-3) {
+                break;
+            }
         }
 
         float3 n = payloadNormal(); // oriented toward the incoming ray by the closest-hit

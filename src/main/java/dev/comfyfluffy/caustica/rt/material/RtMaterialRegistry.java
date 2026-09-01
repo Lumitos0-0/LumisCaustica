@@ -580,7 +580,7 @@ public final class RtMaterialRegistry {
         int height = contents.height();
         NativeImage image = ((SpriteContentsAccessor) contents).caustica$originalImage();
         if (image == null || width <= 0 || height <= 0) return SpriteStats.NEUTRAL;
-        double tintR = 0.0, tintG = 0.0, tintB = 0.0;
+        double densityR = 0.0, densityG = 0.0, densityB = 0.0;
         double alphaSum = 0.0;
         double lr = 0.0, lg = 0.0, lb = 0.0;
         int covered = 0;
@@ -595,9 +595,12 @@ public final class RtMaterialRegistry {
                 float linearR = RtMaterialTextureData.srgbToLinear(ARGB.red(pixel));
                 float linearG = RtMaterialTextureData.srgbToLinear(ARGB.green(pixel));
                 float linearB = RtMaterialTextureData.srgbToLinear(ARGB.blue(pixel));
-                tintR += linearR * alpha;
-                tintG += linearG * alpha;
-                tintB += linearB * alpha;
+                // Transmissive summaries are used multiplicatively by stacked panes/shafts, so average
+                // optical density (log transmittance), not raw transmittance. This preserves hue better
+                // across stacks than an arithmetic mean that drifts toward white.
+                densityR += -Math.log(Math.max(linearR, 1.0e-3f)) * alpha;
+                densityG += -Math.log(Math.max(linearG, 1.0e-3f)) * alpha;
+                densityB += -Math.log(Math.max(linearB, 1.0e-3f)) * alpha;
                 alphaSum += alpha;
                 float plr = linearR * alpha;
                 float plg = linearG * alpha;
@@ -613,9 +616,9 @@ public final class RtMaterialRegistry {
         float coverage = (float) (alphaSum * inv);
         float[] average = alphaSum > 1.0e-6
                 ? new float[]{
-                        (float) (tintR / alphaSum),
-                        (float) (tintG / alphaSum),
-                        (float) (tintB / alphaSum),
+                        (float) Math.exp(-densityR / alphaSum),
+                        (float) Math.exp(-densityG / alphaSum),
+                        (float) Math.exp(-densityB / alphaSum),
                         coverage}
                 : transparentWhiteAverage();
         double luminance = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
