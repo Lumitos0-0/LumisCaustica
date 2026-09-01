@@ -248,6 +248,82 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
     return result;
 }
 
+struct FogIntegralResult {
+    float3 scattering;
+    float transmittance;
+};
+
+FogIntegralResult integrateFogRay(float3 rayOrigin, float3 rayDir, float tMax, int sampleCount,
+                                  uint seedBase, float temporalJitter, WorldPush worldPush,
+                                  bool sunEnabled, bool moonEnabled,
+                                  float3 sunDir, float3 moonDir,
+                                  float3 sunIllum, float3 moonIllum) {
+    FogIntegralResult result;
+    result.scattering = float3(0.0, 0.0, 0.0);
+    result.transmittance = 1.0;
+    if (!(tMax > 0.0) || sampleCount <= 0) {
+        return result;
+    }
+
+    float stepSize = tMax / float(sampleCount);
+    uint seed = seedBase;
+    for (int i = 0; i < sampleCount; i++) {
+        float jitter = pc.jitterStrength != 0.0 ? (rnd(seed) - 0.5) * pc.jitterStrength : 0.0;
+        float t = (float(i) + temporalJitter + jitter) * stepSize;
+        t = clamp(t, 0.0, tMax);
+
+        float3 sampleRebasedPos = rayOrigin + rayDir * t;
+        float3 sampleWorldPos = sampleRebasedPos + pc.terrainOrigin;
+
+        float4 clip = mul(worldPush.curViewProj, float4(sampleRebasedPos - worldPush.camOffset, 1.0));
+        if (clip.w <= 0.0) {
+            continue;
+        }
+        float2 sampleNdc = clip.xy / clip.w;
+        float2 sampleUv = sampleNdc * 0.5 + 0.5;
+        float nearP = max(pc.nearPlane, 0.1);
+        float farP = max(pc.farPlane, nearP + 1.0);
+        float safeT = max(t, nearP);
+        float linear01 = log(safeT / nearP) / log(farP / nearP);
+        linear01 = saturate(linear01);
+        float3 froxelUv = float3(sampleUv, linear01);
+        float4 froxel = froxelVolume.SampleLevel(froxelUv, 0.0);
+        float extinction = froxel.a;
+        float3 scatteringCoeff = froxel.rgb;
+
+        float height = sampleWorldPos.y;
+        float heightFactor = exp(-max(height - 64.0, 0.0) * pc.heightFalloff);
+        extinction *= heightFactor;
+        scatteringCoeff *= heightFactor;
+
+        if (extinction <= 1.0e-6 && max(scatteringCoeff.r, max(scatteringCoeff.g, scatteringCoeff.b)) <= 1.0e-6) {
+            continue;
+        }
+
+        float3 shadowOrigin = sampleRebasedPos + rayDir * 0.01;
+        float3 lighting = float3(0.0, 0.0, 0.0);
+        if (sunEnabled) {
+            ShadowResult sunShadow = traceShadowWithTransmission(shadowOrigin, sunDir, 10000.0);
+            float phaseSun = hgPhase(dot(rayDir, sunDir), pc.anisotropy);
+            lighting += phaseSun * sunIllum * sunShadow.transmittance;
+        }
+        if (moonEnabled) {
+            ShadowResult moonShadow = traceShadowWithTransmission(shadowOrigin, moonDir, 10000.0);
+            float phaseMoon = hgPhase(dot(rayDir, moonDir), pc.anisotropy);
+            lighting += phaseMoon * moonIllum * moonShadow.transmittance;
+        }
+
+        float3 inScattering = scatteringCoeff * lighting * stepSize;
+        float stepTrans = exp(-extinction * stepSize);
+        result.scattering += inScattering * result.transmittance;
+        result.transmittance *= stepTrans;
+        if (result.transmittance < 0.01) {
+            break;
+        }
+    }
+    return result;
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -281,12 +357,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float ignVal = ign(float2(pix) + float(pc.frameIndex) * 0.5);
     float temporalJitter = pc.temporalEnabled != 0 ? ignVal : 0.5;
 
-    float3 accumScattering = float3(0.0, 0.0, 0.0);
-    float accumTransmittance = 1.0;
-    float3 frontScattering = float3(0.0, 0.0, 0.0);
-    float frontTransmittance = 1.0;
-    bool frontCaptured = false;
-
     float3 sunDir = normalize(pc.sunDir);
     float3 moonDir = normalize(pc.moonDir);
     float3 sunIllum = pc.sunIlluminance * pc.sunIntensity;
@@ -294,95 +364,27 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     bool sunEnabled = max(sunIllum.r, max(sunIllum.g, sunIllum.b)) > 1.0e-6;
     bool moonEnabled = max(moonIllum.r, max(moonIllum.g, moonIllum.b)) > 1.0e-6;
 
-    for (int i = 0; i < sampleCount; i++) {
-        float segmentStart = backTMax * float(i) / float(sampleCount);
-        float segmentEnd = backTMax * float(i + 1) / float(sampleCount);
-        float segmentLength = segmentEnd - segmentStart;
-        if (segmentLength <= 1.0e-6) {
-            continue;
-        }
-
-        float jitter = pc.jitterStrength != 0.0 ? (rnd(seed) - 0.5) * pc.jitterStrength : 0.0;
-        float samplePhase = saturate(temporalJitter + jitter);
-        float t = lerp(segmentStart, segmentEnd, samplePhase);
-
-        float3 sampleRebasedPos = rayOrigin + rayDir * t;
-        float3 sampleWorldPos = sampleRebasedPos + pc.terrainOrigin;
-
-        // Froxel UVW
-        float4 clip = mul(worldPush.curViewProj, float4(sampleRebasedPos - worldPush.camOffset, 1.0));
-        if (clip.w <= 0.0) {
-            continue;
-        }
-        float2 sampleNdc = clip.xy / clip.w;
-        float2 sampleUv = sampleNdc * 0.5 + 0.5;
-        float nearP = max(pc.nearPlane, 0.1);
-        float farP = max(pc.farPlane, nearP + 1.0);
-        float safeT = max(t, nearP);
-        float linear01 = log(safeT / nearP) / log(farP / nearP);
-        linear01 = saturate(linear01);
-        float3 froxelUv = float3(sampleUv, linear01);
-        float4 froxel = froxelVolume.SampleLevel(froxelUv, 0.0);
-        float extinction = froxel.a;
-        float3 scatteringCoeff = froxel.rgb;
-
-        float height = sampleWorldPos.y;
-        float heightFactor = exp(-max(height - 64.0, 0.0) * pc.heightFalloff);
-        extinction *= heightFactor;
-        scatteringCoeff *= heightFactor;
-
-        if (extinction <= 1.0e-6 && max(scatteringCoeff.r, max(scatteringCoeff.g, scatteringCoeff.b)) <= 1.0e-6) {
-            if (!frontCaptured && frontTMax <= segmentEnd) {
-                frontScattering = accumScattering;
-                frontTransmittance = accumTransmittance;
-                frontCaptured = true;
-            }
-            continue;
-        }
-
-        // Shadow rays to whichever celestial bodies are actually contributing this frame. In ordinary
-        // day/night scenes only one survives atmospheric extinction, so skipping the other nearly halves
-        // the fog pass cost.
-        float3 shadowOrigin = sampleRebasedPos + rayDir * 0.01;
-        float3 lighting = float3(0.0, 0.0, 0.0);
-        if (sunEnabled) {
-            ShadowResult sunShadow = traceShadowWithTransmission(shadowOrigin, sunDir, 10000.0);
-            float phaseSun = hgPhase(dot(rayDir, sunDir), pc.anisotropy);
-            lighting += phaseSun * sunIllum * sunShadow.transmittance;
-        }
-        if (moonEnabled) {
-            ShadowResult moonShadow = traceShadowWithTransmission(shadowOrigin, moonDir, 10000.0);
-            float phaseMoon = hgPhase(dot(rayDir, moonDir), pc.anisotropy);
-            lighting += phaseMoon * moonIllum * moonShadow.transmittance;
-        }
-
-        if (!frontCaptured && frontTMax <= segmentEnd) {
-            float frontSegmentLength = clamp(frontTMax - segmentStart, 0.0, segmentLength);
-            float3 frontInScattering = scatteringCoeff * lighting * frontSegmentLength;
-            float frontStepTrans = exp(-extinction * frontSegmentLength);
-            frontScattering = accumScattering + frontInScattering * accumTransmittance;
-            frontTransmittance = accumTransmittance * frontStepTrans;
-            frontCaptured = true;
-        }
-
-        float3 inScattering = scatteringCoeff * lighting * segmentLength;
-        float stepTrans = exp(-extinction * segmentLength);
-        accumScattering += inScattering * accumTransmittance;
-        accumTransmittance *= stepTrans;
-        if (accumTransmittance < 0.01) {
-            break;
-        }
-    }
-
-    if (!frontCaptured) {
-        frontScattering = accumScattering;
-        frontTransmittance = accumTransmittance;
+    // The first two-layer version captured the front layer by truncating the BACK march. That preserved
+    // depth ambiguity, but it also meant a near foreground layer inherited the much coarser sample spacing
+    // of a far background/sky march, leaving staircase-like fog edges. Integrate each layer with its own
+    // full sample budget so the foreground silhouette keeps the same per-meter march density as a normal
+    // single-layer fog pixel.
+    FogIntegralResult frontFog = integrateFogRay(rayOrigin, rayDir, frontTMax, sampleCount,
+            seed, temporalJitter, worldPush,
+            sunEnabled, moonEnabled, sunDir, moonDir, sunIllum, moonIllum);
+    FogIntegralResult backFog = frontFog;
+    bool distinctLayers = abs(frontTMax - backTMax) > 1.0e-3
+            || abs(depthLayers.frontDepth - depthLayers.backDepth) > 1.0e-4;
+    if (distinctLayers) {
+        backFog = integrateFogRay(rayOrigin, rayDir, backTMax, sampleCount,
+                seed ^ 0x9E3779B9u, temporalJitter, worldPush,
+                sunEnabled, moonEnabled, sunDir, moonDir, sunIllum, moonIllum);
     }
 
     // Preserve both the front and back representative fog layers for this low-res texel, plus the two
     // guide-depth layers they were integrated to, so the display pass can choose the layer matching the
     // full-res scene depth instead of smearing one collapsed solution across silhouettes.
-    fogFrontOutput[pix] = float4(frontScattering, frontTransmittance);
-    fogBackOutput[pix] = float4(accumScattering, accumTransmittance);
+    fogFrontOutput[pix] = float4(frontFog.scattering, frontFog.transmittance);
+    fogBackOutput[pix] = float4(backFog.scattering, backFog.transmittance);
     fogDepthOutput[pix] = float2(depthLayers.frontDepth, depthLayers.backDepth);
 }
