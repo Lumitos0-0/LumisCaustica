@@ -424,8 +424,8 @@ final class RtTerrainMesher {
         private static final float OFFSET = 2.0e-4f;         // outward nudge (blocks) to break coplanar depth ties
         private static final float TRANSLUCENT_INSET = 2.0e-4f; // inward recess (blocks) for glass/ice vs coplanar neighbours
         private static final float COINCIDENT_EPS = 1.0e-4f; // verts this close are "the same" point
-        private static final float CULL_BOUNDARY_EPS = 1.0e-3f; // still treat tiny authored epsilon offsets as flush block faces
-        private static final float INSET_CULL_RESCUE_MIN = 2.5e-3f; // only rescue visibly inset cull-faces, not near-boundary noise
+        private static final float CULL_BOUNDARY_EPS = 1.0e-4f; // treat only truly flush faces as sitting on the boundary plane
+        private static final float INSET_CULL_RESCUE_MIN = 1.0f / 32.0f; // rescue only materially recessed faces, not tiny model epsilons
         private static final int RESOLVE_CAP = 128;          // skip the O(n^2) resolve for pathological blocks
         private final List<PendingQuad> pending = new ArrayList<>(8);
         private int pendingCount;
@@ -543,6 +543,27 @@ final class RtTerrainMesher {
             return isCulled(q.cullFace);
         }
 
+        private static void projectToCullBoundary(PendingQuad q) {
+            if (q.cullFace == null) {
+                return;
+            }
+            float plane = switch (q.cullFace) {
+                case DOWN -> q.originY;
+                case UP -> q.originY + 1.0f;
+                case NORTH -> q.originZ;
+                case SOUTH -> q.originZ + 1.0f;
+                case WEST -> q.originX;
+                case EAST -> q.originX + 1.0f;
+            };
+            for (int i = 0; i < 4; i++) {
+                switch (q.cullFace) {
+                    case DOWN, UP -> q.y[i] = plane;
+                    case NORTH, SOUTH -> q.z[i] = plane;
+                    case WEST, EAST -> q.x[i] = plane;
+                }
+            }
+        }
+
         /** Acquire a pooled PendingQuad for the current block (grown on demand, count reset by flushBlock). */
         private PendingQuad acquire() {
             if (pendingCount == pending.size()) {
@@ -571,7 +592,12 @@ final class RtTerrainMesher {
             pendingCount = 0;
         }
 
-        /** Add back only materially inset cull-faces that the normal cull predicate would have discarded. */
+        /**
+         * Add back only materially inset cull-faces that the normal cull predicate would have discarded.
+         * They are projected onto the nominal block boundary instead of emitted at their recessed visual
+         * position: the goal is to seal RT-only light leaks between adjacent blocks, not to expose the
+         * resource pack's hidden interior cavity faces themselves.
+         */
         void flushInsetCullRescue() {
             int n = pendingCount;
             if (n == 0) {
@@ -581,6 +607,7 @@ final class RtTerrainMesher {
             for (int i = 0; i < n; i++) {
                 PendingQuad q = pending.get(i);
                 if (shouldRescueInsetCullFace(q)) {
+                    projectToCullBoundary(q);
                     if (survivors != i) {
                         pending.set(survivors, q);
                     }

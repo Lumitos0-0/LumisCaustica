@@ -159,12 +159,14 @@ float4 sampleFog(int2 pix, uint w, uint h) {
     fogImage.GetDimensions(fogW, fogH);
     float2 uv = (float2(pix) + 0.5) / float2(w, h);
 
-    // Low-res fog needs a bilateral resolve against the guide depth. Plain linear sampling smears the
-    // blocker silhouettes across depth discontinuities, which shows up as a semi-transparent wall that
-    // drifts with the camera. Compare the display pixel's guide depth against the four neighboring fog
-    // depths, keep the matching layer, and only then interpolate spatially.
+    // Low-res fog needs an edge-aware upsample against the guide depth. When the four bilinear taps all
+    // agree, ordinary bilateral 2x2 interpolation is stable and smooth. When they disagree strongly,
+    // however, falling back to only the best of those four taps turns the fog edge into visible blocks.
+    // Search a slightly wider 3x3 neighbourhood in those cases so the resolve can still find the right
+    // depth layer without collapsing to a single texel.
     float sceneDepth = sceneDepthImage.SampleLevel(uv, 0.0).r;
-    float2 fogPos = uv * float2(fogW, fogH) - 0.5;
+    float2 fogTexelPos = uv * float2(fogW, fogH);
+    float2 fogPos = fogTexelPos - 0.5;
     int2 base = int2(floor(fogPos));
     float2 fracPos = frac(fogPos);
 
@@ -195,7 +197,36 @@ float4 sampleFog(int2 pix, uint w, uint h) {
         }
     }
 
-    return totalWeight > 1.0e-5 ? accum / totalWeight : bestFog;
+    if (totalWeight >= 0.35) {
+        return accum / totalWeight;
+    }
+
+    float4 wideAccum = float4(0.0, 0.0, 0.0, 0.0);
+    float wideWeight = 0.0;
+    int2 center = int2(floor(fogPos + 0.5));
+    [unroll]
+    for (int oy = -1; oy <= 1; ++oy) {
+        [unroll]
+        for (int ox = -1; ox <= 1; ++ox) {
+            int2 coord = clamp(center + int2(ox, oy), int2(0, 0), int2(int(fogW), int(fogH)) - 1);
+            float2 fogUv = (float2(coord) + 0.5) / float2(fogW, fogH);
+            float fogDepth = fogDepthImage.SampleLevel(fogUv, 0.0).r;
+            float4 fog = fogImage.SampleLevel(fogUv, 0.0);
+            float mismatch = fogDepthMismatch(sceneDepth, fogDepth);
+            if (mismatch < bestMismatch) {
+                bestMismatch = mismatch;
+                bestFog = fog;
+            }
+            float2 delta = (float2(coord) + 0.5) - fogTexelPos;
+            float spatialWeight = exp2(-dot(delta, delta));
+            float depthWeight = 1.0 / (mismatch + 1.0e-5);
+            float weight = spatialWeight * depthWeight;
+            wideAccum += fog * weight;
+            wideWeight += weight;
+        }
+    }
+
+    return wideWeight > 1.0e-5 ? wideAccum / wideWeight : bestFog;
 }
 
 [shader("compute")]
