@@ -43,7 +43,9 @@ public final class RtDisplayPipeline {
     private static final int BINDING_LOOK_LUT = 6;
     private static final int BINDING_BLOOM = 7;
     private static final int BINDING_FOG = 8;
-    private static final int BINDING_COUNT = 9;
+    private static final int BINDING_FOG_DEPTH = 9;
+    private static final int BINDING_SCENE_DEPTH = 10;
+    private static final int BINDING_COUNT = 11;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -65,6 +67,10 @@ public final class RtDisplayPipeline {
     private long boundBloomSampler;
     private long boundFogView;
     private long boundFogSampler;
+    private long boundFogDepthView;
+    private long boundFogDepthSampler;
+    private long boundSceneDepthView;
+    private long boundSceneDepthSampler;
     private boolean destroyed;
 
     private RtDisplayPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -98,6 +104,10 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(BINDING_FOG).binding(BINDING_FOG).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(BINDING_FOG_DEPTH).binding(BINDING_FOG_DEPTH).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(BINDING_SCENE_DEPTH).binding(BINDING_SCENE_DEPTH).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -107,7 +117,7 @@ public final class RtDisplayPipeline {
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
             poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(4);
-            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(5);
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(7);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt display)");
             long pool = p.get(0);
@@ -147,14 +157,18 @@ public final class RtDisplayPipeline {
     public void setImages(long outputImageView, long rtImageView, long exposureImageView, long hdrImageView,
                            long lutView, long lutSampler, long hdrLutView, long hdrLutSampler,
                            long lookLutView, long lookLutSampler, long bloomView, long bloomSampler,
-                           long fogView, long fogSampler) {
+                           long fogView, long fogSampler,
+                           long fogDepthView, long fogDepthSampler,
+                           long sceneDepthView, long sceneDepthSampler) {
         if (boundOutputView == outputImageView && boundRtView == rtImageView
                 && boundExposureView == exposureImageView && boundHdrView == hdrImageView
                 && boundLutView == lutView && boundLutSampler == lutSampler
                 && boundHdrLutView == hdrLutView && boundHdrLutSampler == hdrLutSampler
                 && boundLookLutView == lookLutView && boundLookLutSampler == lookLutSampler
                 && boundBloomView == bloomView && boundBloomSampler == bloomSampler
-                && boundFogView == fogView && boundFogSampler == fogSampler) {
+                && boundFogView == fogView && boundFogSampler == fogSampler
+                && boundFogDepthView == fogDepthView && boundFogDepthSampler == fogDepthSampler
+                && boundSceneDepthView == sceneDepthView && boundSceneDepthSampler == sceneDepthSampler) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -176,6 +190,10 @@ public final class RtDisplayPipeline {
             bloomInfo.get(0).imageView(bloomView).sampler(bloomSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer fogInfo = VkDescriptorImageInfo.calloc(1, stack);
             fogInfo.get(0).imageView(fogView).sampler(fogSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer fogDepthInfo = VkDescriptorImageInfo.calloc(1, stack);
+            fogDepthInfo.get(0).imageView(fogDepthView).sampler(fogDepthSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer sceneDepthInfo = VkDescriptorImageInfo.calloc(1, stack);
+            sceneDepthInfo.get(0).imageView(sceneDepthView).sampler(sceneDepthSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(BINDING_COUNT, stack);
             writes.get(BINDING_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_OUTPUT)
@@ -196,6 +214,10 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(bloomInfo);
             writes.get(BINDING_FOG).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_FOG)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(fogInfo);
+            writes.get(BINDING_FOG_DEPTH).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_FOG_DEPTH)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(fogDepthInfo);
+            writes.get(BINDING_SCENE_DEPTH).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_SCENE_DEPTH)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(sceneDepthInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
@@ -212,15 +234,10 @@ public final class RtDisplayPipeline {
         boundBloomSampler = bloomSampler;
         boundFogView = fogView;
         boundFogSampler = fogSampler;
-    }
-
-    public void setImages(long outputImageView, long rtImageView, long exposureImageView, long hdrImageView,
-                           long lutView, long lutSampler, long hdrLutView, long hdrLutSampler,
-                           long lookLutView, long lookLutSampler, long bloomView, long bloomSampler) {
-        setImages(outputImageView, rtImageView, exposureImageView, hdrImageView,
-                lutView, lutSampler, hdrLutView, hdrLutSampler,
-                lookLutView, lookLutSampler, bloomView, bloomSampler,
-                bloomView, bloomSampler);
+        boundFogDepthView = fogDepthView;
+        boundFogDepthSampler = fogDepthSampler;
+        boundSceneDepthView = sceneDepthView;
+        boundSceneDepthSampler = sceneDepthSampler;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, int lutSize,

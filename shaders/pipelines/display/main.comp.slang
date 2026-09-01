@@ -141,12 +141,61 @@ float3 tonemapHdr(float3 lookedAcesCg) {
     return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);
 }
 
+float fogDepthMismatch(float sceneDepth, float fogDepth) {
+    bool sceneSky = sceneDepth <= 1.0e-6;
+    bool fogSky = fogDepth <= 1.0e-6;
+    if (sceneSky || fogSky) {
+        return sceneSky == fogSky ? 0.0 : 1.0;
+    }
+    return abs(sceneDepth - fogDepth);
+}
+
 float4 sampleFog(int2 pix, uint w, uint h) {
     if (pc.fogEnabled == 0) {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
+
+    uint fogW, fogH;
+    fogImage.GetDimensions(fogW, fogH);
     float2 uv = (float2(pix) + 0.5) / float2(w, h);
-    return fogImage.SampleLevel(uv, 0.0);
+
+    // Low-res fog needs a bilateral resolve against the guide depth. Plain linear sampling smears the
+    // blocker silhouettes across depth discontinuities, which shows up as a semi-transparent wall that
+    // drifts with the camera. Compare the display pixel's guide depth against the four neighboring fog
+    // depths, keep the matching layer, and only then interpolate spatially.
+    float sceneDepth = sceneDepthImage.SampleLevel(uv, 0.0).r;
+    float2 fogPos = uv * float2(fogW, fogH) - 0.5;
+    int2 base = int2(floor(fogPos));
+    float2 fracPos = frac(fogPos);
+
+    float4 accum = float4(0.0, 0.0, 0.0, 0.0);
+    float totalWeight = 0.0;
+    float bestMismatch = 1.0e9;
+    float4 bestFog = float4(0.0, 0.0, 0.0, 1.0);
+
+    [unroll]
+    for (int oy = 0; oy < 2; ++oy) {
+        [unroll]
+        for (int ox = 0; ox < 2; ++ox) {
+            int2 coord = clamp(base + int2(ox, oy), int2(0, 0), int2(int(fogW), int(fogH)) - 1);
+            float2 fogUv = (float2(coord) + 0.5) / float2(fogW, fogH);
+            float fogDepth = fogDepthImage.SampleLevel(fogUv, 0.0).r;
+            float4 fog = fogImage.SampleLevel(fogUv, 0.0);
+            float bilinear = (ox != 0 ? fracPos.x : 1.0 - fracPos.x)
+                    * (oy != 0 ? fracPos.y : 1.0 - fracPos.y);
+            float mismatch = fogDepthMismatch(sceneDepth, fogDepth);
+            if (mismatch < bestMismatch) {
+                bestMismatch = mismatch;
+                bestFog = fog;
+            }
+            float depthWeight = exp2(-mismatch * 512.0);
+            float weight = bilinear * depthWeight;
+            accum += fog * weight;
+            totalWeight += weight;
+        }
+    }
+
+    return totalWeight > 1.0e-5 ? accum / totalWeight : bestFog;
 }
 
 [shader("compute")]

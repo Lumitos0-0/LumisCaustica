@@ -660,19 +660,32 @@ public final class RtComposite {
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
             RtToneLut boundLookLut = lookLut;
-            long fogViewComp = 0L;
-            long fogSamplerComp = 0L;
-            if (volumetricFog != null && volumetricFog.fogImage() != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+            long fogViewComp;
+            long fogSamplerComp;
+            long fogDepthViewComp;
+            long fogDepthSamplerComp;
+            long sceneDepthViewComp = gDepth.view;
+            long sceneDepthSamplerComp;
+            if (volumetricFog != null && volumetricFog.fogImage() != null && volumetricFog.fogDepthImage() != null
+                    && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
                 fogViewComp = volumetricFog.fogImage().view;
-                fogSamplerComp = bloomPipeline.sampler();
+                fogSamplerComp = volumetricFog.nearestSampler();
+                fogDepthViewComp = volumetricFog.fogDepthImage().view;
+                fogDepthSamplerComp = volumetricFog.nearestSampler();
+                sceneDepthSamplerComp = volumetricFog.nearestSampler();
             } else {
                 fogViewComp = bloomLevels[0].view;
                 fogSamplerComp = bloomPipeline.sampler();
+                fogDepthViewComp = gDepth.view;
+                fogDepthSamplerComp = bloomPipeline.sampler();
+                sceneDepthSamplerComp = bloomPipeline.sampler();
             }
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
-                    fogViewComp, fogSamplerComp);
+                    fogViewComp, fogSamplerComp,
+                    fogDepthViewComp, fogDepthSamplerComp,
+                    sceneDepthViewComp, sceneDepthSamplerComp);
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -1006,20 +1019,32 @@ public final class RtComposite {
             volumetricFog.ensureImages(width, height, renderW, renderH);
             volumetricFog.setInjectionImage();
         }
-        long fogView = 0L;
-        long fogSampler = 0L;
-        if (volumetricFog != null && volumetricFog.fogImage() != null) {
+        long fogView;
+        long fogSampler;
+        long fogDepthView;
+        long fogDepthSampler;
+        long sceneDepthView = gDepth.view;
+        long sceneDepthSampler;
+        if (volumetricFog != null && volumetricFog.fogImage() != null && volumetricFog.fogDepthImage() != null) {
             fogView = volumetricFog.fogImage().view;
-            fogSampler = bloomPipeline.sampler(); // reuse linear sampler
+            fogSampler = volumetricFog.nearestSampler();
+            fogDepthView = volumetricFog.fogDepthImage().view;
+            fogDepthSampler = volumetricFog.nearestSampler();
+            sceneDepthSampler = volumetricFog.nearestSampler();
         } else {
-            // dummy fallback: use bloom level 0
+            // Dummy fallbacks for the optional fog inputs. The display shader never reads them when fog is disabled.
             fogView = bloomLevels[0].view;
             fogSampler = bloomPipeline.sampler();
+            fogDepthView = gDepth.view;
+            fogDepthSampler = bloomPipeline.sampler();
+            sceneDepthSampler = bloomPipeline.sampler();
         }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                 boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
-                fogView, fogSampler);
+                fogView, fogSampler,
+                fogDepthView, fogDepthSampler,
+                sceneDepthView, sceneDepthSampler);
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,

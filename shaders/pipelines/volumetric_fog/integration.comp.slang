@@ -13,6 +13,7 @@ import volumetric_fog_common;
 [[vk::binding(2, 0)]] Sampler2D gDepth;
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> fogOutput;
 [[vk::binding(4, 0)]] Sampler2D blockAlbedoAtlas;
+[[vk::binding(5, 0)]] [format("r32f")] RWTexture2D<float> fogDepthOutput;
 
 static const float PI = 3.14159265359;
 static const uint CULL_SECONDARY = 0x01u;
@@ -265,5 +266,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         if (accumTransmittance < 0.01) break;
     }
 
+    // Preserve the primary-layer depth alongside the low-res fog so the display pass can
+    // depth-aware upsample the fog buffer instead of smearing silhouettes into a camera-following sheet.
     fogOutput[pix] = float4(accumScattering, accumTransmittance);
+    fogDepthOutput[pix] = ndcDepth;
 }
