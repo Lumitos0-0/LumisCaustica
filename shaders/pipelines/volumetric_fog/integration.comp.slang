@@ -18,12 +18,7 @@ import volumetric_fog_common;
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> fogOutput;
 [[vk::binding(4, 0)]] Sampler2D blockAlbedoAtlas;
 
-static const float PI = 3.14159265359;
-static const uint CULL_SECONDARY = 0x01u;
-static const float SURF_BIAS = 0.005;
-static const float RAY_TMIN = 0.001;
 static const float ALPHA_CUTOFF = 0.5;
-static const float ENTITY_ALPHA_CUTOFF = 0.1;
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float WATER_SHADOW_TINT = 0.5;
 
@@ -82,7 +77,7 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
     query.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, ray);
 
     while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_PROCEDURAL) continue;
+        if (query.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) continue;
 
         uint instanceId = query.CandidateInstanceID();
         uint primId = query.CandidatePrimitiveIndex();
