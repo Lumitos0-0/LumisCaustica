@@ -191,16 +191,50 @@ public final class RtVolumetricFog {
     public RtImage froxelVolume() { return froxelVolume; }
     public RtImage fogImage() { return fogImage; }
 
+    private static float integrationResolutionScale() {
+        return switch (CausticaConfig.Rt.VolumetricFog.QUALITY.value()) {
+            case 0 -> 0.25f;
+            case 2 -> 0.75f;
+            case 3 -> 1.0f;
+            default -> 0.5f;
+        };
+    }
+
+    private static int effectiveSampleCount() {
+        int qualityCap = switch (CausticaConfig.Rt.VolumetricFog.QUALITY.value()) {
+            case 0 -> 16;
+            case 2 -> 32;
+            case 3 -> 48;
+            default -> 24;
+        };
+        return Math.min(CausticaConfig.Rt.VolumetricFog.SAMPLES.value(), qualityCap);
+    }
+
+    private static int scaledFogDimension(int displayDim, int guideDim) {
+        int scaled = Math.max(1, Math.round(displayDim * integrationResolutionScale()));
+        return guideDim > 0 ? Math.min(scaled, guideDim) : scaled;
+    }
+
     public void ensureImages(int displayW, int displayH) {
+        ensureImages(displayW, displayH, displayW, displayH);
+    }
+
+    public void ensureImages(int displayW, int displayH, int guideW, int guideH) {
         int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
         int fw = dims[0], fh = dims[1], fd = dims[2];
+        int fogW = scaledFogDimension(displayW, guideW);
+        int fogH = scaledFogDimension(displayH, guideH);
         if (froxelVolume == null || froxelVolume.width != fw || froxelVolume.height != fh || froxelVolume.depth != fd) {
             if (froxelVolume != null) froxelVolume.destroy();
             froxelVolume = ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel volume");
+            boundFroxelView = 0L;
         }
-        if (fogImage == null || fogImage.width != displayW || fogImage.height != displayH) {
+        if (fogImage == null || fogImage.width != fogW || fogImage.height != fogH) {
             if (fogImage != null) fogImage.destroy();
-            fogImage = ctx.createStorageImage(displayW, displayH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog scattering");
+            fogImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog scattering");
+            boundFogOutputView = 0L;
+            boundGDepthView = 0L;
+            boundBlockAlbedoView = 0L;
         }
     }
 
@@ -241,7 +275,7 @@ public final class RtVolumetricFog {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(froxelInfo);
 
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
-            depthInfo.get(0).imageView(gDepthView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            depthInfo.get(0).imageView(gDepthView).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             writes.get(2).sType$Default().dstSet(integrationSet).dstBinding(2)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
 
@@ -313,6 +347,8 @@ public final class RtVolumetricFog {
                                     float[] moonDir, float[] moonIllum) {
         if (froxelVolume == null || fogImage == null) return;
         int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
+        int fogW = fogImage.width;
+        int fogH = fogImage.height;
         float nearPlane = 0.1f;
         float farPlane = CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value();
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -321,7 +357,7 @@ public final class RtVolumetricFog {
             ByteBuffer push = stack.malloc(FogIntegrationPushData.BYTE_SIZE);
             FogIntegrationPushData data = new FogIntegrationPushData(
                     worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
-                    new FogIntegrationPushData.Int2(displayW, displayH),
+                    new FogIntegrationPushData.Int2(fogW, fogH),
                     new FogIntegrationPushData.Int2(dims[0], dims[1]), dims[2],
                     nearPlane, farPlane,
                     CausticaConfig.Rt.VolumetricFog.DENSITY.value(),
@@ -334,12 +370,12 @@ public final class RtVolumetricFog {
                     CausticaConfig.Rt.VolumetricFog.JITTER_STRENGTH.value(),
                     CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value(),
                     frameIndex,
-                    CausticaConfig.Rt.VolumetricFog.SAMPLES.value(),
+                    effectiveSampleCount(),
                     CausticaConfig.Rt.VolumetricFog.TEMPORAL.value() ? 1 : 0,
                     CausticaConfig.Rt.VolumetricFog.COLOR_TRANSMISSION.value() ? 1 : 0,
                     exposure,
                     new FogIntegrationPushData.Float2(jitterOffset[0], jitterOffset[1]),
-                    new FogIntegrationPushData.Float2(1.0f / displayW, 1.0f / displayH),
+                    new FogIntegrationPushData.Float2(1.0f / fogW, 1.0f / fogH),
                     new FogIntegrationPushData.Float3(terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]),
                     new FogIntegrationPushData.Float3(camWorldPos[0], camWorldPos[1], camWorldPos[2]),
                     new FogIntegrationPushData.Float3(sunDir[0], sunDir[1], sunDir[2]),
@@ -349,7 +385,7 @@ public final class RtVolumetricFog {
             );
             data.write(push);
             VK10.vkCmdPushConstants(cmd, integrationLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-            VK10.vkCmdDispatch(cmd, (displayW + 15) / 16, (displayH + 15) / 16, 1);
+            VK10.vkCmdDispatch(cmd, (fogW + 15) / 16, (fogH + 15) / 16, 1);
         }
     }
 

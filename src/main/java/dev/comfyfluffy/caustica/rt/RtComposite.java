@@ -648,6 +648,13 @@ public final class RtComposite {
                 }
             }
             ensureOutput(ctx, width, height);
+            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+                // Fog integrates against the guide-depth image, so never run it above guide resolution;
+                // also keep the target dynamically aligned with the current quality level even when the
+                // window size itself did not change.
+                volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
+                volumetricFog.setInjectionImage();
+            }
             // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
@@ -996,7 +1003,7 @@ public final class RtComposite {
         RtToneLut boundLookLut = lookLut;
         // Volumetric fog images
         if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
-            volumetricFog.ensureImages(width, height);
+            volumetricFog.ensureImages(width, height, renderW, renderH);
             volumetricFog.setInjectionImage();
         }
         long fogView = 0L;
@@ -1270,11 +1277,10 @@ public final class RtComposite {
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFog")) {
-                    // Ensure images if display size changed after ensureOutput early-return path
-                    if (volumetricFog.fogImage() == null || volumetricFog.fogImage().width != displayW || volumetricFog.fogImage().height != displayH) {
-                        volumetricFog.ensureImages(displayW, displayH);
-                        volumetricFog.setInjectionImage();
-                    }
+                    // Re-evaluate fog targets every frame: quality toggles can change the fog buffer
+                    // size without a window resize, and the buffer should never exceed guide resolution.
+                    volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
+                    volumetricFog.setInjectionImage();
                     long blockAlbedoView = boundBlockAlbedoAtlasHandle;
                     long blockSampler = atlasSampler(ctx);
                     // Bind TLAS + froxel + gDepth + fogOutput + blockAlbedo
@@ -1308,8 +1314,17 @@ public final class RtComposite {
                     // Normalize physical lux to the fog shader's working scale (~100k lux noon -> ~1.0).
                     // The shader applies pc.sunIntensity / pc.moonIntensity from the push constants, so do
                     // not multiply the config again here or the user-facing intensity sliders are squared.
-                    float sunScale = Math.max(sunIllumLux / 100000.0f, 0.0f);
-                    float moonScale = Math.max((moonIllumLux / 100000.0f) * moonIllumFactor, 0.0f);
+                    float sunScale = sunDir[1] > 0.0f ? Math.max(sunIllumLux / 100000.0f, 0.0f) : 0.0f;
+                    float moonScale = moonDir[1] > 0.0f
+                            ? Math.max((moonIllumLux / 100000.0f) * moonIllumFactor, 0.0f) : 0.0f;
+                    // Match the path tracer's direct-light model: one dominant celestial at a time. This
+                    // removes wasted duplicate shadow work and avoids double-lighting the fog when both
+                    // bodies are technically above the horizon but one is negligible.
+                    if (sunScale >= moonScale) {
+                        moonScale = 0.0f;
+                    } else {
+                        sunScale = 0.0f;
+                    }
                     float[] sunIllum = new float[]{sunScale, sunScale, sunScale};
                     float[] moonIllum = new float[]{moonScale, moonScale, moonScale};
 

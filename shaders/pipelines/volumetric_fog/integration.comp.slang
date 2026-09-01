@@ -35,6 +35,9 @@ float ign(float2 p) {
     return frac(magic.z * frac(dot(p, magic.xy)));
 }
 float hgPhase(float cosTheta, float g) {
+    // HG becomes extremely peaky as |g| approaches 1. Clamp away from the near-singular tails so a
+    // user-selected negative g cannot turn into a whole-screen backscatter blowout.
+    g = clamp(g, -0.8, 0.8);
     float g2 = g * g;
     return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1.0e-4), 1.5));
 }
@@ -200,6 +203,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 moonDir = normalize(pc.moonDir);
     float3 sunIllum = pc.sunIlluminance * pc.sunIntensity;
     float3 moonIllum = pc.moonIlluminance * pc.moonIntensity;
+    bool sunEnabled = max(sunIllum.r, max(sunIllum.g, sunIllum.b)) > 1.0e-6;
+    bool moonEnabled = max(moonIllum.r, max(moonIllum.g, moonIllum.b)) > 1.0e-6;
 
     for (int i = 0; i < sampleCount; i++) {
         float jitter = pc.jitterStrength != 0.0 ? (rnd(seed) - 0.5) * pc.jitterStrength : 0.0;
@@ -232,17 +237,23 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             continue;
         }
 
-        // Shadow rays to sun and moon
-        float3 shadowOrigin = sampleRebasedPos + rayDir * 0.01 + float3(0,0,0);
-        ShadowResult sunShadow = traceShadowWithTransmission(shadowOrigin, sunDir, 10000.0);
-        ShadowResult moonShadow = traceShadowWithTransmission(shadowOrigin, moonDir, 10000.0);
+        // Shadow rays to whichever celestial bodies are actually contributing this frame. In ordinary
+        // day/night scenes only one survives atmospheric extinction, so skipping the other nearly halves
+        // the fog pass cost.
+        float3 shadowOrigin = sampleRebasedPos + rayDir * 0.01;
+        float3 lighting = float3(0.0, 0.0, 0.0);
+        if (sunEnabled) {
+            ShadowResult sunShadow = traceShadowWithTransmission(shadowOrigin, sunDir, 10000.0);
+            float phaseSun = hgPhase(dot(rayDir, sunDir), pc.anisotropy);
+            lighting += phaseSun * sunIllum * sunShadow.transmittance;
+        }
+        if (moonEnabled) {
+            ShadowResult moonShadow = traceShadowWithTransmission(shadowOrigin, moonDir, 10000.0);
+            float phaseMoon = hgPhase(dot(rayDir, moonDir), pc.anisotropy);
+            lighting += phaseMoon * moonIllum * moonShadow.transmittance;
+        }
 
-        float cosThetaSun = dot(rayDir, sunDir);
-        float cosThetaMoon = dot(rayDir, moonDir);
-        float phaseSun = hgPhase(cosThetaSun, pc.anisotropy);
-        float phaseMoon = hgPhase(cosThetaMoon, pc.anisotropy);
-
-        float3 inScattering = scatteringCoeff * (phaseSun * sunIllum * sunShadow.transmittance + phaseMoon * moonIllum * moonShadow.transmittance) * stepSize;
+        float3 inScattering = scatteringCoeff * lighting * stepSize;
 
         float stepTrans = exp(-extinction * stepSize);
         accumScattering += inScattering * accumTransmittance;
