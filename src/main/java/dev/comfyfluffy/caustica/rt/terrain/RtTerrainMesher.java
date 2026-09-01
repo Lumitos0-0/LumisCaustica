@@ -224,8 +224,8 @@ final class RtTerrainMesher {
                     capture.originY = ly + (float) offset.y;
                     capture.originZ = lz + (float) offset.z;
                     blockRandom.setSeed(state.getSeed(m));
-                    model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.cullTest);
-                    capture.flushBlock(); // resolve coplanar ties (grass overlay / cross faces), then emit
+                    model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.captureAllFaces);
+                    capture.flushBlock(); // self-cull exact boundary faces, resolve coplanar ties, then emit
                 }
             }
         }
@@ -406,7 +406,11 @@ final class RtTerrainMesher {
         BlockPos pos;
         float originX, originY, originZ;
         private final BlockPos.MutableBlockPos cullPos = new BlockPos.MutableBlockPos();
-        private final java.util.function.Predicate<Direction> cullTest = this::isCulled;
+        // Ask the model for every face, then do our own cull after seeing the actual emitted quad geometry.
+        // Vanilla/Fabric face culling is shape-based, not mesh-based; with resource-pack bevels/inset faces it
+        // can discard a neighbour-facing quad even when the visible mesh does not actually reach the block
+        // boundary, which becomes a bright slit in RT once the opposing face is gone.
+        private final java.util.function.Predicate<Direction> captureAllFaces = direction -> false;
 
         // Coplanar-resolution: vanilla emits coincident quads that tie on depth in the BVH and flicker —
         // a block face's opaque base + its tinted cutout overlay (grass/snowy sides), and a cross model's
@@ -425,12 +429,17 @@ final class RtTerrainMesher {
         /** Capture a final Fabric Renderer API quad before raster AO/directional lighting is applied. */
         private void putFabric(MutableQuadView quad) {
             PendingQuad q = acquire();
+            q.originX = originX;
+            q.originY = originY;
+            q.originZ = originZ;
+            q.cullFace = quad.cullFace();
             for (int i = 0; i < 4; i++) {
                 q.x[i] = quad.x(i) + originX;
                 q.y[i] = quad.y(i) + originY;
                 q.z[i] = quad.z(i) + originZ;
                 q.uv[i] = UVPair.pack(quad.u(i), quad.v(i));
             }
+            q.cullableBoundary = isOnOwnBlockBoundary(q, q.cullFace);
 
             float ex1 = q.x[1] - q.x[0], ey1 = q.y[1] - q.y[0], ez1 = q.z[1] - q.z[0];
             float ex2 = q.x[2] - q.x[0], ey2 = q.y[2] - q.y[0], ez2 = q.z[2] - q.z[0];
@@ -474,13 +483,40 @@ final class RtTerrainMesher {
             q.materialId = materials.resolve(sprite, state, q.translucent);
         }
 
-        /** Fabric's cull predicate returns true when the nominal face should be discarded. */
-        private boolean isCulled(Direction direction) {
+        private static boolean isOnOwnBlockBoundary(PendingQuad q, Direction direction) {
             if (direction == null) {
                 return false;
             }
-            BlockState neighbor = view.getBlockState(cullPos.setWithOffset(pos, direction));
-            return !Block.shouldRenderFace(state, neighbor, direction);
+            float plane = switch (direction) {
+                case DOWN -> q.originY;
+                case UP -> q.originY + 1.0f;
+                case NORTH -> q.originZ;
+                case SOUTH -> q.originZ + 1.0f;
+                case WEST -> q.originX;
+                case EAST -> q.originX + 1.0f;
+            };
+            for (int i = 0; i < 4; i++) {
+                float coord = switch (direction) {
+                    case DOWN, UP -> q.y[i];
+                    case NORTH, SOUTH -> q.z[i];
+                    case WEST, EAST -> q.x[i];
+                };
+                if (Math.abs(coord - plane) >= COINCIDENT_EPS) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private boolean shouldCull(PendingQuad q) {
+            if (q.cullFace == null || !q.cullableBoundary) {
+                return false;
+            }
+            // Only cull faces that truly sit on this block's outer cube plane. If the visible model is
+            // beveled / inset away from that boundary, keep it: dropping the opposing neighbour face there
+            // opens an actual crack to whatever is behind it, which the raster path usually hides.
+            BlockState neighbor = view.getBlockState(cullPos.setWithOffset(pos, q.cullFace));
+            return !Block.shouldRenderFace(state, neighbor, q.cullFace);
         }
 
         /** Acquire a pooled PendingQuad for the current block (grown on demand, count reset by flushBlock). */
@@ -496,16 +532,26 @@ final class RtTerrainMesher {
             pendingCount = 0;
         }
 
-        /** Resolve coplanar ties among the current block's quads, then emit them into the section buckets. */
+        /** Self-cull exact block-boundary faces, resolve coplanar ties among the survivors, then emit. */
         void flushBlock() {
             int n = pendingCount;
             if (n == 0) {
                 return;
             }
-            if (n >= 2 && n <= RESOLVE_CAP) {
-                resolveCoplanar(n);
-            }
+            int survivors = 0;
             for (int i = 0; i < n; i++) {
+                PendingQuad q = pending.get(i);
+                if (!shouldCull(q)) {
+                    if (survivors != i) {
+                        pending.set(survivors, q);
+                    }
+                    survivors++;
+                }
+            }
+            if (survivors >= 2 && survivors <= RESOLVE_CAP) {
+                resolveCoplanar(survivors);
+            }
+            for (int i = 0; i < survivors; i++) {
                 emit(pending.get(i));
             }
             pendingCount = 0;
@@ -640,7 +686,10 @@ final class RtTerrainMesher {
     private static final class PendingQuad {
         final float[] x = new float[4], y = new float[4], z = new float[4];
         final long[] uv = new long[4];
+        float originX, originY, originZ;
         float nx, ny, nz;
+        Direction cullFace;
+        boolean cullableBoundary;
         boolean cutout; // non-SOLID render layer (alpha-tested) — also an overlay candidate
         boolean translucent; // TRANSLUCENT layer (stained glass / ice): colored-transmission dielectric
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair
