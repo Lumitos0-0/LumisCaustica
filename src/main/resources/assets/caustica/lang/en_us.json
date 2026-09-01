@@ -58,7 +58,7 @@
 	"caustica.options.rt.fogDensity": "Fog Density",
 	"caustica.options.rt.fogDensity.tooltip": "Base fog density controlling overall opacity and scattering strength.",
 	"caustica.options.rt.fogAnisotropy": "Fog Anisotropy",
-	"caustica.options.rt.fogAnisotropy.tooltip": "Henyey-Greenstein anisotropy: negative=back-scatter, 0=isotropic, positive=forward-scatter (more visible shafts when looking toward light).",
+	"caustica.options.rt.fogAnisotropy.tooltip": "Fog phase anisotropy: 0=isotropic, higher values increase forward scattering and make sun shafts more visible when looking toward the light.",
 	"caustica.options.rt.fogSunIntensity": "Fog Sun Intensity",
 	"caustica.options.rt.fogSunIntensity.tooltip": "Intensity multiplier for sun scattering in fog, controlling brightness of crepuscular rays.",
 	"caustica.options.rt.fogColorTransmission": "Colored Transmission",

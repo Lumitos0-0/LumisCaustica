@@ -246,8 +246,8 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogAnisotropy.tooltip")),
             (caption, hundredths) -> Options.genericValueLabel(caption,
                     Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
-            new OptionInstance.IntRange(-90, 90),
-            Math.clamp(Math.round(setting.value() * 100.0f), -90, 90),
+            new OptionInstance.IntRange(0, 90),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 90),
             hundredths -> setting.set(hundredths / 100.0f));
     }
 

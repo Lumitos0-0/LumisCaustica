@@ -933,11 +933,10 @@ public final class CausticaConfig {
             /** Base fog density (extinction). */
             public static final FloatSetting DENSITY =
                     clampedFloat("caustica.rt.volumetricFog.density", "volumetric-fog.density", 0.02f, 0.0f, 0.1f);
-            /** Henyey-Greenstein anisotropy g, user-facing range -0.9..0.9. The shader clamps to a safer
-             * internal range to avoid the near-singular whole-screen lobe as |g| approaches 1; 0.5 forward
-             * scattering is typical for god rays. */
+            /** Henyey-Greenstein anisotropy g. Restricted to forward scattering for this fog model:
+             * 0 = isotropic, 0.5 typical god rays, 0.9 strongest forward lobe. */
             public static final FloatSetting ANISOTROPY =
-                    clampedFloat("caustica.rt.volumetricFog.anisotropy", "volumetric-fog.anisotropy", 0.5f, -0.9f, 0.9f);
+                    clampedFloat("caustica.rt.volumetricFog.anisotropy", "volumetric-fog.anisotropy", 0.5f, 0.0f, 0.9f);
             /** Scattering coefficient multiplier. */
             public static final FloatSetting SCATTERING =
                     clampedFloat("caustica.rt.volumetricFog.scattering", "volumetric-fog.scattering", 1.0f, 0.0f, 5.0f);

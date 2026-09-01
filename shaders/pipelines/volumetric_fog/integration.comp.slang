@@ -35,9 +35,9 @@ float ign(float2 p) {
     return frac(magic.z * frac(dot(p, magic.xy)));
 }
 float hgPhase(float cosTheta, float g) {
-    // HG becomes extremely peaky as |g| approaches 1. Clamp away from the near-singular tails so a
-    // user-selected negative g cannot turn into a whole-screen backscatter blowout.
-    g = clamp(g, -0.8, 0.8);
+    // This fog path is tuned only for forward scattering. Clamp off the near-singular tail as g
+    // approaches 1 and treat any stale negative config value as isotropic.
+    g = clamp(g, 0.0, 0.8);
     float g2 = g * g;
     return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1.0e-4), 1.5));
 }
@@ -75,7 +75,11 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
     ray.Direction = dir;
     ray.TMax = tMax;
 
-    RayQuery<RAY_FLAG_NONE> query;
+    // Force every triangle candidate through shader code so solids can actually occlude the sun/moon
+    // while water/translucent materials still accumulate colored transmission. With plain RAY_FLAG_NONE,
+    // opaque triangles are handled entirely by fixed-function traversal and this pass never sees them,
+    // which lets sunlight leak through caves/terrain and shows up as a camera-following fog wall.
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, ray);
 
     while (query.Proceed()) {
@@ -124,7 +128,7 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
                 float2 uv = uvs[3u * tri + 0u] * b.x + uvs[3u * tri + 1u] * b.y + uvs[3u * tri + 2u] * b.z;
                 float alpha = blockAlbedoAtlas.SampleLevel(uv, 0.0).a;
                 if (alpha < ALPHA_CUTOFF) {
-                    query.CommitNonOpaqueTriangleHit();
+                    // Fully transparent cutout texels should behave like no hit at all.
                     continue;
                 }
                 result.hitOpaque = true;
