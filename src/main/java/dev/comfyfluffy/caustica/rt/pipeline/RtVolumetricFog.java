@@ -230,13 +230,26 @@ public final class RtVolumetricFog {
         int fw = dims[0], fh = dims[1], fd = dims[2];
         int fogW = scaledFogDimension(displayW, guideW);
         int fogH = scaledFogDimension(displayH, guideH);
-        if (froxelVolume == null || froxelVolume.width != fw || froxelVolume.height != fh || froxelVolume.depth != fd) {
+
+        boolean froxelResize = froxelVolume == null
+                || froxelVolume.width != fw || froxelVolume.height != fh || froxelVolume.depth != fd;
+        boolean fogResize = fogImage == null || fogImage.width != fogW || fogImage.height != fogH
+                || fogDepthImage == null || fogDepthImage.width != fogW || fogDepthImage.height != fogH;
+
+        // Fog quality can be changed live from the video settings, which resizes these images without a
+        // window resize and therefore outside ensureOutput()'s existing waitIdle path. Recreating them
+        // while the previous frame is still sampling/writing the old views can hand Vulkan dead image
+        // handles and device-loss the whole renderer. The quality toggle is rare, so take the safe route.
+        if (froxelResize || fogResize) {
+            ctx.waitIdle();
+        }
+
+        if (froxelResize) {
             if (froxelVolume != null) froxelVolume.destroy();
             froxelVolume = ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel volume");
             boundFroxelView = 0L;
         }
-        if (fogImage == null || fogImage.width != fogW || fogImage.height != fogH
-                || fogDepthImage == null || fogDepthImage.width != fogW || fogDepthImage.height != fogH) {
+        if (fogResize) {
             if (fogImage != null) fogImage.destroy();
             if (fogDepthImage != null) fogDepthImage.destroy();
             fogImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog scattering");
