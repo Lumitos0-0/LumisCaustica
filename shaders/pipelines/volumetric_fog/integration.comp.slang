@@ -62,6 +62,24 @@ float linearDepthFromRebased(float3 rebasedPos, WorldPush worldPush) {
 
 static const float SKY_DEPTH_EPSILON = 1.0e-6;
 
+float selectGuideDepth(float2 uv, float2 invFogSize) {
+    float centerDepth = gDepth.SampleLevel(uv, 0.0).r;
+    if (centerDepth > SKY_DEPTH_EPSILON) {
+        return centerDepth;
+    }
+
+    // Only fall back to a conservative footprint test when the centre really is sky. That preserves the
+    // narrow silhouette detail the centre sample gives us, but still stops a low-res fog texel from
+    // marching to maxDistance just because its centre landed in a tiny sky gap at a ravine lip/canopy edge.
+    float2 footprint = invFogSize * 0.5;
+    float blockerDepth = 0.0;
+    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2(-footprint.x, -footprint.y), 0.0).r);
+    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2( footprint.x, -footprint.y), 0.0).r);
+    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2(-footprint.x,  footprint.y), 0.0).r);
+    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2( footprint.x,  footprint.y), 0.0).r);
+    return blockerDepth > SKY_DEPTH_EPSILON ? blockerDepth : centerDepth;
+}
+
 struct ShadowResult {
     float3 transmittance;
     bool hitOpaque;
@@ -189,11 +207,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // "sky" in reversed-Z effectively discards most terrain beyond a few blocks and makes the fog march
     // straight through it, which is exactly the camera-following wall seen in ravines/caves.
     float2 gDepthUv = jndc * 0.5 + 0.5;
-    // Use the guide depth at the pixel centre. The near-zero reversed-Z sky epsilon above is enough to
-    // keep genuine sky marching to maxDistance without reintroducing the earlier camera-following wall,
-    // while footprint-conservative max depth over-erodes fog anywhere a thin silhouette only touches part
-    // of the low-res fog texel (tree canopies, vines, fence edges, etc.).
-    float ndcDepth = gDepth.SampleLevel(gDepthUv, 0.0).r;
+    float ndcDepth = selectGuideDepth(gDepthUv, pc.invDisplaySize);
     float3 rebasedHitPos = reconstructRebasedPos(jndc, ndcDepth, worldPush);
     float tMax = linearDepthFromRebased(rebasedHitPos, worldPush);
     if (ndcDepth <= SKY_DEPTH_EPSILON || !(tMax > 0.1 && tMax <= 10000.0)) {

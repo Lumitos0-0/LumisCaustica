@@ -224,8 +224,11 @@ final class RtTerrainMesher {
                     capture.originY = ly + (float) offset.y;
                     capture.originZ = lz + (float) offset.z;
                     blockRandom.setSeed(state.getSeed(m));
+                    model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.cullTest);
+                    capture.flushBlock(); // resolve coplanar ties (grass overlay / cross faces), then emit
+                    blockRandom.setSeed(state.getSeed(m)); // second pass must see the same randomised quad set
                     model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.captureAllFaces);
-                    capture.flushBlock(); // self-cull exact boundary faces, resolve coplanar ties, then emit
+                    capture.flushInsetCullRescue(); // add back materially inset cull-faces that vanilla shape culling would drop
                 }
             }
         }
@@ -406,10 +409,10 @@ final class RtTerrainMesher {
         BlockPos pos;
         float originX, originY, originZ;
         private final BlockPos.MutableBlockPos cullPos = new BlockPos.MutableBlockPos();
-        // Ask the model for every face, then do our own cull after seeing the actual emitted quad geometry.
-        // Vanilla/Fabric face culling is shape-based, not mesh-based; with resource-pack bevels/inset faces it
-        // can discard a neighbour-facing quad even when the visible mesh does not actually reach the block
-        // boundary, which becomes a bright slit in RT once the opposing face is gone.
+        private final java.util.function.Predicate<Direction> cullTest = this::isCulled;
+        // Second pass used only to rescue materially inset cull-faces. Vanilla/Fabric culling is shape-based,
+        // not mesh-based, so a resource-pack model can tag a face as neighbour-culled even when the visible
+        // geometry sits measurably behind the block boundary and would otherwise leave a slit in RT.
         private final java.util.function.Predicate<Direction> captureAllFaces = direction -> false;
 
         // Coplanar-resolution: vanilla emits coincident quads that tie on depth in the BVH and flicker —
@@ -421,6 +424,8 @@ final class RtTerrainMesher {
         private static final float OFFSET = 2.0e-4f;         // outward nudge (blocks) to break coplanar depth ties
         private static final float TRANSLUCENT_INSET = 2.0e-4f; // inward recess (blocks) for glass/ice vs coplanar neighbours
         private static final float COINCIDENT_EPS = 1.0e-4f; // verts this close are "the same" point
+        private static final float CULL_BOUNDARY_EPS = 1.0e-3f; // still treat tiny authored epsilon offsets as flush block faces
+        private static final float INSET_CULL_RESCUE_MIN = 2.5e-3f; // only rescue visibly inset cull-faces, not near-boundary noise
         private static final int RESOLVE_CAP = 128;          // skip the O(n^2) resolve for pathological blocks
         private final List<PendingQuad> pending = new ArrayList<>(8);
         private int pendingCount;
@@ -483,40 +488,59 @@ final class RtTerrainMesher {
             q.materialId = materials.resolve(sprite, state, q.translucent);
         }
 
+        private static float signedInsetFromBoundary(PendingQuad q, Direction direction, int i) {
+            return switch (direction) {
+                case DOWN -> q.y[i] - q.originY;
+                case UP -> (q.originY + 1.0f) - q.y[i];
+                case NORTH -> q.z[i] - q.originZ;
+                case SOUTH -> (q.originZ + 1.0f) - q.z[i];
+                case WEST -> q.x[i] - q.originX;
+                case EAST -> (q.originX + 1.0f) - q.x[i];
+            };
+        }
+
+        private static float maxInwardInset(PendingQuad q, Direction direction) {
+            float inset = 0.0f;
+            for (int i = 0; i < 4; i++) {
+                inset = Math.max(inset, signedInsetFromBoundary(q, direction, i));
+            }
+            return inset;
+        }
+
+        private static float maxOutwardOvershoot(PendingQuad q, Direction direction) {
+            float overshoot = 0.0f;
+            for (int i = 0; i < 4; i++) {
+                overshoot = Math.max(overshoot, -signedInsetFromBoundary(q, direction, i));
+            }
+            return overshoot;
+        }
+
         private static boolean isOnOwnBlockBoundary(PendingQuad q, Direction direction) {
             if (direction == null) {
                 return false;
             }
-            float plane = switch (direction) {
-                case DOWN -> q.originY;
-                case UP -> q.originY + 1.0f;
-                case NORTH -> q.originZ;
-                case SOUTH -> q.originZ + 1.0f;
-                case WEST -> q.originX;
-                case EAST -> q.originX + 1.0f;
-            };
-            for (int i = 0; i < 4; i++) {
-                float coord = switch (direction) {
-                    case DOWN, UP -> q.y[i];
-                    case NORTH, SOUTH -> q.z[i];
-                    case WEST, EAST -> q.x[i];
-                };
-                if (Math.abs(coord - plane) >= COINCIDENT_EPS) {
-                    return false;
-                }
-            }
-            return true;
+            return maxInwardInset(q, direction) <= CULL_BOUNDARY_EPS
+                    && maxOutwardOvershoot(q, direction) <= CULL_BOUNDARY_EPS;
         }
 
-        private boolean shouldCull(PendingQuad q) {
-            if (q.cullFace == null || !q.cullableBoundary) {
+        /** Fabric's cull predicate returns true when the nominal face should be discarded. */
+        private boolean isCulled(Direction direction) {
+            if (direction == null) {
                 return false;
             }
-            // Only cull faces that truly sit on this block's outer cube plane. If the visible model is
-            // beveled / inset away from that boundary, keep it: dropping the opposing neighbour face there
-            // opens an actual crack to whatever is behind it, which the raster path usually hides.
-            BlockState neighbor = view.getBlockState(cullPos.setWithOffset(pos, q.cullFace));
-            return !Block.shouldRenderFace(state, neighbor, q.cullFace);
+            BlockState neighbor = view.getBlockState(cullPos.setWithOffset(pos, direction));
+            return !Block.shouldRenderFace(state, neighbor, direction);
+        }
+
+        private boolean shouldRescueInsetCullFace(PendingQuad q) {
+            if (q.cullFace == null || q.cullableBoundary) {
+                return false;
+            }
+            float inwardInset = maxInwardInset(q, q.cullFace);
+            if (inwardInset < INSET_CULL_RESCUE_MIN || maxOutwardOvershoot(q, q.cullFace) > CULL_BOUNDARY_EPS) {
+                return false;
+            }
+            return isCulled(q.cullFace);
         }
 
         /** Acquire a pooled PendingQuad for the current block (grown on demand, count reset by flushBlock). */
@@ -532,8 +556,23 @@ final class RtTerrainMesher {
             pendingCount = 0;
         }
 
-        /** Self-cull exact block-boundary faces, resolve coplanar ties among the survivors, then emit. */
+        /** Resolve coplanar ties among the current block's quads, then emit them into the section buckets. */
         void flushBlock() {
+            int n = pendingCount;
+            if (n == 0) {
+                return;
+            }
+            if (n >= 2 && n <= RESOLVE_CAP) {
+                resolveCoplanar(n);
+            }
+            for (int i = 0; i < n; i++) {
+                emit(pending.get(i));
+            }
+            pendingCount = 0;
+        }
+
+        /** Add back only materially inset cull-faces that the normal cull predicate would have discarded. */
+        void flushInsetCullRescue() {
             int n = pendingCount;
             if (n == 0) {
                 return;
@@ -541,7 +580,7 @@ final class RtTerrainMesher {
             int survivors = 0;
             for (int i = 0; i < n; i++) {
                 PendingQuad q = pending.get(i);
-                if (!shouldCull(q)) {
+                if (shouldRescueInsetCullFace(q)) {
                     if (survivors != i) {
                         pending.set(survivors, q);
                     }
