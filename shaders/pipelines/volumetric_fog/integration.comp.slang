@@ -60,6 +60,22 @@ float linearDepthFromRebased(float3 rebasedPos, WorldPush worldPush) {
     return length(camRel);
 }
 
+static const float SKY_DEPTH_EPSILON = 1.0e-6;
+
+float sampleRepresentativeDepth(float2 uv, float2 invFogSize) {
+    // The fog buffer is usually lower resolution than the guide depth. A single centre sample lets a
+    // sky texel at the lip of a ravine/treeline win the whole fog pixel, so the march runs to maxDistance
+    // and produces a camera-following fog sheet in front of solid terrain. Take a conservative footprint
+    // max in reversed-Z instead: any foreground blocker inside the fog pixel should stop the march.
+    float2 footprint = invFogSize * 0.5;
+    float depth = gDepth.SampleLevel(uv, 0.0).r;
+    depth = max(depth, gDepth.SampleLevel(uv + float2(-footprint.x, -footprint.y), 0.0).r);
+    depth = max(depth, gDepth.SampleLevel(uv + float2( footprint.x, -footprint.y), 0.0).r);
+    depth = max(depth, gDepth.SampleLevel(uv + float2(-footprint.x,  footprint.y), 0.0).r);
+    depth = max(depth, gDepth.SampleLevel(uv + float2( footprint.x,  footprint.y), 0.0).r);
+    return depth;
+}
+
 struct ShadowResult {
     float3 transmittance;
     bool hitOpaque;
@@ -182,13 +198,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 rayDir = primaryRayDirFromPush(jndc, worldPush);
     float3 rayOrigin = worldPush.camOffset;
 
-    // Sample gDepth using NDC -> UV (works for both render and display res)
-    // gDepth is reversed-Z NDC depth: near=1, far=0 (sky)
+    // Sample gDepth using NDC -> UV. The guide buffer stores reversed-Z NDC depth: near=1, far=0, and
+    // actual sky pixels are only the exact far clear (~0), not every distant surface. Treating 0.01 as
+    // "sky" in reversed-Z effectively discards most terrain beyond a few blocks and makes the fog march
+    // straight through it, which is exactly the camera-following wall seen in ravines/caves.
     float2 gDepthUv = jndc * 0.5 + 0.5;
-    float ndcDepth = gDepth.SampleLevel(gDepthUv, 0.0).r;
+    float ndcDepth = sampleRepresentativeDepth(gDepthUv, pc.invDisplaySize);
     float3 rebasedHitPos = reconstructRebasedPos(jndc, ndcDepth, worldPush);
     float tMax = linearDepthFromRebased(rebasedHitPos, worldPush);
-    if (ndcDepth <= 0.01 || tMax <= 0.1 || tMax > 10000.0) {
+    if (ndcDepth <= SKY_DEPTH_EPSILON || !(tMax > 0.1 && tMax <= 10000.0)) {
         tMax = pc.maxDistance;
     } else {
         tMax = min(tMax, pc.maxDistance);
