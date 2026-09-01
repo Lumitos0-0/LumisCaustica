@@ -660,22 +660,29 @@ public final class RtComposite {
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
             RtToneLut boundLookLut = lookLut;
-            long fogViewComp;
-            long fogSamplerComp;
+            long fogFrontViewComp;
+            long fogFrontSamplerComp;
+            long fogBackViewComp;
+            long fogBackSamplerComp;
             long fogDepthViewComp;
             long fogDepthSamplerComp;
             long sceneDepthViewComp = gDepth.view;
             long sceneDepthSamplerComp;
-            if (volumetricFog != null && volumetricFog.fogImage() != null && volumetricFog.fogDepthImage() != null
+            if (volumetricFog != null && volumetricFog.fogFrontImage() != null
+                    && volumetricFog.fogBackImage() != null && volumetricFog.fogDepthImage() != null
                     && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
-                fogViewComp = volumetricFog.fogImage().view;
-                fogSamplerComp = volumetricFog.nearestSampler();
+                fogFrontViewComp = volumetricFog.fogFrontImage().view;
+                fogFrontSamplerComp = volumetricFog.nearestSampler();
+                fogBackViewComp = volumetricFog.fogBackImage().view;
+                fogBackSamplerComp = volumetricFog.nearestSampler();
                 fogDepthViewComp = volumetricFog.fogDepthImage().view;
                 fogDepthSamplerComp = volumetricFog.nearestSampler();
                 sceneDepthSamplerComp = volumetricFog.nearestSampler();
             } else {
-                fogViewComp = bloomLevels[0].view;
-                fogSamplerComp = bloomPipeline.sampler();
+                fogFrontViewComp = bloomLevels[0].view;
+                fogFrontSamplerComp = bloomPipeline.sampler();
+                fogBackViewComp = bloomLevels[0].view;
+                fogBackSamplerComp = bloomPipeline.sampler();
                 fogDepthViewComp = gDepth.view;
                 fogDepthSamplerComp = bloomPipeline.sampler();
                 sceneDepthSamplerComp = bloomPipeline.sampler();
@@ -683,7 +690,8 @@ public final class RtComposite {
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
-                    fogViewComp, fogSamplerComp,
+                    fogFrontViewComp, fogFrontSamplerComp,
+                    fogBackViewComp, fogBackSamplerComp,
                     fogDepthViewComp, fogDepthSamplerComp,
                     sceneDepthViewComp, sceneDepthSamplerComp);
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
@@ -1019,22 +1027,29 @@ public final class RtComposite {
             volumetricFog.ensureImages(width, height, renderW, renderH);
             volumetricFog.setInjectionImage();
         }
-        long fogView;
-        long fogSampler;
+        long fogFrontView;
+        long fogFrontSampler;
+        long fogBackView;
+        long fogBackSampler;
         long fogDepthView;
         long fogDepthSampler;
         long sceneDepthView = gDepth.view;
         long sceneDepthSampler;
-        if (volumetricFog != null && volumetricFog.fogImage() != null && volumetricFog.fogDepthImage() != null) {
-            fogView = volumetricFog.fogImage().view;
-            fogSampler = volumetricFog.nearestSampler();
+        if (volumetricFog != null && volumetricFog.fogFrontImage() != null
+                && volumetricFog.fogBackImage() != null && volumetricFog.fogDepthImage() != null) {
+            fogFrontView = volumetricFog.fogFrontImage().view;
+            fogFrontSampler = volumetricFog.nearestSampler();
+            fogBackView = volumetricFog.fogBackImage().view;
+            fogBackSampler = volumetricFog.nearestSampler();
             fogDepthView = volumetricFog.fogDepthImage().view;
             fogDepthSampler = volumetricFog.nearestSampler();
             sceneDepthSampler = volumetricFog.nearestSampler();
         } else {
             // Dummy fallbacks for the optional fog inputs. The display shader never reads them when fog is disabled.
-            fogView = bloomLevels[0].view;
-            fogSampler = bloomPipeline.sampler();
+            fogFrontView = bloomLevels[0].view;
+            fogFrontSampler = bloomPipeline.sampler();
+            fogBackView = bloomLevels[0].view;
+            fogBackSampler = bloomPipeline.sampler();
             fogDepthView = gDepth.view;
             fogDepthSampler = bloomPipeline.sampler();
             sceneDepthSampler = bloomPipeline.sampler();
@@ -1042,7 +1057,8 @@ public final class RtComposite {
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                 boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
-                fogView, fogSampler,
+                fogFrontView, fogFrontSampler,
+                fogBackView, fogBackSampler,
                 fogDepthView, fogDepthSampler,
                 sceneDepthView, sceneDepthSampler);
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
@@ -1392,7 +1408,7 @@ public final class RtComposite {
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
-                boolean fogEnabled = volumetricFog != null && volumetricFog.fogImage() != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value();
+                boolean fogEnabled = volumetricFog != null && volumetricFog.fogFrontImage() != null && volumetricFog.fogBackImage() != null && volumetricFog.fogDepthImage() != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value();
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
                         true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length, fogEnabled);

@@ -150,20 +150,29 @@ float fogDepthMismatch(float sceneDepth, float fogDepth) {
     return abs(sceneDepth - fogDepth);
 }
 
+float4 chooseFogLayer(float sceneDepth, float2 fogDepths, float4 fogFront, float4 fogBack,
+                      out float bestMismatch) {
+    float frontMismatch = fogDepthMismatch(sceneDepth, fogDepths.x);
+    float backMismatch = fogDepthMismatch(sceneDepth, fogDepths.y);
+    bool useBack = backMismatch + 1.0e-6 < frontMismatch;
+    bestMismatch = useBack ? backMismatch : frontMismatch;
+    return useBack ? fogBack : fogFront;
+}
+
 float4 sampleFog(int2 pix, uint w, uint h) {
     if (pc.fogEnabled == 0) {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
 
     uint fogW, fogH;
-    fogImage.GetDimensions(fogW, fogH);
+    fogFrontImage.GetDimensions(fogW, fogH);
     float2 uv = (float2(pix) + 0.5) / float2(w, h);
 
-    // Low-res fog needs an edge-aware upsample against the guide depth. When the four bilinear taps all
-    // agree, ordinary bilateral 2x2 interpolation is stable and smooth. When they disagree strongly,
-    // however, falling back to only the best of those four taps turns the fog edge into visible blocks.
-    // Search a slightly wider 3x3 neighbourhood in those cases so the resolve can still find the right
-    // depth layer without collapsing to a single texel.
+    // A low-res fog texel can straddle two distinct depth layers at silhouettes (foreground surface plus
+    // background/sky). The integration pass therefore stores both a front and back fog solution per texel;
+    // the display pass picks whichever layer matches the full-res scene depth best before doing the usual
+    // depth-aware bilateral upsample. This attacks the representative-depth failure directly instead of
+    // trying to recover a lost layer from a single low-res fog sample.
     float sceneDepth = sceneDepthImage.SampleLevel(uv, 0.0).r;
     float2 fogTexelPos = uv * float2(fogW, fogH);
     float2 fogPos = fogTexelPos - 0.5;
@@ -181,11 +190,13 @@ float4 sampleFog(int2 pix, uint w, uint h) {
         for (int ox = 0; ox < 2; ++ox) {
             int2 coord = clamp(base + int2(ox, oy), int2(0, 0), int2(int(fogW), int(fogH)) - 1);
             float2 fogUv = (float2(coord) + 0.5) / float2(fogW, fogH);
-            float fogDepth = fogDepthImage.SampleLevel(fogUv, 0.0).r;
-            float4 fog = fogImage.SampleLevel(fogUv, 0.0);
+            float2 fogDepths = fogDepthImage.SampleLevel(fogUv, 0.0).rg;
+            float4 fogFront = fogFrontImage.SampleLevel(fogUv, 0.0);
+            float4 fogBack = fogBackImage.SampleLevel(fogUv, 0.0);
+            float mismatch;
+            float4 fog = chooseFogLayer(sceneDepth, fogDepths, fogFront, fogBack, mismatch);
             float bilinear = (ox != 0 ? fracPos.x : 1.0 - fracPos.x)
                     * (oy != 0 ? fracPos.y : 1.0 - fracPos.y);
-            float mismatch = fogDepthMismatch(sceneDepth, fogDepth);
             if (mismatch < bestMismatch) {
                 bestMismatch = mismatch;
                 bestFog = fog;
@@ -210,9 +221,11 @@ float4 sampleFog(int2 pix, uint w, uint h) {
         for (int ox = -1; ox <= 1; ++ox) {
             int2 coord = clamp(center + int2(ox, oy), int2(0, 0), int2(int(fogW), int(fogH)) - 1);
             float2 fogUv = (float2(coord) + 0.5) / float2(fogW, fogH);
-            float fogDepth = fogDepthImage.SampleLevel(fogUv, 0.0).r;
-            float4 fog = fogImage.SampleLevel(fogUv, 0.0);
-            float mismatch = fogDepthMismatch(sceneDepth, fogDepth);
+            float2 fogDepths = fogDepthImage.SampleLevel(fogUv, 0.0).rg;
+            float4 fogFront = fogFrontImage.SampleLevel(fogUv, 0.0);
+            float4 fogBack = fogBackImage.SampleLevel(fogUv, 0.0);
+            float mismatch;
+            float4 fog = chooseFogLayer(sceneDepth, fogDepths, fogFront, fogBack, mismatch);
             if (mismatch < bestMismatch) {
                 bestMismatch = mismatch;
                 bestFog = fog;

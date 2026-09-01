@@ -39,12 +39,14 @@ public final class RtVolumetricFog {
     private final long nearestSampler;
 
     private RtImage froxelVolume;
-    private RtImage fogImage;
+    private RtImage fogFrontImage;
+    private RtImage fogBackImage;
     private RtImage fogDepthImage;
 
     private long boundFroxelView;
     private long boundGDepthView;
-    private long boundFogOutputView;
+    private long boundFogFrontOutputView;
+    private long boundFogBackOutputView;
     private long boundFogDepthOutputView;
     private long boundBlockAlbedoView;
     private boolean destroyed;
@@ -115,7 +117,7 @@ public final class RtVolumetricFog {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, injectionPipeline, "fog injection pipeline");
             VK10.vkDestroyShaderModule(vk, injModule, null);
 
-            VkDescriptorSetLayoutBinding.Buffer intBinds0 = VkDescriptorSetLayoutBinding.calloc(6, stack);
+            VkDescriptorSetLayoutBinding.Buffer intBinds0 = VkDescriptorSetLayoutBinding.calloc(7, stack);
             intBinds0.get(0).binding(0).descriptorType(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             intBinds0.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -128,6 +130,8 @@ public final class RtVolumetricFog {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             intBinds0.get(5).binding(5).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            intBinds0.get(6).binding(6).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo intDsl0Ci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(intBinds0);
             check(VK10.vkCreateDescriptorSetLayout(vk, intDsl0Ci, null, p), "vkCreateDescriptorSetLayout(fog integration set0)");
@@ -137,7 +141,7 @@ public final class RtVolumetricFog {
             VkDescriptorPoolSize.Buffer intPoolSizes = VkDescriptorPoolSize.calloc(3, stack);
             intPoolSizes.get(0).type(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(1);
             intPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
-            intPoolSizes.get(2).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(2);
+            intPoolSizes.get(2).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(3);
             VkDescriptorPoolCreateInfo intPoolCi = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(1).pPoolSizes(intPoolSizes);
             check(VK10.vkCreateDescriptorPool(vk, intPoolCi, null, p), "vkCreateDescriptorPool(fog integration)");
@@ -193,7 +197,8 @@ public final class RtVolumetricFog {
     }
 
     public RtImage froxelVolume() { return froxelVolume; }
-    public RtImage fogImage() { return fogImage; }
+    public RtImage fogFrontImage() { return fogFrontImage; }
+    public RtImage fogBackImage() { return fogBackImage; }
     public RtImage fogDepthImage() { return fogDepthImage; }
     public long nearestSampler() { return nearestSampler; }
 
@@ -233,7 +238,8 @@ public final class RtVolumetricFog {
 
         boolean froxelResize = froxelVolume == null
                 || froxelVolume.width != fw || froxelVolume.height != fh || froxelVolume.depth != fd;
-        boolean fogResize = fogImage == null || fogImage.width != fogW || fogImage.height != fogH
+        boolean fogResize = fogFrontImage == null || fogFrontImage.width != fogW || fogFrontImage.height != fogH
+                || fogBackImage == null || fogBackImage.width != fogW || fogBackImage.height != fogH
                 || fogDepthImage == null || fogDepthImage.width != fogW || fogDepthImage.height != fogH;
 
         // Fog quality can be changed live from the video settings, which resizes these images without a
@@ -250,11 +256,14 @@ public final class RtVolumetricFog {
             boundFroxelView = 0L;
         }
         if (fogResize) {
-            if (fogImage != null) fogImage.destroy();
+            if (fogFrontImage != null) fogFrontImage.destroy();
+            if (fogBackImage != null) fogBackImage.destroy();
             if (fogDepthImage != null) fogDepthImage.destroy();
-            fogImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog scattering");
-            fogDepthImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R32_SFLOAT, "fog depth");
-            boundFogOutputView = 0L;
+            fogFrontImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog front scattering");
+            fogBackImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog back scattering");
+            fogDepthImage = ctx.createStorageImage(fogW, fogH, VK10.VK_FORMAT_R32G32_SFLOAT, "fog depth layers");
+            boundFogFrontOutputView = 0L;
+            boundFogBackOutputView = 0L;
             boundFogDepthOutputView = 0L;
             boundGDepthView = 0L;
             boundBlockAlbedoView = 0L;
@@ -281,12 +290,12 @@ public final class RtVolumetricFog {
     }
 
     public void setIntegrationImages(long tlas, long gDepthView, long blockAlbedoView, long blockAlbedoSampler) {
-        if (froxelVolume == null || fogImage == null || fogDepthImage == null) return;
+        if (froxelVolume == null || fogFrontImage == null || fogBackImage == null || fogDepthImage == null) return;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkWriteDescriptorSetAccelerationStructureKHR tlasInfo = VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
                     .sType(KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR)
                     .pAccelerationStructures(stack.longs(tlas));
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(6, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(7, stack);
 
             writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
@@ -302,10 +311,10 @@ public final class RtVolumetricFog {
             writes.get(2).sType$Default().dstSet(integrationSet).dstBinding(2)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
 
-            VkDescriptorImageInfo.Buffer fogOutInfo = VkDescriptorImageInfo.calloc(1, stack);
-            fogOutInfo.get(0).imageView(fogImage.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer fogFrontOutInfo = VkDescriptorImageInfo.calloc(1, stack);
+            fogFrontOutInfo.get(0).imageView(fogFrontImage.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             writes.get(3).sType$Default().dstSet(integrationSet).dstBinding(3)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(fogOutInfo);
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(fogFrontOutInfo);
 
             VkDescriptorImageInfo.Buffer blockInfo = VkDescriptorImageInfo.calloc(1, stack);
             blockInfo.get(0).imageView(blockAlbedoView).sampler(blockAlbedoSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -317,10 +326,16 @@ public final class RtVolumetricFog {
             writes.get(5).sType$Default().dstSet(integrationSet).dstBinding(5)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(fogDepthOutInfo);
 
+            VkDescriptorImageInfo.Buffer fogBackOutInfo = VkDescriptorImageInfo.calloc(1, stack);
+            fogBackOutInfo.get(0).imageView(fogBackImage.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(6).sType$Default().dstSet(integrationSet).dstBinding(6)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(fogBackOutInfo);
+
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundGDepthView = gDepthView;
-        boundFogOutputView = fogImage.view;
+        boundFogFrontOutputView = fogFrontImage.view;
+        boundFogBackOutputView = fogBackImage.view;
         boundFogDepthOutputView = fogDepthImage.view;
         boundBlockAlbedoView = blockAlbedoView;
     }
@@ -374,10 +389,10 @@ public final class RtVolumetricFog {
                                     float[] jitterOffset,
                                     float[] sunDir, float[] sunIllum,
                                     float[] moonDir, float[] moonIllum) {
-        if (froxelVolume == null || fogImage == null || fogDepthImage == null) return;
+        if (froxelVolume == null || fogFrontImage == null || fogBackImage == null || fogDepthImage == null) return;
         int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
-        int fogW = fogImage.width;
-        int fogH = fogImage.height;
+        int fogW = fogFrontImage.width;
+        int fogH = fogFrontImage.height;
         float nearPlane = 0.1f;
         float farPlane = CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value();
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -435,7 +450,8 @@ public final class RtVolumetricFog {
         if (destroyed) return;
         VkDevice vk = ctx.vk();
         if (froxelVolume != null) froxelVolume.destroy();
-        if (fogImage != null) fogImage.destroy();
+        if (fogFrontImage != null) fogFrontImage.destroy();
+        if (fogBackImage != null) fogBackImage.destroy();
         if (fogDepthImage != null) fogDepthImage.destroy();
         VK10.vkDestroyPipeline(vk, injectionPipeline, null);
         VK10.vkDestroyPipelineLayout(vk, injectionLayout, null);

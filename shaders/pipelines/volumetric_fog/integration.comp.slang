@@ -11,9 +11,10 @@ import volumetric_fog_common;
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
 [[vk::binding(1, 0)]] Sampler3D froxelVolume;
 [[vk::binding(2, 0)]] Sampler2D gDepth;
-[[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> fogOutput;
+[[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> fogFrontOutput;
 [[vk::binding(4, 0)]] Sampler2D blockAlbedoAtlas;
-[[vk::binding(5, 0)]] [format("r32f")] RWTexture2D<float> fogDepthOutput;
+[[vk::binding(5, 0)]] [format("rg32f")] RWTexture2D<float2> fogDepthOutput;
+[[vk::binding(6, 0)]] [format("rgba16f")] RWTexture2D<float4> fogBackOutput;
 
 static const float PI = 3.14159265359;
 static const uint CULL_SECONDARY = 0x01u;
@@ -62,22 +63,83 @@ float linearDepthFromRebased(float3 rebasedPos, WorldPush worldPush) {
 
 static const float SKY_DEPTH_EPSILON = 1.0e-6;
 
-float selectGuideDepth(float2 uv, float2 invFogSize) {
+struct DepthLayers {
+    float frontDepth;
+    float backDepth;
+};
+
+void accumulateDepthLayer(float depth,
+                          inout bool hasSurface,
+                          inout bool hasSky,
+                          inout float nearestSurfaceDepth,
+                          inout float farthestSurfaceDepth) {
+    if (depth <= SKY_DEPTH_EPSILON) {
+        hasSky = true;
+        return;
+    }
+    if (!hasSurface) {
+        hasSurface = true;
+        nearestSurfaceDepth = depth;
+        farthestSurfaceDepth = depth;
+        return;
+    }
+    // Reversed-Z guide depth: larger = nearer.
+    nearestSurfaceDepth = max(nearestSurfaceDepth, depth);
+    farthestSurfaceDepth = min(farthestSurfaceDepth, depth);
+}
+
+DepthLayers selectGuideDepthLayers(float2 uv, float2 invFogSize) {
+    bool hasSurface = false;
+    bool hasSky = false;
+    float nearestSurfaceDepth = 0.0;
+    float farthestSurfaceDepth = 0.0;
     float centerDepth = gDepth.SampleLevel(uv, 0.0).r;
-    if (centerDepth > SKY_DEPTH_EPSILON) {
-        return centerDepth;
+
+    accumulateDepthLayer(centerDepth,
+            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
+
+    float2 footprint = invFogSize * 0.5;
+    accumulateDepthLayer(gDepth.SampleLevel(uv + float2(-footprint.x, -footprint.y), 0.0).r,
+            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
+    accumulateDepthLayer(gDepth.SampleLevel(uv + float2( footprint.x, -footprint.y), 0.0).r,
+            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
+    accumulateDepthLayer(gDepth.SampleLevel(uv + float2(-footprint.x,  footprint.y), 0.0).r,
+            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
+    accumulateDepthLayer(gDepth.SampleLevel(uv + float2( footprint.x,  footprint.y), 0.0).r,
+            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
+
+    DepthLayers layers;
+    if (!hasSurface) {
+        layers.frontDepth = 0.0;
+        layers.backDepth = 0.0;
+        return layers;
     }
 
-    // Only fall back to a conservative footprint test when the centre really is sky. That preserves the
-    // narrow silhouette detail the centre sample gives us, but still stops a low-res fog texel from
-    // marching to maxDistance just because its centre landed in a tiny sky gap at a ravine lip/canopy edge.
-    float2 footprint = invFogSize * 0.5;
-    float blockerDepth = 0.0;
-    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2(-footprint.x, -footprint.y), 0.0).r);
-    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2( footprint.x, -footprint.y), 0.0).r);
-    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2(-footprint.x,  footprint.y), 0.0).r);
-    blockerDepth = max(blockerDepth, gDepth.SampleLevel(uv + float2( footprint.x,  footprint.y), 0.0).r);
-    return blockerDepth > SKY_DEPTH_EPSILON ? blockerDepth : centerDepth;
+    layers.frontDepth = nearestSurfaceDepth;
+    if (centerDepth > SKY_DEPTH_EPSILON && abs(centerDepth - layers.frontDepth) >= 1.0e-4) {
+        // Preserve the centre sample as the secondary layer when it differs from the nearest blocker:
+        // a thin foreground silhouette over distant terrain wants {foreground, terrain}, not {foreground, sky}.
+        layers.backDepth = centerDepth;
+    } else {
+        layers.backDepth = hasSky ? 0.0 : farthestSurfaceDepth;
+    }
+    if (layers.backDepth > SKY_DEPTH_EPSILON
+            && abs(layers.frontDepth - layers.backDepth) < 1.0e-4) {
+        layers.backDepth = layers.frontDepth;
+    }
+    return layers;
+}
+
+float depthToMarchDistance(float2 ndc, float depth, WorldPush worldPush) {
+    if (depth <= SKY_DEPTH_EPSILON) {
+        return pc.maxDistance;
+    }
+    float3 rebasedHitPos = reconstructRebasedPos(ndc, depth, worldPush);
+    float tMax = linearDepthFromRebased(rebasedHitPos, worldPush);
+    if (!(tMax > 0.1 && tMax <= 10000.0)) {
+        return pc.maxDistance;
+    }
+    return min(tMax, pc.maxDistance);
 }
 
 struct ShadowResult {
@@ -203,18 +265,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 rayOrigin = worldPush.camOffset;
 
     // Sample gDepth using NDC -> UV. The guide buffer stores reversed-Z NDC depth: near=1, far=0, and
-    // actual sky pixels are only the exact far clear (~0), not every distant surface. Treating 0.01 as
-    // "sky" in reversed-Z effectively discards most terrain beyond a few blocks and makes the fog march
-    // straight through it, which is exactly the camera-following wall seen in ravines/caves.
+    // actual sky pixels are only the exact far clear (~0), not every distant surface. Store TWO
+    // representative layers per fog texel: the nearest surface in its footprint, and either the farthest
+    // surface or sky behind it. This keeps silhouette/background ambiguity alive until the final display
+    // composite instead of collapsing the entire fog texel to one depth here.
     float2 gDepthUv = jndc * 0.5 + 0.5;
-    float ndcDepth = selectGuideDepth(gDepthUv, pc.invDisplaySize);
-    float3 rebasedHitPos = reconstructRebasedPos(jndc, ndcDepth, worldPush);
-    float tMax = linearDepthFromRebased(rebasedHitPos, worldPush);
-    if (ndcDepth <= SKY_DEPTH_EPSILON || !(tMax > 0.1 && tMax <= 10000.0)) {
-        tMax = pc.maxDistance;
-    } else {
-        tMax = min(tMax, pc.maxDistance);
-    }
+    DepthLayers depthLayers = selectGuideDepthLayers(gDepthUv, pc.invDisplaySize);
+    float frontTMax = depthToMarchDistance(jndc, depthLayers.frontDepth, worldPush);
+    float backTMax = depthToMarchDistance(jndc, depthLayers.backDepth, worldPush);
+    backTMax = max(backTMax, frontTMax);
 
     int sampleCount = max(pc.sampleCount, 1);
     uint seed = pix.x * 1973u + pix.y * 9277u + pc.frameIndex * 2654435761u;
@@ -224,7 +283,9 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float3 accumScattering = float3(0.0, 0.0, 0.0);
     float accumTransmittance = 1.0;
-    float stepSize = tMax / float(sampleCount);
+    float3 frontScattering = float3(0.0, 0.0, 0.0);
+    float frontTransmittance = 1.0;
+    bool frontCaptured = false;
 
     float3 sunDir = normalize(pc.sunDir);
     float3 moonDir = normalize(pc.moonDir);
@@ -234,21 +295,31 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     bool moonEnabled = max(moonIllum.r, max(moonIllum.g, moonIllum.b)) > 1.0e-6;
 
     for (int i = 0; i < sampleCount; i++) {
+        float segmentStart = backTMax * float(i) / float(sampleCount);
+        float segmentEnd = backTMax * float(i + 1) / float(sampleCount);
+        float segmentLength = segmentEnd - segmentStart;
+        if (segmentLength <= 1.0e-6) {
+            continue;
+        }
+
         float jitter = pc.jitterStrength != 0.0 ? (rnd(seed) - 0.5) * pc.jitterStrength : 0.0;
-        float t = (float(i) + temporalJitter + jitter) * stepSize;
-        t = clamp(t, 0.0, tMax);
+        float samplePhase = saturate(temporalJitter + jitter);
+        float t = lerp(segmentStart, segmentEnd, samplePhase);
 
         float3 sampleRebasedPos = rayOrigin + rayDir * t;
         float3 sampleWorldPos = sampleRebasedPos + pc.terrainOrigin;
 
         // Froxel UVW
         float4 clip = mul(worldPush.curViewProj, float4(sampleRebasedPos - worldPush.camOffset, 1.0));
-        if (clip.w <= 0.0) continue;
+        if (clip.w <= 0.0) {
+            continue;
+        }
         float2 sampleNdc = clip.xy / clip.w;
         float2 sampleUv = sampleNdc * 0.5 + 0.5;
         float nearP = max(pc.nearPlane, 0.1);
         float farP = max(pc.farPlane, nearP + 1.0);
-        float linear01 = log(t / nearP) / log(farP / nearP);
+        float safeT = max(t, nearP);
+        float linear01 = log(safeT / nearP) / log(farP / nearP);
         linear01 = saturate(linear01);
         float3 froxelUv = float3(sampleUv, linear01);
         float4 froxel = froxelVolume.SampleLevel(froxelUv, 0.0);
@@ -261,6 +332,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         scatteringCoeff *= heightFactor;
 
         if (extinction <= 1.0e-6 && max(scatteringCoeff.r, max(scatteringCoeff.g, scatteringCoeff.b)) <= 1.0e-6) {
+            if (!frontCaptured && frontTMax <= segmentEnd) {
+                frontScattering = accumScattering;
+                frontTransmittance = accumTransmittance;
+                frontCaptured = true;
+            }
             continue;
         }
 
@@ -280,16 +356,33 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             lighting += phaseMoon * moonIllum * moonShadow.transmittance;
         }
 
-        float3 inScattering = scatteringCoeff * lighting * stepSize;
+        if (!frontCaptured && frontTMax <= segmentEnd) {
+            float frontSegmentLength = clamp(frontTMax - segmentStart, 0.0, segmentLength);
+            float3 frontInScattering = scatteringCoeff * lighting * frontSegmentLength;
+            float frontStepTrans = exp(-extinction * frontSegmentLength);
+            frontScattering = accumScattering + frontInScattering * accumTransmittance;
+            frontTransmittance = accumTransmittance * frontStepTrans;
+            frontCaptured = true;
+        }
 
-        float stepTrans = exp(-extinction * stepSize);
+        float3 inScattering = scatteringCoeff * lighting * segmentLength;
+        float stepTrans = exp(-extinction * segmentLength);
         accumScattering += inScattering * accumTransmittance;
         accumTransmittance *= stepTrans;
-        if (accumTransmittance < 0.01) break;
+        if (accumTransmittance < 0.01) {
+            break;
+        }
     }
 
-    // Preserve the primary-layer depth alongside the low-res fog so the display pass can
-    // depth-aware upsample the fog buffer instead of smearing silhouettes into a camera-following sheet.
-    fogOutput[pix] = float4(accumScattering, accumTransmittance);
-    fogDepthOutput[pix] = ndcDepth;
+    if (!frontCaptured) {
+        frontScattering = accumScattering;
+        frontTransmittance = accumTransmittance;
+    }
+
+    // Preserve both the front and back representative fog layers for this low-res texel, plus the two
+    // guide-depth layers they were integrated to, so the display pass can choose the layer matching the
+    // full-res scene depth instead of smearing one collapsed solution across silhouettes.
+    fogFrontOutput[pix] = float4(frontScattering, frontTransmittance);
+    fogBackOutput[pix] = float4(accumScattering, accumTransmittance);
+    fogDepthOutput[pix] = float2(depthLayers.frontDepth, depthLayers.backDepth);
 }
