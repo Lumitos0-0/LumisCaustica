@@ -1,7 +1,8 @@
 // Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR,
-// via baked ACES 2.0 display-transform LUTs (see tools/bake_display_lut.py). Tonemap seam: the path tracer and DLSS-RR use scene-linear
-// ACEScg; exposure is applied from the compositor-owned 1x1 image right here, followed by the selected
-// scene-referred ACES look (LMT), then the shared ACES 2.0 output transform for each display.
+// via baked ACES 2.0 display-transform LUTs (see tools/bake_display_lut.py). Tonemap seam: the path tracer,
+// volumetric fog composite, and DLSS-RR all stay in scene-linear ACEScg before this pass; exposure is applied
+// from the compositor-owned 1x1 image right here, followed by the selected scene-referred ACES look (LMT),
+// then the shared ACES 2.0 output transform for each display.
 
 import display_common;
 import bindings;
@@ -141,107 +142,6 @@ float3 tonemapHdr(float3 lookedAcesCg) {
     return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);
 }
 
-float fogDepthMismatch(float sceneDepth, float fogDepth) {
-    bool sceneSky = sceneDepth <= 1.0e-6;
-    bool fogSky = fogDepth <= 1.0e-6;
-    if (sceneSky || fogSky) {
-        return sceneSky == fogSky ? 0.0 : 1.0;
-    }
-    return abs(sceneDepth - fogDepth);
-}
-
-float4 chooseFogLayer(float sceneDepth, float2 fogDepths, float4 fogFront, float4 fogBack,
-                      out float bestMismatch) {
-    float frontMismatch = fogDepthMismatch(sceneDepth, fogDepths.x);
-    float backMismatch = fogDepthMismatch(sceneDepth, fogDepths.y);
-    bool useBack = backMismatch + 1.0e-6 < frontMismatch;
-    bestMismatch = useBack ? backMismatch : frontMismatch;
-    return useBack ? fogBack : fogFront;
-}
-
-float4 sampleFog(int2 pix, uint w, uint h) {
-    if (pc.fogEnabled == 0) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    uint fogW, fogH;
-    fogFrontImage.GetDimensions(fogW, fogH);
-    float2 uv = (float2(pix) + 0.5) / float2(w, h);
-
-    // A low-res fog texel can straddle two distinct depth layers at silhouettes (foreground surface plus
-    // background/sky). The integration pass therefore stores both a front and back fog solution per texel;
-    // the display pass picks whichever layer matches the full-res scene depth best before doing the usual
-    // depth-aware bilateral upsample. This attacks the representative-depth failure directly instead of
-    // trying to recover a lost layer from a single low-res fog sample.
-    float sceneDepth = sceneDepthImage.SampleLevel(uv, 0.0).r;
-    float2 fogTexelPos = uv * float2(fogW, fogH);
-    float2 fogPos = fogTexelPos - 0.5;
-    int2 base = int2(floor(fogPos));
-    float2 fracPos = frac(fogPos);
-
-    float4 accum = float4(0.0, 0.0, 0.0, 0.0);
-    float totalWeight = 0.0;
-    float bestMismatch = 1.0e9;
-    float4 bestFog = float4(0.0, 0.0, 0.0, 1.0);
-
-    [unroll]
-    for (int oy = 0; oy < 2; ++oy) {
-        [unroll]
-        for (int ox = 0; ox < 2; ++ox) {
-            int2 coord = clamp(base + int2(ox, oy), int2(0, 0), int2(int(fogW), int(fogH)) - 1);
-            float2 fogUv = (float2(coord) + 0.5) / float2(fogW, fogH);
-            float2 fogDepths = fogDepthImage.SampleLevel(fogUv, 0.0).rg;
-            float4 fogFront = fogFrontImage.SampleLevel(fogUv, 0.0);
-            float4 fogBack = fogBackImage.SampleLevel(fogUv, 0.0);
-            float mismatch;
-            float4 fog = chooseFogLayer(sceneDepth, fogDepths, fogFront, fogBack, mismatch);
-            float bilinear = (ox != 0 ? fracPos.x : 1.0 - fracPos.x)
-                    * (oy != 0 ? fracPos.y : 1.0 - fracPos.y);
-            if (mismatch < bestMismatch) {
-                bestMismatch = mismatch;
-                bestFog = fog;
-            }
-            float depthWeight = exp2(-mismatch * 512.0);
-            float weight = bilinear * depthWeight;
-            accum += fog * weight;
-            totalWeight += weight;
-        }
-    }
-
-    if (totalWeight >= 0.35) {
-        return accum / totalWeight;
-    }
-
-    float4 wideAccum = float4(0.0, 0.0, 0.0, 0.0);
-    float wideWeight = 0.0;
-    int2 center = int2(floor(fogPos + 0.5));
-    [unroll]
-    for (int oy = -1; oy <= 1; ++oy) {
-        [unroll]
-        for (int ox = -1; ox <= 1; ++ox) {
-            int2 coord = clamp(center + int2(ox, oy), int2(0, 0), int2(int(fogW), int(fogH)) - 1);
-            float2 fogUv = (float2(coord) + 0.5) / float2(fogW, fogH);
-            float2 fogDepths = fogDepthImage.SampleLevel(fogUv, 0.0).rg;
-            float4 fogFront = fogFrontImage.SampleLevel(fogUv, 0.0);
-            float4 fogBack = fogBackImage.SampleLevel(fogUv, 0.0);
-            float mismatch;
-            float4 fog = chooseFogLayer(sceneDepth, fogDepths, fogFront, fogBack, mismatch);
-            if (mismatch < bestMismatch) {
-                bestMismatch = mismatch;
-                bestFog = fog;
-            }
-            float2 delta = (float2(coord) + 0.5) - fogTexelPos;
-            float spatialWeight = exp2(-dot(delta, delta));
-            float depthWeight = 1.0 / (mismatch + 1.0e-5);
-            float weight = spatialWeight * depthWeight;
-            wideAccum += fog * weight;
-            wideWeight += weight;
-        }
-    }
-
-    return wideWeight > 1.0e-5 ? wideAccum / wideWeight : bestFog;
-}
-
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -253,15 +153,9 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     float4 rt = rtImage[pix];
-    float4 fog = sampleFog(pix, w, h);
-    float3 fogScattering = fog.rgb;
-    float fogTransmittance = fog.a;
-
-    // Composite volumetric fog: scene * transmittance + scattering, both in scene-linear ACEScg
-    float3 foggedScene = rt.rgb * fogTransmittance + fogScattering;
 
     float exposure = max(exposureImage[int2(0, 0)], 0.0);
-    float3 exposedAcesCg = max(foggedScene * exposure, float3(0.0));
+    float3 exposedAcesCg = max(rt.rgb * exposure, float3(0.0));
     exposedAcesCg += sampleBloom(pix, w, h) * max(pc.bloomStrength, 0.0);
     float3 lookedAcesCg = applyLook(exposedAcesCg);
     outputImage[pix] = float4(tonemap(lookedAcesCg), 1.0);

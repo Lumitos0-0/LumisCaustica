@@ -649,9 +649,8 @@ public final class RtComposite {
             }
             ensureOutput(ctx, width, height);
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
-                // Fog integrates against the guide-depth image, so never run it above guide resolution;
-                // also keep the target dynamically aligned with the current quality level even when the
-                // window size itself did not change.
+                // Fog now follows render/guide resolution exactly so depth edges line up before RR; still
+                // refresh its internal images every frame because quality toggles can resize them live.
                 volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
                 volumetricFog.setInjectionImage();
             }
@@ -660,40 +659,9 @@ public final class RtComposite {
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
             RtToneLut boundLookLut = lookLut;
-            long fogFrontViewComp;
-            long fogFrontSamplerComp;
-            long fogBackViewComp;
-            long fogBackSamplerComp;
-            long fogDepthViewComp;
-            long fogDepthSamplerComp;
-            long sceneDepthViewComp = gDepth.view;
-            long sceneDepthSamplerComp;
-            if (volumetricFog != null && volumetricFog.fogFrontImage() != null
-                    && volumetricFog.fogBackImage() != null && volumetricFog.fogDepthImage() != null
-                    && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
-                fogFrontViewComp = volumetricFog.fogFrontImage().view;
-                fogFrontSamplerComp = volumetricFog.nearestSampler();
-                fogBackViewComp = volumetricFog.fogBackImage().view;
-                fogBackSamplerComp = volumetricFog.nearestSampler();
-                fogDepthViewComp = volumetricFog.fogDepthImage().view;
-                fogDepthSamplerComp = volumetricFog.nearestSampler();
-                sceneDepthSamplerComp = volumetricFog.nearestSampler();
-            } else {
-                fogFrontViewComp = bloomLevels[0].view;
-                fogFrontSamplerComp = bloomPipeline.sampler();
-                fogBackViewComp = bloomLevels[0].view;
-                fogBackSamplerComp = bloomPipeline.sampler();
-                fogDepthViewComp = gDepth.view;
-                fogDepthSamplerComp = bloomPipeline.sampler();
-                sceneDepthSamplerComp = bloomPipeline.sampler();
-            }
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
-                    fogFrontViewComp, fogFrontSamplerComp,
-                    fogBackViewComp, fogBackSamplerComp,
-                    fogDepthViewComp, fogDepthSamplerComp,
-                    sceneDepthViewComp, sceneDepthSamplerComp);
+                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -1027,40 +995,9 @@ public final class RtComposite {
             volumetricFog.ensureImages(width, height, renderW, renderH);
             volumetricFog.setInjectionImage();
         }
-        long fogFrontView;
-        long fogFrontSampler;
-        long fogBackView;
-        long fogBackSampler;
-        long fogDepthView;
-        long fogDepthSampler;
-        long sceneDepthView = gDepth.view;
-        long sceneDepthSampler;
-        if (volumetricFog != null && volumetricFog.fogFrontImage() != null
-                && volumetricFog.fogBackImage() != null && volumetricFog.fogDepthImage() != null) {
-            fogFrontView = volumetricFog.fogFrontImage().view;
-            fogFrontSampler = volumetricFog.nearestSampler();
-            fogBackView = volumetricFog.fogBackImage().view;
-            fogBackSampler = volumetricFog.nearestSampler();
-            fogDepthView = volumetricFog.fogDepthImage().view;
-            fogDepthSampler = volumetricFog.nearestSampler();
-            sceneDepthSampler = volumetricFog.nearestSampler();
-        } else {
-            // Dummy fallbacks for the optional fog inputs. The display shader never reads them when fog is disabled.
-            fogFrontView = bloomLevels[0].view;
-            fogFrontSampler = bloomPipeline.sampler();
-            fogBackView = bloomLevels[0].view;
-            fogBackSampler = bloomPipeline.sampler();
-            fogDepthView = gDepth.view;
-            fogDepthSampler = bloomPipeline.sampler();
-            sceneDepthSampler = bloomPipeline.sampler();
-        }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
-                fogFrontView, fogFrontSampler,
-                fogBackView, fogBackSampler,
-                fogDepthView, fogDepthSampler,
-                sceneDepthView, sceneDepthSampler);
+                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -1289,43 +1226,21 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
-            // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
-            // RR reads them and writes the display-res denoised result straight into rrOutput.
-            if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
-                    rrDone = RtDlssRr.INSTANCE.evaluate(cmd.address(), output, gDepth, gMotion, gAlbedo,
-                            gSpecAlbedo, gNormal, gSpecMotion, rrOutput, renderW, renderH, displayW, displayH,
-                            -jitterX, -jitterY, frameViewRotation, frameProjection);
-                }
-            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // trace color + guides visible to fog compositing
 
-            // When DLSS-RR did not produce the display-res image (disabled or a runtime failure), bring
-            // the render-res trace up to display res with a linear blit so the display mapper and
-            // downstream debug pass always have a valid display-res scene image. With RR off
-            // render == display, so this is a 1:1 copy.
-            if (!rrDone) {
-                VulkanCommandEncoder.memoryBarrier(cmd, stack);
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fallback upscale");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.upscale")) {
-                    blitUpscale(cmd, stack, output, rrOutput);
-                }
-            }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog + exposure
-
-            // ---- Volumetric fog: injection + integration with HW RT shadows for crepuscular rays ----
+            // ---- Volumetric fog: injection + per-pixel integration BEFORE RR/upscale ----
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFog")) {
-                    // Re-evaluate fog targets every frame: quality toggles can change the fog buffer
-                    // size without a window resize, and the buffer should never exceed guide resolution.
+                    // Re-evaluate fog resources every frame: quality toggles can still resize the froxel
+                    // volume without a window resize, while the actual fog composite now runs at guide/render
+                    // resolution so silhouette depth edges match the traced scene one-to-one before RR.
                     volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
                     volumetricFog.setInjectionImage();
                     long blockAlbedoView = boundBlockAlbedoAtlasHandle;
                     long blockSampler = atlasSampler(ctx);
-                    // Bind TLAS + froxel + gDepth + fogOutput + blockAlbedo
-                    volumetricFog.setIntegrationImages(frameTlas.accel.handle, gDepth.view, blockAlbedoView, blockSampler);
+                    // Bind TLAS + froxel + render-res guide depth + render-res scene color + block albedo.
+                    volumetricFog.setIntegrationImages(frameTlas.accel.handle, gDepth.view, output.view, blockAlbedoView, blockSampler);
 
                     float[] terrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
                     float[] camWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
@@ -1373,15 +1288,40 @@ public final class RtComposite {
                     volumetricFog.dispatchInjection(cmd, pushBuf.deviceAddress, (int) frameCounter, terrainOrigin, camWorldPos, jitterOffset);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
-                    // Integration
+                    // Integration + in-place compositing into the render-resolution scene color.
                     volumetricFog.dispatchIntegration(cmd,
                             pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
-                            displayW, displayH, (int) frameCounter, exposure.preExposure(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
                             terrainOrigin, camWorldPos, jitterOffset,
                             sunDir, sunIllum, moonDir, moonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 }
             }
+
+            // DLSS-RR denoise + upscale. The render-res scene already includes volumetric fog, so RR sees
+            // the same depth-aligned fogged image the final display will use instead of resolving fog after
+            // reconstruction from a separate low-res buffer.
+            if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
+                    rrDone = RtDlssRr.INSTANCE.evaluate(cmd.address(), output, gDepth, gMotion, gAlbedo,
+                            gSpecAlbedo, gNormal, gSpecMotion, rrOutput, renderW, renderH, displayW, displayH,
+                            -jitterX, -jitterY, frameViewRotation, frameProjection);
+                }
+            }
+
+            // When DLSS-RR did not produce the display-res image (disabled or a runtime failure), bring
+            // the already-fogged render-res trace up to display res with a linear blit so the display mapper
+            // and downstream debug pass always have a valid display-res scene image. With RR off render ==
+            // display, so this is a 1:1 copy.
+            if (!rrDone) {
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fallback upscale");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.upscale")) {
+                    blitUpscale(cmd, stack, output, rrOutput);
+                }
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure + display mapping
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1408,10 +1348,9 @@ public final class RtComposite {
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
-                boolean fogEnabled = volumetricFog != null && volumetricFog.fogFrontImage() != null && volumetricFog.fogBackImage() != null && volumetricFog.fogDepthImage() != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value();
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
-                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length, fogEnabled);
+                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite

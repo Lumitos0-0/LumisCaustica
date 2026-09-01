@@ -6,7 +6,3 @@
 [[vk::binding(5, 0)]] public Sampler3D hdrToneLut;
 [[vk::binding(6, 0)]] public Sampler3D lookLut;
 [[vk::binding(7, 0)]] public Sampler2D bloomImage;
-[[vk::binding(8, 0)]] public Sampler2D fogFrontImage;
-[[vk::binding(9, 0)]] public Sampler2D fogBackImage;
-[[vk::binding(10, 0)]] public Sampler2D fogDepthImage;
-[[vk::binding(11, 0)]] public Sampler2D sceneDepthImage;

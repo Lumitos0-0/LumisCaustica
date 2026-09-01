@@ -11,10 +11,8 @@ import volumetric_fog_common;
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
 [[vk::binding(1, 0)]] Sampler3D froxelVolume;
 [[vk::binding(2, 0)]] Sampler2D gDepth;
-[[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> fogFrontOutput;
+[[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> sceneImage;
 [[vk::binding(4, 0)]] Sampler2D blockAlbedoAtlas;
-[[vk::binding(5, 0)]] [format("rg32f")] RWTexture2D<float2> fogDepthOutput;
-[[vk::binding(6, 0)]] [format("rgba16f")] RWTexture2D<float4> fogBackOutput;
 
 static const float PI = 3.14159265359;
 static const uint CULL_SECONDARY = 0x01u;
@@ -62,73 +60,6 @@ float linearDepthFromRebased(float3 rebasedPos, WorldPush worldPush) {
 }
 
 static const float SKY_DEPTH_EPSILON = 1.0e-6;
-
-struct DepthLayers {
-    float frontDepth;
-    float backDepth;
-};
-
-void accumulateDepthLayer(float depth,
-                          inout bool hasSurface,
-                          inout bool hasSky,
-                          inout float nearestSurfaceDepth,
-                          inout float farthestSurfaceDepth) {
-    if (depth <= SKY_DEPTH_EPSILON) {
-        hasSky = true;
-        return;
-    }
-    if (!hasSurface) {
-        hasSurface = true;
-        nearestSurfaceDepth = depth;
-        farthestSurfaceDepth = depth;
-        return;
-    }
-    // Reversed-Z guide depth: larger = nearer.
-    nearestSurfaceDepth = max(nearestSurfaceDepth, depth);
-    farthestSurfaceDepth = min(farthestSurfaceDepth, depth);
-}
-
-DepthLayers selectGuideDepthLayers(float2 uv, float2 invFogSize) {
-    bool hasSurface = false;
-    bool hasSky = false;
-    float nearestSurfaceDepth = 0.0;
-    float farthestSurfaceDepth = 0.0;
-    float centerDepth = gDepth.SampleLevel(uv, 0.0).r;
-
-    accumulateDepthLayer(centerDepth,
-            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
-
-    float2 footprint = invFogSize * 0.5;
-    accumulateDepthLayer(gDepth.SampleLevel(uv + float2(-footprint.x, -footprint.y), 0.0).r,
-            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
-    accumulateDepthLayer(gDepth.SampleLevel(uv + float2( footprint.x, -footprint.y), 0.0).r,
-            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
-    accumulateDepthLayer(gDepth.SampleLevel(uv + float2(-footprint.x,  footprint.y), 0.0).r,
-            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
-    accumulateDepthLayer(gDepth.SampleLevel(uv + float2( footprint.x,  footprint.y), 0.0).r,
-            hasSurface, hasSky, nearestSurfaceDepth, farthestSurfaceDepth);
-
-    DepthLayers layers;
-    if (!hasSurface) {
-        layers.frontDepth = 0.0;
-        layers.backDepth = 0.0;
-        return layers;
-    }
-
-    layers.frontDepth = nearestSurfaceDepth;
-    if (centerDepth > SKY_DEPTH_EPSILON && abs(centerDepth - layers.frontDepth) >= 1.0e-4) {
-        // Preserve the centre sample as the secondary layer when it differs from the nearest blocker:
-        // a thin foreground silhouette over distant terrain wants {foreground, terrain}, not {foreground, sky}.
-        layers.backDepth = centerDepth;
-    } else {
-        layers.backDepth = hasSky ? 0.0 : farthestSurfaceDepth;
-    }
-    if (layers.backDepth > SKY_DEPTH_EPSILON
-            && abs(layers.frontDepth - layers.backDepth) < 1.0e-4) {
-        layers.backDepth = layers.frontDepth;
-    }
-    return layers;
-}
 
 float depthToMarchDistance(float2 ndc, float depth, WorldPush worldPush) {
     if (depth <= SKY_DEPTH_EPSILON) {
@@ -340,16 +271,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 rayDir = primaryRayDirFromPush(jndc, worldPush);
     float3 rayOrigin = worldPush.camOffset;
 
-    // Sample gDepth using NDC -> UV. The guide buffer stores reversed-Z NDC depth: near=1, far=0, and
-    // actual sky pixels are only the exact far clear (~0), not every distant surface. Store TWO
-    // representative layers per fog texel: the nearest surface in its footprint, and either the farthest
-    // surface or sky behind it. This keeps silhouette/background ambiguity alive until the final display
-    // composite instead of collapsing the entire fog texel to one depth here.
-    float2 gDepthUv = jndc * 0.5 + 0.5;
-    DepthLayers depthLayers = selectGuideDepthLayers(gDepthUv, pc.invDisplaySize);
-    float frontTMax = depthToMarchDistance(jndc, depthLayers.frontDepth, worldPush);
-    float backTMax = depthToMarchDistance(jndc, depthLayers.backDepth, worldPush);
-    backTMax = max(backTMax, frontTMax);
+    // March fog against the SAME per-pixel render-resolution guide depth the tracer and DLSS-RR already
+    // use, then composite directly into the render-resolution scene before reconstruction. This removes
+    // the low-res/post-upscale resolve stage that was still producing silhouette stair-steps even after
+    // the earlier two-layer fixes.
+    float2 gDepthUv = uv;
+    float sceneDepth = gDepth.SampleLevel(gDepthUv, 0.0).r;
+    float tMax = depthToMarchDistance(jndc, sceneDepth, worldPush);
 
     int sampleCount = max(pc.sampleCount, 1);
     uint seed = pix.x * 1973u + pix.y * 9277u + pc.frameIndex * 2654435761u;
@@ -364,27 +292,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     bool sunEnabled = max(sunIllum.r, max(sunIllum.g, sunIllum.b)) > 1.0e-6;
     bool moonEnabled = max(moonIllum.r, max(moonIllum.g, moonIllum.b)) > 1.0e-6;
 
-    // The first two-layer version captured the front layer by truncating the BACK march. That preserved
-    // depth ambiguity, but it also meant a near foreground layer inherited the much coarser sample spacing
-    // of a far background/sky march, leaving staircase-like fog edges. Integrate each layer with its own
-    // full sample budget so the foreground silhouette keeps the same per-meter march density as a normal
-    // single-layer fog pixel.
-    FogIntegralResult frontFog = integrateFogRay(rayOrigin, rayDir, frontTMax, sampleCount,
+    FogIntegralResult fog = integrateFogRay(rayOrigin, rayDir, tMax, sampleCount,
             seed, temporalJitter, worldPush,
             sunEnabled, moonEnabled, sunDir, moonDir, sunIllum, moonIllum);
-    FogIntegralResult backFog = frontFog;
-    bool distinctLayers = abs(frontTMax - backTMax) > 1.0e-3
-            || abs(depthLayers.frontDepth - depthLayers.backDepth) > 1.0e-4;
-    if (distinctLayers) {
-        backFog = integrateFogRay(rayOrigin, rayDir, backTMax, sampleCount,
-                seed ^ 0x9E3779B9u, temporalJitter, worldPush,
-                sunEnabled, moonEnabled, sunDir, moonDir, sunIllum, moonIllum);
-    }
 
-    // Preserve both the front and back representative fog layers for this low-res texel, plus the two
-    // guide-depth layers they were integrated to, so the display pass can choose the layer matching the
-    // full-res scene depth instead of smearing one collapsed solution across silhouettes.
-    fogFrontOutput[pix] = float4(frontFog.scattering, frontFog.transmittance);
-    fogBackOutput[pix] = float4(backFog.scattering, backFog.transmittance);
-    fogDepthOutput[pix] = float2(depthLayers.frontDepth, depthLayers.backDepth);
+    float4 scene = sceneImage[pix];
+    sceneImage[pix] = float4(scene.rgb * fog.transmittance + fog.scattering, scene.a);
 }
