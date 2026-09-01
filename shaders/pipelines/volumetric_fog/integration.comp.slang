@@ -10,7 +10,7 @@ import volumetric_fog_common;
 // Bindings - set 0
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
 [[vk::binding(1, 0)]] Sampler3D froxelVolume;
-[[vk::binding(2, 0)]] Sampler2D gDepth;
+[[vk::binding(2, 0)]] Sampler2D fogDepthGuide;
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> sceneImage;
 [[vk::binding(4, 0)]] Sampler2D blockAlbedoAtlas;
 
@@ -271,12 +271,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 rayDir = primaryRayDirFromPush(jndc, worldPush);
     float3 rayOrigin = worldPush.camOffset;
 
-    // March fog against the SAME per-pixel render-resolution guide depth the tracer and DLSS-RR already
-    // use, then composite directly into the render-resolution scene before reconstruction. This removes
-    // the low-res/post-upscale resolve stage that was still producing silhouette stair-steps even after
-    // the earlier two-layer fixes.
+    // March fog against a dedicated render-resolution fog-stop depth guide. Most pixels reuse the RR guide
+    // depth, but water locks this to the first water interface so aerial fog does not leak through water
+    // volumes while thin transmissive materials can still reveal fogged air behind them. This still keeps
+    // the pre-RR direct composite that fixed the low-res/post-upscale silhouette stair-steps.
     float2 gDepthUv = uv;
-    float sceneDepth = gDepth.SampleLevel(gDepthUv, 0.0).r;
+    float sceneDepth = fogDepthGuide.SampleLevel(gDepthUv, 0.0).r;
     float tMax = depthToMarchDistance(jndc, sceneDepth, worldPush);
 
     int sampleCount = max(pc.sampleCount, 1);

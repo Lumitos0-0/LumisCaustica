@@ -30,7 +30,7 @@ abstract class GenerateRtBindings extends DefaultTask {
             [prefix: "WORLD", source: "pipelines/world/indirect.rgen.slang", resources: [
                     TLAS: "topLevelAS", OUTPUT: "outImage", BLOCK_ALBEDO: "blockAlbedoAtlas",
                     G_NORMAL: "gNormal", G_ALBEDO: "gAlbedo", G_DEPTH: "gDepth", G_MOTION: "gMotion",
-                    G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
+                    G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion", G_FOG_DEPTH: "gFogDepth",
                     CELESTIALS: "celestialsAtlas", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut",
                     ENTITY_ALBEDO: "entityAlbedoTex", MATERIAL_SURFACE0: "materialSurface0Tex",
                     MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],

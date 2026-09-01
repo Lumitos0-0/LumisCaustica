@@ -58,7 +58,7 @@ public final class RtVolumetricFog {
     private RtImage froxelVolume;
 
     private long boundFroxelView;
-    private long boundGDepthView;
+    private long boundFogDepthView;
     private long boundSceneColorView;
     private long boundBlockAlbedoView;
     private boolean destroyed;
@@ -235,7 +235,7 @@ public final class RtVolumetricFog {
             if (froxelVolume != null) froxelVolume.destroy();
             froxelVolume = ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel volume");
             boundFroxelView = 0L;
-            boundGDepthView = 0L;
+            boundFogDepthView = 0L;
             boundSceneColorView = 0L;
             boundBlockAlbedoView = 0L;
         }
@@ -260,7 +260,7 @@ public final class RtVolumetricFog {
         boundFroxelView = froxelVolume.view;
     }
 
-    public void setIntegrationImages(long tlas, long gDepthView, long sceneColorView, long blockAlbedoView, long blockAlbedoSampler) {
+    public void setIntegrationImages(long tlas, long fogDepthView, long sceneColorView, long blockAlbedoView, long blockAlbedoSampler) {
         if (froxelVolume == null) return;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkWriteDescriptorSetAccelerationStructureKHR tlasInfo = VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
@@ -278,7 +278,7 @@ public final class RtVolumetricFog {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(froxelInfo);
 
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
-            depthInfo.get(0).imageView(gDepthView).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            depthInfo.get(0).imageView(fogDepthView).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             writes.get(2).sType$Default().dstSet(integrationSet).dstBinding(2)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
 
@@ -294,7 +294,7 @@ public final class RtVolumetricFog {
 
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
-        boundGDepthView = gDepthView;
+        boundFogDepthView = fogDepthView;
         boundSceneColorView = sceneColorView;
         boundBlockAlbedoView = blockAlbedoView;
     }

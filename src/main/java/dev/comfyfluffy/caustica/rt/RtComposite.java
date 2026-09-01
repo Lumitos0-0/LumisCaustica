@@ -238,14 +238,15 @@ public final class RtComposite {
     private final Matrix4f fgClipToPrev = new Matrix4f();
     private final Matrix4f fgPrevToClip = new Matrix4f();
     private final Matrix4f fgMatTmp = new Matrix4f();
-    // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
-    // specular albedo, and reflection motion.
+    // Guide buffers (first-hit attributes for DLSS-RR plus fog-specific visibility): normal+roughness,
+    // albedo, depth, motion, specular albedo, reflection motion, and the fog stop depth.
     private RtImage gNormal;
     private RtImage gAlbedo;
     private RtImage gDepth;
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
+    private RtImage gFogDepth;
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -868,6 +869,7 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
+        worldPipeline.setExtraStorageImage(6, gFogDepth.view);
     }
 
     private void destroyGuideImages() {
@@ -894,6 +896,10 @@ public final class RtComposite {
         if (gSpecMotion != null) {
             gSpecMotion.destroy();
             gSpecMotion = null;
+        }
+        if (gFogDepth != null) {
+            gFogDepth.destroy();
+            gFogDepth = null;
         }
         if (rrOutput != null) {
             rrOutput.destroy();
@@ -979,6 +985,7 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
+        gFogDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide fog stop depth " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -1229,7 +1236,7 @@ public final class RtComposite {
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // trace color + guides visible to fog compositing
 
             // ---- Volumetric fog: injection + per-pixel integration BEFORE RR/upscale ----
-            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
+            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFog")) {
                     // Re-evaluate fog resources every frame: quality toggles can still resize the froxel
@@ -1239,8 +1246,8 @@ public final class RtComposite {
                     volumetricFog.setInjectionImage();
                     long blockAlbedoView = boundBlockAlbedoAtlasHandle;
                     long blockSampler = atlasSampler(ctx);
-                    // Bind TLAS + froxel + render-res guide depth + render-res scene color + block albedo.
-                    volumetricFog.setIntegrationImages(frameTlas.accel.handle, gDepth.view, output.view, blockAlbedoView, blockSampler);
+                    // Bind TLAS + froxel + fog-stop depth guide + render-res scene color + block albedo.
+                    volumetricFog.setIntegrationImages(frameTlas.accel.handle, gFogDepth.view, output.view, blockAlbedoView, blockSampler);
 
                     float[] terrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
                     float[] camWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
