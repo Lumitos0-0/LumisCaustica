@@ -166,14 +166,14 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
 
-    uint seed = dispatchId.x * 1973u + dispatchId.y * 9277u + dispatchId.z * 26699u
-            + pc.frameIndex * 2654435761u;
-    float jitterX = (rnd(seed) - 0.5) * pc.jitterStrength;
-    float jitterY = (rnd(seed) - 0.5) * pc.jitterStrength;
+    // The froxel lighting field is reused by many screen-space march samples, so tying its XY footprint to
+    // per-frame camera jitter or per-frame random offsets makes motion reveal blocky/shimmery voxels that a
+    // still camera can only hide through temporal accumulation. Keep the froxel footprint stable in screen
+    // space and only allow a deterministic per-cell depth offset to soften slice banding.
+    uint seed = dispatchId.x * 1973u + dispatchId.y * 9277u + dispatchId.z * 26699u;
     float jitterZ = (rnd(seed) - 0.5) * pc.jitterStrength;
 
-    float2 uv = (float2(dispatchId.xy) + float2(0.5, 0.5) + float2(jitterX, jitterY) + pc.jitterOffset)
-            / float2(dim.xy);
+    float2 uv = (float2(dispatchId.xy) + float2(0.5, 0.5)) / float2(dim.xy);
     float2 ndc = uv * 2.0 - 1.0;
     float3 rayDir = primaryRayDirFroxel(ndc, worldPush);
 

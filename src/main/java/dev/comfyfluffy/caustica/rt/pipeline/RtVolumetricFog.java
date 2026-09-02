@@ -207,13 +207,17 @@ public final class RtVolumetricFog {
     public RtImage froxelVolume() { return froxelVolume; }
 
     private static int effectiveSampleCount() {
-        int qualityCap = switch (CausticaConfig.Rt.VolumetricFog.QUALITY.value()) {
-            case 0 -> 16;
-            case 2 -> 32;
-            case 3 -> 48;
-            default -> 24;
+        // The old limits were tuned for the pre-rewrite path where every integration sample also launched
+        // a shadow/transmission query. After prelighting froxels, the quality tier itself should now buy a
+        // denser view-ray march, because RR can hide some residual error when static but not the coarse
+        // motion-time breakup of an undersampled volume.
+        int qualityFloor = switch (CausticaConfig.Rt.VolumetricFog.QUALITY.value()) {
+            case 0 -> 32;
+            case 2 -> 96;
+            case 3 -> 128;
+            default -> 64;
         };
-        return Math.min(CausticaConfig.Rt.VolumetricFog.SAMPLES.value(), qualityCap);
+        return Math.min(Math.max(CausticaConfig.Rt.VolumetricFog.SAMPLES.value(), qualityFloor), 192);
     }
 
     public void ensureImages(int displayW, int displayH) {
