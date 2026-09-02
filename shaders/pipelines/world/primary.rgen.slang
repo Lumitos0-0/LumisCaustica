@@ -55,6 +55,8 @@ public PathSegment tracePrimary(PathSegment seg,
                 gv_hitCamRel = rd * 1.0e6;
                 gv_motionUseRefracted = false;
                 gv_motionObjDisp = float3(0.0, 0.0, 0.0);
+                gv_fogDepth = 0.0;
+                gv_fogDepthLocked = false;
                 gv_spec = makeSpecSurface(gv_hitCamRel, gv_normal, 1.0, SKY_SPEC_ALBEDO);
             }
             return terminal;
@@ -78,6 +80,8 @@ public PathSegment tracePrimary(PathSegment seg,
                 gv_hitCamRel = hitPos - worldPush.camOffset;
                 gv_motionUseRefracted = false;
                 gv_motionObjDisp = payload.motionPrev;
+                gv_fogDepth = 0.0;
+                gv_fogDepthLocked = false;
                 gv_emissive = payloadEmission() > 0.0;
                 if (material == MATERIAL_PARTICLE) {
                     gv_albedo = hitAlbedo;
@@ -143,6 +147,12 @@ public PathSegment tracePrimary(PathSegment seg,
             gv_hitCamRel = hitPos - worldPush.camOffset;
             gv_motionUseRefracted = false;
             gv_motionObjDisp = isWater ? float3(0.0, 0.0, 0.0) : payload.motionPrev;
+            gv_fogDepth = 0.0;
+            gv_fogDepthLocked = false;
+            if (isWater) {
+                gv_fogDepth = projectCurrentGuideDepth(gv_hitCamRel);
+                gv_fogDepthLocked = true;
+            }
             gv_spec = makeSpecSurface(gv_hitCamRel, n, previousNormal, geometricNormal,
                                       isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
                                       gv_rough, float3(F, F, F));

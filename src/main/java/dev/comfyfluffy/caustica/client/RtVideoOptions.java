@@ -49,7 +49,13 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
-            dlssQuality()
+            dlssQuality(),
+            fogEnabled(),
+            fogQuality(),
+            fogDensity(),
+            fogAnisotropy(),
+            fogSunIntensity(),
+            fogColorTransmission()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
             options.add(hdrEnabled());
@@ -203,6 +209,62 @@ public final class RtVideoOptions {
             new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), Codec.INT),
             Math.clamp(setting.value(), 0, 9),
             setting::set);
+    }
+
+    private static OptionInstance<Boolean> fogEnabled() {
+        return bool("caustica.options.rt.fogEnabled", CausticaConfig.Rt.VolumetricFog.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.VolumetricFog.QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.fogQuality." + value)),
+            new OptionInstance.IntRange(0, 3),
+            Math.clamp(setting.value(), 0, 3),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        FloatSetting setting = CausticaConfig.Rt.VolumetricFog.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDensity.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", hundredths / 1000.0f))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 100),
+            hundredths -> setting.set(hundredths / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> fogAnisotropy() {
+        FloatSetting setting = CausticaConfig.Rt.VolumetricFog.ANISOTROPY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogAnisotropy",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogAnisotropy.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 90),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 90),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogSunIntensity() {
+        FloatSetting setting = CausticaConfig.Rt.VolumetricFog.SUN_INTENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogSunIntensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogSunIntensity.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1f", tenths / 10.0f))),
+            new OptionInstance.IntRange(0, 50),
+            Math.clamp(Math.round(setting.value() * 10.0f), 0, 50),
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Boolean> fogColorTransmission() {
+        return bool("caustica.options.rt.fogColorTransmission", CausticaConfig.Rt.VolumetricFog.COLOR_TRANSMISSION);
     }
 
     private static OptionInstance<Boolean> bool(String captionKey, BooleanSetting setting) {

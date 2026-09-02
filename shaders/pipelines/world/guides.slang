@@ -25,6 +25,13 @@ public static bool gv_motionUseRefracted = false; // true when the MV tracks the
 // World-space displacement of the motion-guide surface since the previous frame (0 for static
 // terrain/sky, an entity's per-vertex/object motion for a dynamic hit).
 public static float3 gv_motionObjDisp = float3(0.0, 0.0, 0.0);
+// Fog uses the same render-res scene depth silhouette fix as RR, but its view-ray stop depth cannot
+// always equal the transmission-replaced guide depth: water should stop aerial fog at the first water
+// interface, while thin dielectrics like glass should still reveal the air/fog behind them.
+public static float gv_fogDepth = 0.0;
+public static bool gv_fogDepthLocked = false;
+public static const float GUIDE_FILTER_CUTOFF = 0.01;
+public static const uint MAX_GUIDE_TRANSMISSIVE_CROSSINGS = 6u;
 // Transmission replaces the ordinary guide tuple with the visible destination, so RR's specular inputs
 // (specular albedo + reflection MV) need the foreground glass/water interface kept separately. This is
 // the surface the reflection physically lives on; for an opaque primary hit it is that hit itself.
@@ -63,7 +70,14 @@ public SpecSurface makeSpecSurface(float3 camRel, float3 normal, float3 motionPr
                             float roughness, float3 albedo) {
     return makeSpecSurface(camRel, normal, normal, normal, motionPrev, roughness, albedo);
 }
-// angle can land behind the eye even though the reflector itself is comfortably in view.
+
+public float projectCurrentGuideDepth(float3 camRel) {
+    float4 clip = mul(worldPush.curViewProj, float4(camRel, 1.0));
+    return clip.w > 0.0 ? clip.z / clip.w : 0.0;
+}
+
+// Project a current world point through the previous frame. Guard the divide because a valid current
+// guide point can land behind the previous eye even though the reflector itself is comfortably in view.
 public float2 projectPrevNdc(float3 worldPos, out bool valid) {
     float4 clip = mul(worldPush.prevViewProj, float4(worldPos - worldPush.camOffset + worldPush.camDelta, 1.0));
     valid = clip.w > 0.0;
@@ -165,6 +179,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
 
     float3 direction = normalize(transmittedDir);
     float3 ro = offsetSurfaceOrigin(surfacePos, surfaceBiasNormal, direction, rayBias);
+    uint transmissiveCrossings = 0u;
 
     // The camera interface consumed bounce 0; the remaining configured bounce budget is the natural
     // cap for deterministic guide crossings too.
@@ -220,6 +235,14 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         }
         if (!isWater && entering) {
             guideFilter *= payloadAlbedo();
+            transmissiveCrossings++;
+            // RR's ordinary guide is not worth chasing through many dark panes: once almost no light is
+            // left, or the stack is already deep, keeping the original foreground interface is both
+            // cheaper and more stable than tracing a barely visible destination farther away.
+            if (max(guideFilter.r, max(guideFilter.g, guideFilter.b)) < GUIDE_FILTER_CUTOFF
+                    || transmissiveCrossings >= MAX_GUIDE_TRANSMISSIVE_CROSSINGS) {
+                return;
+            }
         }
         if (entering) {
             mediumPush(medium, entered);
@@ -278,7 +301,10 @@ public void writeGuides(int2 pix, float3 primaryDir, float2 jndc, float2 size, f
     gNormal[pix] = float4(gv_normal, gv_rough);
     gAlbedo[pix] = float4(gv_albedo, gv_emissive ? 1.0 : 0.0);
     gDepth[pix] = depth;
+    float fogDepth = gv_fogDepthLocked ? gv_fogDepth : depth;
+
     gMotion[pix] = motion;
     gSpecAlbedo[pix] = float4(specAlbedo, 1.0);
     gSpecMotion[pix] = specMotion;
+    gFogDepth[pix] = fogDepth;
 }

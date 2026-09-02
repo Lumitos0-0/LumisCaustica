@@ -63,6 +63,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
+import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetricFog;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
@@ -174,6 +175,7 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtVolumetricFog volumetricFog;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -236,14 +238,15 @@ public final class RtComposite {
     private final Matrix4f fgClipToPrev = new Matrix4f();
     private final Matrix4f fgPrevToClip = new Matrix4f();
     private final Matrix4f fgMatTmp = new Matrix4f();
-    // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
-    // specular albedo, and reflection motion.
+    // Guide buffers (first-hit attributes for DLSS-RR plus fog-specific visibility): normal+roughness,
+    // albedo, depth, motion, specular albedo, reflection motion, and the fog stop depth.
     private RtImage gNormal;
     private RtImage gAlbedo;
     private RtImage gDepth;
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
+    private RtImage gFogDepth;
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -594,6 +597,9 @@ public final class RtComposite {
             if (bloomPipeline == null) {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
+            if (volumetricFog == null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+                volumetricFog = RtVolumetricFog.create(ctx);
+            }
             if (skyLut == null) {
                 // Normally already created by ensureWorld before the pipeline exists at all; this only
                 // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
@@ -643,6 +649,12 @@ public final class RtComposite {
                 }
             }
             ensureOutput(ctx, width, height);
+            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+                // Fog now follows render/guide resolution exactly so depth edges line up before RR; still
+                // refresh its internal images every frame because quality toggles can resize them live.
+                volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
+                volumetricFog.setInjectionImage();
+            }
             // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
@@ -833,6 +845,9 @@ public final class RtComposite {
         reloadRebindRequested = true;
         materialBindingsReady = false;
         setCelestialUvAtlas(0L);
+        if (volumetricFog != null) {
+            volumetricFog.invalidateHistory();
+        }
         RtEntities.INSTANCE.onResourceReload();
         RtContext ctx = RtContext.currentOrNull();
         if (ctx != null) {
@@ -857,6 +872,7 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
+        worldPipeline.setExtraStorageImage(6, gFogDepth.view);
     }
 
     private void destroyGuideImages() {
@@ -883,6 +899,10 @@ public final class RtComposite {
         if (gSpecMotion != null) {
             gSpecMotion.destroy();
             gSpecMotion = null;
+        }
+        if (gFogDepth != null) {
+            gFogDepth.destroy();
+            gFogDepth = null;
         }
         if (rrOutput != null) {
             rrOutput.destroy();
@@ -968,6 +988,7 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
+        gFogDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide fog stop depth " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -979,6 +1000,11 @@ public final class RtComposite {
             bindGuideImages();
         }
         RtToneLut boundLookLut = lookLut;
+        // Volumetric fog images
+        if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value()) {
+            volumetricFog.ensureImages(width, height, renderW, renderH);
+            volumetricFog.setInjectionImage();
+        }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                 boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
@@ -1210,9 +1236,97 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
-            // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
-            // RR reads them and writes the display-res denoised result straight into rrOutput.
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // trace color + guides visible to fog/RR
+
+            float[] fogTerrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
+            float[] fogCamWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
+            float[] fogJitterOffset = new float[]{jitterX, jitterY};
+
+            // Sun / moon directions from same celestial math as sky.slang: celestialDirection(angle, tilt)
+            // dir = (-sin(angle), cos(tilt)*cos(angle), sin(tilt)*cos(angle))
+            float sunAngle = sky.celestial().x();
+            float moonAngle = sky.celestial().y();
+            float sunTilt = sky.look1().x();
+            float cosTilt = (float) Math.cos(sunTilt);
+            float sinTilt = (float) Math.sin(sunTilt);
+            float sinSun = (float) Math.sin(sunAngle);
+            float cosSun = (float) Math.cos(sunAngle);
+            float sinMoon = (float) Math.sin(moonAngle);
+            float cosMoon = (float) Math.cos(moonAngle);
+            float[] fogSunDir = new float[]{-sinSun, cosTilt * cosSun, sinTilt * cosSun};
+            float[] fogMoonDir = new float[]{-sinMoon, cosTilt * cosMoon, sinTilt * cosMoon};
+
+            float sunIllumLux = sky.look0().x();
+            float moonIllumLux = sky.look0().y();
+            float phaseFixed = sky.look1().w();
+            float moonPhaseIdx = sky.look2().w();
+            float moonLitFrac = Math.abs(moonPhaseIdx - 4.0f) / 4.0f;
+            float moonIllumFactor = phaseFixed + (1.0f - phaseFixed) * moonLitFrac;
+
+            // Feed the fog pass the same scene-referred illuminance scale the rest of the renderer reasons
+            // about, then let the fog composite bring that radiance into the traced buffer's pre-exposed
+            // storage space. The shader still applies pc.sunIntensity / pc.moonIntensity from the push
+            // constants, so do not multiply the config again here or the user-facing intensity sliders square.
+            float fogSunScale = fogSunDir[1] > 0.0f ? Math.max(sunIllumLux, 0.0f) : 0.0f;
+            float fogMoonScale = fogMoonDir[1] > 0.0f
+                    ? Math.max(moonIllumLux * moonIllumFactor, 0.0f) : 0.0f;
+            // Match the path tracer's direct-light model: one dominant celestial at a time. This removes
+            // wasted duplicate fog lighting work and keeps the fog lit by the same dominant body.
+            if (fogSunScale >= fogMoonScale) {
+                fogMoonScale = 0.0f;
+            } else {
+                fogSunScale = 0.0f;
+            }
+            float[] fogSunIllum = new float[]{fogSunScale, fogSunScale, fogSunScale};
+            float[] fogMoonIllum = new float[]{fogMoonScale, fogMoonScale, fogMoonScale};
+
+            boolean fogPreparedThisFrame = false;
+
+            // ---- Volumetric fog froxel work BEFORE RR/upscale ----
+            // The local froxel field is still injected and temporally resolved first, but now we immediately
+            // prefix-integrate each XY column into a second cumulative volume. That moves the structural
+            // cleanup step into froxel space instead of trying to repair the raw lattice later with an
+            // expensive per-pixel fullscreen march.
+            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog injection");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogInject")) {
+                    volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
+                    volumetricFog.setInjectionImage();
+                    long blockAlbedoView = boundBlockAlbedoAtlasHandle;
+                    long blockSampler = atlasSampler(ctx);
+                    volumetricFog.setInjectionTracingResources(frameTlas.accel.handle, blockAlbedoView, blockSampler);
+                    volumetricFog.dispatchInjection(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog resolve");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogResolve")) {
+                    volumetricFog.setResolveImages();
+                    volumetricFog.dispatchResolve(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog integration");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogIntegrate")) {
+                    volumetricFog.setIntegrationImages();
+                    volumetricFog.dispatchIntegration(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    fogPreparedThisFrame = true;
+                }
+            }
+
+            // DLSS-RR denoise + upscale. Fog lighting and its column integration stay before RR, while the
+            // final fog composite runs afterwards as a single depth-aware lookup into the cumulative volume.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
@@ -1223,9 +1337,9 @@ public final class RtComposite {
             }
 
             // When DLSS-RR did not produce the display-res image (disabled or a runtime failure), bring
-            // the render-res trace up to display res with a linear blit so the display mapper and
-            // downstream debug pass always have a valid display-res scene image. With RR off
-            // render == display, so this is a 1:1 copy.
+            // the traced render-res scene up to display res with a linear blit so the display mapper and
+            // downstream debug pass always have a valid display-res scene image. With RR off render ==
+            // display, so this is a 1:1 copy.
             if (!rrDone) {
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fallback upscale");
@@ -1233,7 +1347,26 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog composite / exposure
+
+            // ---- Volumetric fog composite AFTER RR/upscale ----
+            // Reconstruct the final fog from the integrated froxel volume once per display pixel, with a
+            // depth-aware XY gather plus analytic partial-slice recovery. This is the architectural shift
+            // borrowed from the older fork: keep the cheap froxel lighting path, but stop re-marching the
+            // raw local field in fullscreen.
+            if (fogPreparedThisFrame && volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog composite");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogComposite")) {
+                    volumetricFog.setCompositeImages(gFogDepth.view, rrOutput.view);
+                    volumetricFog.dispatchComposite(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            displayW, displayH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+                volumetricFog.advanceHistory();
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1552,6 +1685,10 @@ public final class RtComposite {
         fgInterpW = -1;
         fgInterpH = -1;
         fgInterpFormat = Integer.MIN_VALUE;
+        if (volumetricFog != null) {
+            volumetricFog.destroy();
+            volumetricFog = null;
+        }
         if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;

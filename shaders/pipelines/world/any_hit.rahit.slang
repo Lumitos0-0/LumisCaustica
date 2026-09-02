@@ -9,8 +9,8 @@
 //    one non-opaque geometry and routes here through its SBT record.
 //
 // Radiance and shadow rays share the exact Payload ABI, as Vulkan requires for every stage reachable by
-// a trace. Shadow traversal uses albedo.rgb as accumulated transmittance and hitT as the nearest-water
-// crossing; radiance cutout paths do not touch either field.
+// a trace. Shadow traversal uses albedo.rgb as accumulated transmittance, hitT as the nearest-water
+// crossing, and rayCone as a transmissive-crossing counter; radiance cutout paths do not touch those lanes.
 import world_common;
 import math;
 import bindings;
@@ -23,6 +23,9 @@ static const float ENTITY_ALPHA_CUTOFF = 0.1; // entities: only discard near-ful
 // tinted pane still absorbs its own color on top of this.
 static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float WATER_SHADOW_TINT = 0.5;
+static const float TRANSMISSION_COLOR_EPSILON = 1.0e-3;
+static const float SHADOW_TRANSMITTANCE_CUTOFF = 0.01;
+static const uint MAX_SHADOW_TRANSMISSIVE_CROSSINGS = 4u;
 
 // Progressive 8x8 blue-noise-style alpha threshold pattern, with a golden-ratio temporal rotation. This keeps
 // translucent entity hits stochastic, but trades per-pixel white noise for a stable spatial distribution
@@ -42,6 +45,12 @@ float alphaDitherThreshold(uint salt) {
     uint2 p = (DispatchRaysIndex().xy + uint2(salt * 3u, salt * 5u)) & uint2(7u, 7u);
     float base = ALPHA_DITHER_8X8[int(p.y * 8u + p.x)];
     return frac(base + float((pc.frameIndex + salt) & 255u) * 0.61803398875);
+}
+
+float3 dielectricTransmissionFilter(float3 color, float alpha) {
+    float3 safeColor = max(color, float3(TRANSMISSION_COLOR_EPSILON));
+    float coverage = clamp(alpha, 0.0, 1.0);
+    return exp(-max(-log(safeColor), float3(0.0)) * coverage);
 }
 
 [shader("anyhit")]
@@ -84,10 +93,18 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         // model here so entity dielectrics transmit instead of becoming opaque shadow blockers.
         bool shadowRay = (RayFlags() & RAY_FLAG_SKIP_CLOSEST_HIT_SHADER) != 0u;
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_DIELECTRIC) {
-            float3 tint709 = lerp(float3(1.0),
+            float3 tint709 = dielectricTransmissionFilter(
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb), texel.a);
             float3 tint = bt709ToAcesCg(tint709);
             packAlbedo(payload, unpackAlbedo(payload) * tint * clamp(materialHeader.params.w, 0.0, 1.0));
+            payload.rayCone += 1u; // repurposed on shadow rays as a transmissive-crossing counter
+            float3 remainingTrans = unpackAlbedo(payload);
+            if (max(remainingTrans.r, max(remainingTrans.g, remainingTrans.b)) < SHADOW_TRANSMITTANCE_CUTOFF) {
+                return;
+            }
+            if (payload.rayCone >= MAX_SHADOW_TRANSMISSIVE_CROSSINGS) {
+                return;
+            }
             IgnoreHit();
         }
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_WATER) {
@@ -120,9 +137,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     }
 
     // Translucent radiance rays use a closest-hit-only SBT record; shadow rays tint and pass through here.
-    // This doesn't touch the atlas at all: a shadow ray only needs the pane's overall tint/opacity, so
-    // MaterialHeader carries a precomputed whole-sprite average {r,g,b,a}; per-primitive biome tint is
-    // applied here. The average is compiled once per resource epoch rather than copied per triangle.
+    // This doesn't touch the atlas at all: a shadow ray only needs the pane's overall filter color and
+    // coverage, so MaterialHeader carries a precomputed linear transmission tint {r,g,b} plus coverage
+    // alpha {a}; per-primitive biome tint is applied here. The summary is compiled once per resource
+    // epoch rather than copied per triangle.
     //
     // Modeled as Beer-Lambert absorption (matching the water medium in world.rgen): a per-channel
     // extinction derived from how dark the average is, scaled by the average alpha (how much of the
@@ -134,11 +152,23 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float3 avgColor = max(bt709ToAcesCg(
                 materialHeader.average.rgb * srgbToLinear(pr.tint.rgb)), float3(1.0e-3));
         float3 colorExtinction = max(-log(avgColor), float3(0.0, 0.0, 0.0));
+        float transmissionFactor = clamp(materialHeader.params.w, 0.0, 1.0);
         // The neutral floor is a flat per-hit dimming, NOT scaled by alpha: vanilla clear glass has a low
         // natural alpha, so folding it into the alpha-scaled term crushed it to near-zero for exactly the
         // white/clear-glass case it's meant to cover.
         packAlbedo(payload, unpackAlbedo(payload)
-                * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION));
+                * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION)
+                * transmissionFactor);
+        payload.rayCone += 1u; // repurposed on shadow rays as a transmissive-crossing counter
+        // Shadow rays use AcceptFirstHit, so returning without IgnoreHit conservatively terminates once
+        // the remaining light is already negligible or the transmissive stack is already deep.
+        float3 remainingTrans = unpackAlbedo(payload);
+        if (max(remainingTrans.r, max(remainingTrans.g, remainingTrans.b)) < SHADOW_TRANSMITTANCE_CUTOFF) {
+            return;
+        }
+        if (payload.rayCone >= MAX_SHADOW_TRANSMISSIVE_CROSSINGS) {
+            return;
+        }
         IgnoreHit();
     }
 

@@ -60,6 +60,11 @@ public final class CausticaConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.VolumetricFog.ENABLED, Rt.VolumetricFog.QUALITY, Rt.VolumetricFog.DENSITY,
+            Rt.VolumetricFog.ANISOTROPY, Rt.VolumetricFog.SCATTERING, Rt.VolumetricFog.EXTINCTION,
+            Rt.VolumetricFog.MAX_DISTANCE, Rt.VolumetricFog.SAMPLES, Rt.VolumetricFog.JITTER_STRENGTH,
+            Rt.VolumetricFog.TEMPORAL, Rt.VolumetricFog.HEIGHT_FALLOFF, Rt.VolumetricFog.SUN_INTENSITY,
+            Rt.VolumetricFog.MOON_INTENSITY, Rt.VolumetricFog.COLOR_TRANSMISSION,
         };
     }
 
@@ -106,6 +111,12 @@ public final class CausticaConfig {
                         + " ui-nits controls UI brightness; peak-nits must be 500, 1000, 2000, or 4000.");
         FILE.setComment("screenshots",
                 " exr-enabled saves an ACEScg EXR beside the normal F2 PNG while ray tracing is active.");
+        FILE.setComment("volumetric-fog",
+                " Froxel frustum volumetric fog for sun/moon god rays.\n"
+                        + " quality 0=low 1=medium 2=high 3=ultra controls froxel resolution and sample count.\n"
+                        + " density controls base fog amount; anisotropy controls forward scattering (0.5 typical).\n"
+                        + " scattering/extinction control light interaction; sun/moon intensity scales crepuscular rays.\n"
+                        + " color-transmission enables tinted shadows through stained glass.");
     }
 
     private static Path resolveConfigPath() {
@@ -910,6 +921,73 @@ public final class CausticaConfig {
                 return UI_NITS.value();
             }
 
+        }
+
+        /** Froxel frustum volumetric fog for sun/moon god rays. */
+        public static final class VolumetricFog {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.volumetricFog.enabled", "volumetric-fog.enabled", true);
+            /**
+             * Froxel quality tiers rebalance budget toward screen-space XY detail instead of stacking most
+             * of it into depth, because the new shadow-prelit architecture is primarily limited by angular/
+             * silhouette aliasing rather than by along-ray sampling cost.
+             * 0=low 128x72x24, 1=medium 224x126x32, 2=high 336x189x48, 3=ultra 448x252x64
+             */
+            public static final IntSetting QUALITY =
+                    clampedInt("caustica.rt.volumetricFog.quality", "volumetric-fog.quality", 1, 0, 3);
+            /** Base fog density (extinction). */
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.volumetricFog.density", "volumetric-fog.density", 0.02f, 0.0f, 0.1f);
+            /** Henyey-Greenstein anisotropy g. Restricted to forward scattering for this fog model:
+             * 0 = isotropic, 0.5 typical god rays, 0.9 strongest forward lobe. */
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.volumetricFog.anisotropy", "volumetric-fog.anisotropy", 0.5f, 0.0f, 0.9f);
+            /** Scattering coefficient multiplier. */
+            public static final FloatSetting SCATTERING =
+                    clampedFloat("caustica.rt.volumetricFog.scattering", "volumetric-fog.scattering", 1.0f, 0.0f, 5.0f);
+            /** Extinction coefficient multiplier. */
+            public static final FloatSetting EXTINCTION =
+                    clampedFloat("caustica.rt.volumetricFog.extinction", "volumetric-fog.extinction", 0.02f, 0.0f, 1.0f);
+            /** Max raymarch distance in blocks. */
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.volumetricFog.maxDistance", "volumetric-fog.max-distance", 256.0f, 32.0f, 1024.0f);
+            /** Samples along view ray. */
+            public static final IntSetting SAMPLES =
+                    clampedInt("caustica.rt.volumetricFog.samples", "volumetric-fog.samples", 64, 16, 192);
+            /** Jitter strength inside froxel (0..1). */
+            public static final FloatSetting JITTER_STRENGTH =
+                    clampedFloat("caustica.rt.volumetricFog.jitterStrength", "volumetric-fog.jitter-strength", 0.75f, 0.0f, 1.0f);
+            /** Temporal accumulation via TAA/DLSS-RR. */
+            public static final BooleanSetting TEMPORAL =
+                    bool("caustica.rt.volumetricFog.temporal", "volumetric-fog.temporal", true);
+            /** Height falloff (density *= exp(-height*falloff)). */
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.volumetricFog.heightFalloff", "volumetric-fog.height-falloff", 0.01f, 0.0f, 0.1f);
+            /** Sun scattering intensity. */
+            public static final FloatSetting SUN_INTENSITY =
+                    clampedFloat("caustica.rt.volumetricFog.sunIntensity", "volumetric-fog.sun-intensity", 1.0f, 0.0f, 5.0f);
+            /** Moon scattering intensity. */
+            public static final FloatSetting MOON_INTENSITY =
+                    clampedFloat("caustica.rt.volumetricFog.moonIntensity", "volumetric-fog.moon-intensity", 0.5f, 0.0f, 5.0f);
+            /** Enable color transmission through stained glass / translucent. */
+            public static final BooleanSetting COLOR_TRANSMISSION =
+                    bool("caustica.rt.volumetricFog.colorTransmission", "volumetric-fog.color-transmission", true);
+
+            private VolumetricFog() {
+            }
+
+            public static int[] froxelDimensions() {
+                return switch (QUALITY.value()) {
+                    case 0 -> new int[]{128, 72, 24};
+                    case 2 -> new int[]{336, 189, 48};
+                    case 3 -> new int[]{448, 252, 64};
+                    default -> new int[]{224, 126, 32};
+                };
+            }
+
+            public static boolean enabled() {
+                return ENABLED.value();
+            }
         }
     }
 

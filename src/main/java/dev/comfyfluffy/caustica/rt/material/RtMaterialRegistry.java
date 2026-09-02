@@ -127,8 +127,8 @@ public final class RtMaterialRegistry {
         entityResources.sort(Comparator.comparing(Identifier::toString));
         RtBlockMaterials.Entry fallbackEntry = blockMaterials.entry(null);
 
-        // One pass per sprite computes both the raw average (translucent shadow filtering) and the
-        // premultiplied-linear uniform emission summary; sprites are independent, so scan in parallel.
+        // One pass per sprite computes both the translucent-filter summary and the premultiplied-linear
+        // uniform emission summary; sprites are independent, so scan in parallel.
         Map<TextureAtlasSprite, SpriteStats> spriteStats = new ConcurrentHashMap<>();
         sprites.parallelStream().forEach(sprite -> spriteStats.put(sprite, computeSpriteStats(sprite)));
 
@@ -563,9 +563,10 @@ public final class RtMaterialRegistry {
     }
 
     /**
-     * Per-sprite compile inputs gathered in a single pixel pass: the raw average RGBA (matching the
-     * previous translucent shadow-filter input) and the premultiplied-linear uniform emission summary
-     * used when a state emits light but no per-texel mask was compiled.
+     * Per-sprite compile inputs gathered in a single pixel pass: the coverage-conditioned linear
+     * transmission tint plus coverage alpha used by translucent shadow/fog filtering, and the
+     * premultiplied-linear uniform emission summary used when a state emits light but no per-texel mask
+     * was compiled.
      */
     private record SpriteStats(float[] average, RtMaterialDesc.EmissionSummary uniformSummary,
                                RtEmissionGrid albedoGrid) {
@@ -579,7 +580,8 @@ public final class RtMaterialRegistry {
         int height = contents.height();
         NativeImage image = ((SpriteContentsAccessor) contents).caustica$originalImage();
         if (image == null || width <= 0 || height <= 0) return SpriteStats.NEUTRAL;
-        long sr = 0L, sg = 0L, sb = 0L, sa = 0L;
+        double densityR = 0.0, densityG = 0.0, densityB = 0.0;
+        double alphaSum = 0.0;
         double lr = 0.0, lg = 0.0, lb = 0.0;
         int covered = 0;
         // A uniform (state-gated) emitter radiates alpha-weighted albedo per texel; its grid mirrors that
@@ -589,14 +591,20 @@ public final class RtMaterialRegistry {
             for (int x = 0; x < width; x++) {
                 int pixel = image.getPixel(x, y); // frame 0 always occupies the image's top-left tile
                 int a = ARGB.alpha(pixel);
-                sr += ARGB.red(pixel);
-                sg += ARGB.green(pixel);
-                sb += ARGB.blue(pixel);
-                sa += a;
                 float alpha = a / 255.0f;
-                float plr = RtMaterialTextureData.srgbToLinear(ARGB.red(pixel)) * alpha;
-                float plg = RtMaterialTextureData.srgbToLinear(ARGB.green(pixel)) * alpha;
-                float plb = RtMaterialTextureData.srgbToLinear(ARGB.blue(pixel)) * alpha;
+                float linearR = RtMaterialTextureData.srgbToLinear(ARGB.red(pixel));
+                float linearG = RtMaterialTextureData.srgbToLinear(ARGB.green(pixel));
+                float linearB = RtMaterialTextureData.srgbToLinear(ARGB.blue(pixel));
+                // Transmissive summaries are used multiplicatively by stacked panes/shafts, so average
+                // optical density (log transmittance), not raw transmittance. This preserves hue better
+                // across stacks than an arithmetic mean that drifts toward white.
+                densityR += -Math.log(Math.max(linearR, 1.0e-3f)) * alpha;
+                densityG += -Math.log(Math.max(linearG, 1.0e-3f)) * alpha;
+                densityB += -Math.log(Math.max(linearB, 1.0e-3f)) * alpha;
+                alphaSum += alpha;
+                float plr = linearR * alpha;
+                float plg = linearG * alpha;
+                float plb = linearB * alpha;
                 lr += plr;
                 lg += plg;
                 lb += plb;
@@ -605,8 +613,14 @@ public final class RtMaterialRegistry {
             }
         }
         float inv = 1.0f / (width * (float) height);
-        float scale = inv / 255.0f;
-        float[] average = {sr * scale, sg * scale, sb * scale, sa * scale};
+        float coverage = (float) (alphaSum * inv);
+        float[] average = alphaSum > 1.0e-6
+                ? new float[]{
+                        (float) Math.exp(-densityR / alphaSum),
+                        (float) Math.exp(-densityG / alphaSum),
+                        (float) Math.exp(-densityB / alphaSum),
+                        coverage}
+                : transparentWhiteAverage();
         double luminance = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
         RtMaterialDesc.EmissionSummary uniform = luminance <= 0.0
                 ? RtMaterialDesc.EmissionSummary.NONE

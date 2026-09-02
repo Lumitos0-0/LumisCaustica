@@ -154,7 +154,7 @@ public final class RtPipeline {
             binds.get(WORLD_BLOCK_ALBEDO).binding(WORLD_BLOCK_ALBEDO)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(atlasStages);
-            for (int binding = WORLD_G_NORMAL; binding <= WORLD_G_SPEC_MOTION; binding++) {
+            for (int binding = WORLD_G_NORMAL; binding <= WORLD_G_FOG_DEPTH; binding++) {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }

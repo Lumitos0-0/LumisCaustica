@@ -28,13 +28,21 @@ import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.gen.DisplayPushData;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
-import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /** Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/display/";
-    /** Push constants: output/look LUT state plus gamma and HDR peak nits. */
     private static final int PUSH_BYTES = DisplayPushData.BYTE_SIZE;
+
+    private static final int BINDING_OUTPUT = 0;
+    private static final int BINDING_RT_IMAGE = 1;
+    private static final int BINDING_EXPOSURE = 2;
+    private static final int BINDING_HDR_OUTPUT = 3;
+    private static final int BINDING_SDR_TONE_LUT = 4;
+    private static final int BINDING_HDR_TONE_LUT = 5;
+    private static final int BINDING_LOOK_LUT = 6;
+    private static final int BINDING_BLOOM = 7;
+    private static final int BINDING_COUNT = 8;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -68,23 +76,22 @@ public final class RtDisplayPipeline {
     public static RtDisplayPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(DISPLAY_BINDING_COUNT, stack);
-            binds.get(DISPLAY_OUTPUT).binding(DISPLAY_OUTPUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
+            binds.get(BINDING_OUTPUT).binding(BINDING_OUTPUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            binds.get(DISPLAY_RT_IMAGE).binding(DISPLAY_RT_IMAGE).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            binds.get(BINDING_RT_IMAGE).binding(BINDING_RT_IMAGE).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            binds.get(DISPLAY_EXPOSURE).binding(DISPLAY_EXPOSURE).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            binds.get(BINDING_EXPOSURE).binding(BINDING_EXPOSURE).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            binds.get(DISPLAY_HDR_OUTPUT).binding(DISPLAY_HDR_OUTPUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            binds.get(BINDING_HDR_OUTPUT).binding(BINDING_HDR_OUTPUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            // Baked ACES 2.0 display-transform LUTs; see RtToneLut.
-            binds.get(DISPLAY_SDR_TONE_LUT).binding(DISPLAY_SDR_TONE_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            binds.get(BINDING_SDR_TONE_LUT).binding(BINDING_SDR_TONE_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            binds.get(DISPLAY_HDR_TONE_LUT).binding(DISPLAY_HDR_TONE_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            binds.get(BINDING_HDR_TONE_LUT).binding(BINDING_HDR_TONE_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            binds.get(DISPLAY_LOOK_LUT).binding(DISPLAY_LOOK_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            binds.get(BINDING_LOOK_LUT).binding(BINDING_LOOK_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            binds.get(DISPLAY_BLOOM).binding(DISPLAY_BLOOM).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            binds.get(BINDING_BLOOM).binding(BINDING_BLOOM).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
@@ -159,27 +166,24 @@ public final class RtDisplayPipeline {
             VkDescriptorImageInfo.Buffer lookLutInfo = VkDescriptorImageInfo.calloc(1, stack);
             lookLutInfo.get(0).imageView(lookLutView).sampler(lookLutSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer bloomInfo = VkDescriptorImageInfo.calloc(1, stack);
-            bloomInfo.get(0).imageView(bloomView).sampler(bloomSampler)
-                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(DISPLAY_BINDING_COUNT, stack);
-            writes.get(DISPLAY_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_OUTPUT)
+            bloomInfo.get(0).imageView(bloomView).sampler(bloomSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(BINDING_COUNT, stack);
+            writes.get(BINDING_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_OUTPUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
-            writes.get(DISPLAY_RT_IMAGE).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_RT_IMAGE)
+            writes.get(BINDING_RT_IMAGE).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_RT_IMAGE)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(rtInfo);
-            writes.get(DISPLAY_EXPOSURE).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_EXPOSURE)
+            writes.get(BINDING_EXPOSURE).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_EXPOSURE)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(exposureInfo);
-            writes.get(DISPLAY_HDR_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_HDR_OUTPUT)
+            writes.get(BINDING_HDR_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_HDR_OUTPUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(hdrInfo);
-            writes.get(DISPLAY_SDR_TONE_LUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_SDR_TONE_LUT)
+            writes.get(BINDING_SDR_TONE_LUT).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_SDR_TONE_LUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(lutInfo);
-            writes.get(DISPLAY_HDR_TONE_LUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_HDR_TONE_LUT)
+            writes.get(BINDING_HDR_TONE_LUT).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_HDR_TONE_LUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(hdrLutInfo);
-            writes.get(DISPLAY_LOOK_LUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_LOOK_LUT)
+            writes.get(BINDING_LOOK_LUT).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_LOOK_LUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(lookLutInfo);
-            writes.get(DISPLAY_BLOOM).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_BLOOM)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .pImageInfo(bloomInfo);
+            writes.get(BINDING_BLOOM).sType$Default().dstSet(descriptorSet).dstBinding(BINDING_BLOOM)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(bloomInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
@@ -196,24 +200,25 @@ public final class RtDisplayPipeline {
         boundBloomSampler = bloomSampler;
     }
 
-    /**
-     * Run the display mapping through the baked ACES 2.0 LUTs: SDR
-     * (binding 0) always writes; the PQ-encoded HDR image (binding 3) also writes when
-     * {@code hdrEnabled}. The HDR LUT is baked for a fixed mastering-nits peak (see
-     * {@code CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS}), selected host-side by which LUT resource is bound.
-     */
     public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, int lutSize,
                          float gamma, float hdrPeakNits, boolean lookEnabled, int lookLutSize,
-                         float bloomStrength) {
+                         float bloomStrength, boolean fogEnabled) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(DisplayPushData.BYTE_SIZE);
             new DisplayPushData(hdrEnabled ? 1 : 0, (float) lutSize, gamma, hdrPeakNits,
-                    lookEnabled ? 1 : 0, (float) lookLutSize, bloomStrength).write(push);
+                    lookEnabled ? 1 : 0, (float) lookLutSize, bloomStrength,
+                    fogEnabled ? 1 : 0, 0f, 0f, 0f).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }
+    }
+
+    public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, int lutSize,
+                         float gamma, float hdrPeakNits, boolean lookEnabled, int lookLutSize,
+                         float bloomStrength) {
+        dispatch(cmd, width, height, hdrEnabled, lutSize, gamma, hdrPeakNits, lookEnabled, lookLutSize, bloomStrength, false);
     }
 
     public void destroy() {
