@@ -927,7 +927,12 @@ public final class CausticaConfig {
         public static final class VolumetricFog {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.volumetricFog.enabled", "volumetric-fog.enabled", true);
-            /** 0=low 80x45x32, 1=medium 160x90x64, 2=high 240x135x96, 3=ultra 320x180x128 */
+            /**
+             * Froxel quality tiers rebalance budget toward screen-space XY detail instead of stacking most
+             * of it into depth, because the new shadow-prelit architecture is primarily limited by angular/
+             * silhouette aliasing rather than by along-ray sampling cost.
+             * 0=low 128x72x24, 1=medium 224x126x32, 2=high 336x189x48, 3=ultra 448x252x64
+             */
             public static final IntSetting QUALITY =
                     clampedInt("caustica.rt.volumetricFog.quality", "volumetric-fog.quality", 1, 0, 3);
             /** Base fog density (extinction). */
@@ -973,10 +978,10 @@ public final class CausticaConfig {
 
             public static int[] froxelDimensions() {
                 return switch (QUALITY.value()) {
-                    case 0 -> new int[]{80, 45, 32};
-                    case 2 -> new int[]{240, 135, 96};
-                    case 3 -> new int[]{320, 180, 128};
-                    default -> new int[]{160, 90, 64};
+                    case 0 -> new int[]{128, 72, 24};
+                    case 2 -> new int[]{336, 189, 48};
+                    case 3 -> new int[]{448, 252, 64};
+                    default -> new int[]{224, 126, 32};
                 };
             }
 
