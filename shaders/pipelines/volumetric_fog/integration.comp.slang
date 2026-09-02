@@ -94,7 +94,7 @@ FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
     }
 
     float nearP = max(pc.nearPlane, 0.1);
-    float farP = max(pc.farPlane, nearP + 1.0);
+    float farP = min(max(pc.farPlane, nearP + 1.0), pc.maxDistance);
     float phase = activePhase(rayDir);
     float stepSize = tMax / float(sampleCount);
     uint seed = seedBase;
@@ -105,8 +105,7 @@ FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
         t = clamp(t, 0.0, tMax);
 
         float safeT = max(t, nearP);
-        float linear01 = log(safeT / nearP) / log(farP / nearP);
-        linear01 = saturate(linear01);
+        float linear01 = froxelUnitFromDepth(safeT, nearP, farP);
 
         float4 froxel = froxelVolume.SampleLevel(float3(sampleUv, linear01), 0.0);
         float extinction = max(froxel.a, 0.0);
@@ -143,11 +142,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float2 invSize = pc.invDisplaySize;
     float2 uv = (float2(pix) + 0.5) * invSize;
-    float2 jndc = (uv + pc.jitterOffset * invSize) * 2.0 - 1.0;
+    // Post-RR fog integration is already in final display space, so following the trace's sub-pixel jitter
+    // here only reintroduces frame-to-frame shimmer against an otherwise stabilized scene.
+    float2 ndc = uv * 2.0 - 1.0;
 
-    float3 rayDir = primaryRayDirFromPush(jndc, worldPush);
+    float3 rayDir = primaryRayDirFromPush(ndc, worldPush);
     float sceneDepth = fogStopDepth.SampleLevel(uv, 0.0).r;
-    float tMax = depthToMarchDistance(jndc, sceneDepth, worldPush);
+    float tMax = depthToMarchDistance(ndc, sceneDepth, worldPush);
 
     int sampleCount = max(pc.sampleCount, 1);
     uint seed = pix.x * 1973u + pix.y * 9277u + pc.frameIndex * 2654435761u;
@@ -156,7 +157,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             : 0.5;
 
     FogIntegralResult fog = integrateFogRay(rayDir, tMax, sampleCount,
-            seed, temporalJitter, jndc * 0.5 + 0.5);
+            seed, temporalJitter, uv);
 
     float4 scene = sceneImage[pix];
     // The traced scene buffer is pre-exposed before its fp16 write, so fog scattering must be brought into

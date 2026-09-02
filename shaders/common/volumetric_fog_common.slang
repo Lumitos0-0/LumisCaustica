@@ -60,3 +60,20 @@ public struct FogIntegrationPush {
     public float3 moonIlluminance;   // 224
     // total ~236 -> padded to 240
 };
+
+// Pure logarithmic froxel depth gave excellent near-camera precision, but with the new cheaper lighting
+// architecture it also made distant shafts break into very thick depth slabs. A mild power curve keeps the
+// frustum-aligned volume front-loaded without exploding far-slice thickness the way a strict exponential does.
+static const float FROXEL_DEPTH_CURVE = 1.5;
+
+public float froxelDepthFromUnit(float unit01, float nearPlane, float farPlane) {
+    unit01 = saturate(unit01);
+    float span = max(farPlane - nearPlane, 1.0e-4);
+    return nearPlane + span * pow(unit01, FROXEL_DEPTH_CURVE);
+}
+
+public float froxelUnitFromDepth(float depth, float nearPlane, float farPlane) {
+    float span = max(farPlane - nearPlane, 1.0e-4);
+    float linear01 = saturate((depth - nearPlane) / span);
+    return pow(linear01, 1.0 / FROXEL_DEPTH_CURVE);
+}

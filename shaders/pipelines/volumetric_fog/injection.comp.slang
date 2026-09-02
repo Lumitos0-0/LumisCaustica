@@ -179,10 +179,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float linear01 = (float(dispatchId.z) + 0.5 + jitterZ) / float(dim.z);
     float nearP = max(pc.nearPlane, 0.1);
-    float farP = max(pc.farPlane, nearP + 1.0);
-    float depth = nearP * pow(farP / nearP, linear01);
-    depth = clamp(depth, nearP, farP);
-    depth = min(depth, pc.maxDistance);
+    float farP = min(max(pc.farPlane, nearP + 1.0), pc.maxDistance);
+    float depth = froxelDepthFromUnit(linear01, nearP, farP);
 
     float3 rebasedPos = worldPush.camOffset + rayDir * depth;
     float3 worldPos = rebasedPos + pc.terrainOrigin;
