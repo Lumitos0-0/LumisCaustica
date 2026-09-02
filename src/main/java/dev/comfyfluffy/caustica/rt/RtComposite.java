@@ -1246,8 +1246,10 @@ public final class RtComposite {
                     volumetricFog.setInjectionImage();
                     long blockAlbedoView = boundBlockAlbedoAtlasHandle;
                     long blockSampler = atlasSampler(ctx);
-                    // Bind TLAS + froxel + fog-stop depth guide + render-res scene color + block albedo.
-                    volumetricFog.setIntegrationImages(frameTlas.accel.handle, gFogDepth.view, output.view, blockAlbedoView, blockSampler);
+                    // Injection now owns the expensive shadow/transmission ray queries, so it gets TLAS + block atlas.
+                    volumetricFog.setInjectionTracingResources(frameTlas.accel.handle, blockAlbedoView, blockSampler);
+                    // Integration now just reads froxels + fog-stop depth and composites back into the scene color.
+                    volumetricFog.setIntegrationImages(gFogDepth.view, output.view);
 
                     float[] terrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
                     float[] camWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
@@ -1291,8 +1293,12 @@ public final class RtComposite {
                     float[] sunIllum = new float[]{sunScale, sunScale, sunScale};
                     float[] moonIllum = new float[]{moonScale, moonScale, moonScale};
 
-                    // Injection
-                    volumetricFog.dispatchInjection(cmd, pushBuf.deviceAddress, (int) frameCounter, terrainOrigin, camWorldPos, jitterOffset);
+                    // Injection now precomputes shadowed/tinted directional lighting per froxel.
+                    volumetricFog.dispatchInjection(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
+                            terrainOrigin, camWorldPos, jitterOffset,
+                            sunDir, sunIllum, moonDir, moonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
                     // Integration + in-place compositing into the render-resolution scene color.

@@ -9,8 +9,8 @@
 //    one non-opaque geometry and routes here through its SBT record.
 //
 // Radiance and shadow rays share the exact Payload ABI, as Vulkan requires for every stage reachable by
-// a trace. Shadow traversal uses albedo.rgb as accumulated transmittance and hitT as the nearest-water
-// crossing; radiance cutout paths do not touch either field.
+// a trace. Shadow traversal uses albedo.rgb as accumulated transmittance, hitT as the nearest-water
+// crossing, and rayCone as a transmissive-crossing counter; radiance cutout paths do not touch those lanes.
 import world_common;
 import math;
 import bindings;
@@ -25,6 +25,7 @@ static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float WATER_SHADOW_TINT = 0.5;
 static const float TRANSMISSION_COLOR_EPSILON = 1.0e-3;
 static const float SHADOW_TRANSMITTANCE_CUTOFF = 0.01;
+static const uint MAX_SHADOW_TRANSMISSIVE_CROSSINGS = 4u;
 
 // Progressive 8x8 blue-noise-style alpha threshold pattern, with a golden-ratio temporal rotation. This keeps
 // translucent entity hits stochastic, but trades per-pixel white noise for a stable spatial distribution
@@ -96,8 +97,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb), texel.a);
             float3 tint = bt709ToAcesCg(tint709);
             packAlbedo(payload, unpackAlbedo(payload) * tint * clamp(materialHeader.params.w, 0.0, 1.0));
+            payload.rayCone += 1u; // repurposed on shadow rays as a transmissive-crossing counter
             float3 remainingTrans = unpackAlbedo(payload);
             if (max(remainingTrans.r, max(remainingTrans.g, remainingTrans.b)) < SHADOW_TRANSMITTANCE_CUTOFF) {
+                return;
+            }
+            if (payload.rayCone >= MAX_SHADOW_TRANSMISSIVE_CROSSINGS) {
                 return;
             }
             IgnoreHit();
@@ -154,10 +159,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         packAlbedo(payload, unpackAlbedo(payload)
                 * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION)
                 * transmissionFactor);
+        payload.rayCone += 1u; // repurposed on shadow rays as a transmissive-crossing counter
         // Shadow rays use AcceptFirstHit, so returning without IgnoreHit conservatively terminates once
-        // the remaining light is already negligible instead of paying for more near-black glass crossings.
+        // the remaining light is already negligible or the transmissive stack is already deep.
         float3 remainingTrans = unpackAlbedo(payload);
         if (max(remainingTrans.r, max(remainingTrans.g, remainingTrans.b)) < SHADOW_TRANSMITTANCE_CUTOFF) {
+            return;
+        }
+        if (payload.rayCone >= MAX_SHADOW_TRANSMISSIVE_CROSSINGS) {
             return;
         }
         IgnoreHit();

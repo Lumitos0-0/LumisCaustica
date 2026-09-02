@@ -4,7 +4,6 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
-import dev.comfyfluffy.caustica.rt.gen.FogInjectionPushData;
 import dev.comfyfluffy.caustica.rt.gen.FogIntegrationPushData;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -89,16 +88,22 @@ public final class RtVolumetricFog {
             LongBuffer pSet = stack.mallocLong(1);
             LongBuffer pPipe = stack.mallocLong(1);
 
-            VkDescriptorSetLayoutBinding.Buffer injBinds = VkDescriptorSetLayoutBinding.calloc(1, stack);
+            VkDescriptorSetLayoutBinding.Buffer injBinds = VkDescriptorSetLayoutBinding.calloc(3, stack);
             injBinds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            injBinds.get(1).binding(1).descriptorType(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            injBinds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo injDslCi = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(injBinds);
             check(VK10.vkCreateDescriptorSetLayout(vk, injDslCi, null, p), "vkCreateDescriptorSetLayout(fog injection)");
             long injectionDsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, injectionDsl, "fog injection dsl");
 
-            VkDescriptorPoolSize.Buffer injPoolSizes = VkDescriptorPoolSize.calloc(1, stack);
+            VkDescriptorPoolSize.Buffer injPoolSizes = VkDescriptorPoolSize.calloc(3, stack);
             injPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
+            injPoolSizes.get(1).type(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(1);
+            injPoolSizes.get(2).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
             VkDescriptorPoolCreateInfo injPoolCi = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(injPoolSizes);
             check(VK10.vkCreateDescriptorPool(vk, injPoolCi, null, p), "vkCreateDescriptorPool(fog injection)");
             long injectionPool = p.get(0);
@@ -111,7 +116,7 @@ public final class RtVolumetricFog {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, injectionSet, "fog injection set");
 
             VkPushConstantRange.Buffer injPushRange = VkPushConstantRange.calloc(1, stack);
-            injPushRange.get(0).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(FogInjectionPushData.BYTE_SIZE);
+            injPushRange.get(0).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(FogIntegrationPushData.BYTE_SIZE);
             VkPipelineLayoutCreateInfo injPlCi = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
                     .pSetLayouts(stack.longs(injectionDsl)).pPushConstantRanges(injPushRange);
             check(VK10.vkCreatePipelineLayout(vk, injPlCi, null, p), "vkCreatePipelineLayout(fog injection)");
@@ -129,27 +134,29 @@ public final class RtVolumetricFog {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, injectionPipeline, "fog injection pipeline");
             VK10.vkDestroyShaderModule(vk, injModule, null);
 
-            VkDescriptorSetLayoutBinding.Buffer intBinds0 = VkDescriptorSetLayoutBinding.calloc(5, stack);
-            intBinds0.get(0).binding(0).descriptorType(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+            VkDescriptorSetLayoutBinding.Buffer intBinds0 = VkDescriptorSetLayoutBinding.calloc(3, stack);
+            intBinds0.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             intBinds0.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            intBinds0.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            intBinds0.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            intBinds0.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            intBinds0.get(4).binding(4).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+@@
+-            VkDescriptorPoolSize.Buffer intPoolSizes = VkDescriptorPoolSize.calloc(2, stack);
+-            intPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
+-            intPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
++            VkDescriptorPoolSize.Buffer intPoolSizes = VkDescriptorPoolSize.calloc(2, stack);
++            intPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
++            intPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
 
             VkDescriptorSetLayoutCreateInfo intDsl0Ci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(intBinds0);
             check(VK10.vkCreateDescriptorSetLayout(vk, intDsl0Ci, null, p), "vkCreateDescriptorSetLayout(fog integration set0)");
             long dsl0 = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl0, "fog integration dsl0");
 
-            VkDescriptorPoolSize.Buffer intPoolSizes = VkDescriptorPoolSize.calloc(3, stack);
-            intPoolSizes.get(0).type(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(1);
-            intPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
-            intPoolSizes.get(2).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
+            VkDescriptorPoolSize.Buffer intPoolSizes = VkDescriptorPoolSize.calloc(2, stack);
+            intPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
+            intPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
             VkDescriptorPoolCreateInfo intPoolCi = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(1).pPoolSizes(intPoolSizes);
             check(VK10.vkCreateDescriptorPool(vk, intPoolCi, null, p), "vkCreateDescriptorPool(fog integration)");
@@ -260,84 +267,125 @@ public final class RtVolumetricFog {
         boundFroxelView = froxelVolume.view;
     }
 
-    public void setIntegrationImages(long tlas, long fogDepthView, long sceneColorView, long blockAlbedoView, long blockAlbedoSampler) {
+    public void setInjectionTracingResources(long tlas, long blockAlbedoView, long blockAlbedoSampler) {
         if (froxelVolume == null) return;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkWriteDescriptorSetAccelerationStructureKHR tlasInfo = VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
                     .sType(KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR)
                     .pAccelerationStructures(stack.longs(tlas));
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
-
-            writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
+            VkDescriptorImageInfo.Buffer blockInfo = VkDescriptorImageInfo.calloc(1, stack);
+            blockInfo.get(0).imageView(blockAlbedoView).sampler(blockAlbedoSampler)
+                    .imageLayout(VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+            writes.get(0).sType$Default().dstSet(injectionSet).dstBinding(1)
                     .descriptorCount(1).descriptorType(KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .pNext(tlasInfo.address());
+            writes.get(1).sType$Default().dstSet(injectionSet).dstBinding(2)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .pImageInfo(blockInfo);
+            VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
+        }
+        boundBlockAlbedoView = blockAlbedoView;
+    }
+
+    public void setIntegrationImages(long fogDepthView, long sceneColorView) {
+        if (froxelVolume == null) return;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
 
             VkDescriptorImageInfo.Buffer froxelInfo = VkDescriptorImageInfo.calloc(1, stack);
-            froxelInfo.get(0).imageView(froxelVolume.view).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            writes.get(1).sType$Default().dstSet(integrationSet).dstBinding(1)
+            froxelInfo.get(0).imageView(froxelVolume.view).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(froxelInfo);
 
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
             depthInfo.get(0).imageView(fogDepthView).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            writes.get(2).sType$Default().dstSet(integrationSet).dstBinding(2)
+            writes.get(1).sType$Default().dstSet(integrationSet).dstBinding(1)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
 
-            VkDescriptorImageInfo.Buffer sceneColorInfo = VkDescriptorImageInfo.calloc(1, stack);
-            sceneColorInfo.get(0).imageView(sceneColorView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            writes.get(3).sType$Default().dstSet(integrationSet).dstBinding(3)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(sceneColorInfo);
-
-            VkDescriptorImageInfo.Buffer blockInfo = VkDescriptorImageInfo.calloc(1, stack);
-            blockInfo.get(0).imageView(blockAlbedoView).sampler(blockAlbedoSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            writes.get(4).sType$Default().dstSet(integrationSet).dstBinding(4)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(blockInfo);
+            VkDescriptorImageInfo.Buffer outputInfo = VkDescriptorImageInfo.calloc(1, stack);
+            outputInfo.get(0).imageView(sceneColorView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(2).sType$Default().dstSet(integrationSet).dstBinding(2)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
 
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundFogDepthView = fogDepthView;
         boundSceneColorView = sceneColorView;
-        boundBlockAlbedoView = blockAlbedoView;
     }
 
-    public void dispatchInjection(VkCommandBuffer cmd, long worldPushAddr, int frameIndex, float[] terrainOrigin, float[] camWorldPos, float[] jitterOffset) {
-        if (froxelVolume == null) return;
+    private FogIntegrationPushData buildPush(long worldPushAddr, long tableAddr, long entityTableAddr, long materialTableAddr,
+                                             int renderW, int renderH,
+                                             int frameIndex, float exposure,
+                                             float[] terrainOrigin, float[] camWorldPos,
+                                             float[] jitterOffset,
+                                             float[] sunDir, float[] sunIllum,
+                                             float[] moonDir, float[] moonIllum) {
         int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
         float nearPlane = 0.1f;
         float farPlane = CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value();
+        return new FogIntegrationPushData(
+                worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
+                new FogIntegrationPushData.Int2(renderW, renderH),
+                new FogIntegrationPushData.Int2(dims[0], dims[1]), dims[2],
+                nearPlane, farPlane,
+                CausticaConfig.Rt.VolumetricFog.DENSITY.value(),
+                CausticaConfig.Rt.VolumetricFog.ANISOTROPY.value(),
+                CausticaConfig.Rt.VolumetricFog.SCATTERING.value(),
+                CausticaConfig.Rt.VolumetricFog.EXTINCTION.value(),
+                CausticaConfig.Rt.VolumetricFog.HEIGHT_FALLOFF.value(),
+                CausticaConfig.Rt.VolumetricFog.SUN_INTENSITY.value(),
+                CausticaConfig.Rt.VolumetricFog.MOON_INTENSITY.value(),
+                CausticaConfig.Rt.VolumetricFog.JITTER_STRENGTH.value(),
+                CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value(),
+                frameIndex,
+                effectiveSampleCount(),
+                CausticaConfig.Rt.VolumetricFog.TEMPORAL.value() ? 1 : 0,
+                CausticaConfig.Rt.VolumetricFog.COLOR_TRANSMISSION.value() ? 1 : 0,
+                exposure,
+                new FogIntegrationPushData.Float2(jitterOffset[0], jitterOffset[1]),
+                new FogIntegrationPushData.Float2(1.0f / renderW, 1.0f / renderH),
+                new FogIntegrationPushData.Float3(terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]),
+                new FogIntegrationPushData.Float3(camWorldPos[0], camWorldPos[1], camWorldPos[2]),
+                new FogIntegrationPushData.Float3(sunDir[0], sunDir[1], sunDir[2]),
+                new FogIntegrationPushData.Float3(sunIllum[0], sunIllum[1], sunIllum[2]),
+                new FogIntegrationPushData.Float3(moonDir[0], moonDir[1], moonDir[2]),
+                new FogIntegrationPushData.Float3(moonIllum[0], moonIllum[1], moonIllum[2]));
+    }
+
+    public void dispatchInjection(VkCommandBuffer cmd,
+                                  long worldPushAddr, long tableAddr, long entityTableAddr, long materialTableAddr,
+                                  int renderW, int renderH,
+                                  int frameIndex, float exposure,
+                                  float[] terrainOrigin, float[] camWorldPos,
+                                  float[] jitterOffset,
+                                  float[] sunDir, float[] sunIllum,
+                                  float[] moonDir, float[] moonIllum) {
+        if (froxelVolume == null) return;
+        int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, injectionPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, injectionLayout, 0, stack.longs(injectionSet), null);
-            ByteBuffer push = stack.malloc(FogInjectionPushData.BYTE_SIZE);
-            FogInjectionPushData data = new FogInjectionPushData(
-                    worldPushAddr,
-                    new FogInjectionPushData.Int3(dims[0], dims[1], dims[2]),
-                    nearPlane, farPlane,
-                    CausticaConfig.Rt.VolumetricFog.DENSITY.value(),
-                    CausticaConfig.Rt.VolumetricFog.ANISOTROPY.value(),
-                    CausticaConfig.Rt.VolumetricFog.SCATTERING.value(),
-                    CausticaConfig.Rt.VolumetricFog.EXTINCTION.value(),
-                    CausticaConfig.Rt.VolumetricFog.HEIGHT_FALLOFF.value(),
-                    CausticaConfig.Rt.VolumetricFog.SUN_INTENSITY.value(),
-                    CausticaConfig.Rt.VolumetricFog.MOON_INTENSITY.value(),
-                    CausticaConfig.Rt.VolumetricFog.JITTER_STRENGTH.value(),
-                    CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value(),
-                    frameIndex,
-                    (int) (Integer.toUnsignedLong(frameIndex) * 2654435761L),
-                    CausticaConfig.Rt.VolumetricFog.TEMPORAL.value() ? 1 : 0,
-                    CausticaConfig.Rt.VolumetricFog.COLOR_TRANSMISSION.value() ? 1 : 0,
-                    new FogInjectionPushData.Float2(jitterOffset[0], jitterOffset[1]),
-                    new FogInjectionPushData.Float3(terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]),
-                    new FogInjectionPushData.Float3(camWorldPos[0], camWorldPos[1], camWorldPos[2])
-            );
-            data.write(push);
+            ByteBuffer push = stack.malloc(FogIntegrationPushData.BYTE_SIZE);
+            buildPush(worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
+                    renderW, renderH, frameIndex, exposure, terrainOrigin, camWorldPos,
+                    jitterOffset, sunDir, sunIllum, moonDir, moonIllum).write(push);
             VK10.vkCmdPushConstants(cmd, injectionLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (dims[0] + 7) / 8, (dims[1] + 7) / 8, (dims[2] + 3) / 4);
         }
     }
 
     // old overload compatibility
-    public void dispatchInjection(VkCommandBuffer cmd, CausticaConfig.Rt.VolumetricFog cfg, long worldPushAddr, int frameIndex, float[] terrainOrigin, float[] camWorldPos, float[] jitterOffset) {
-        dispatchInjection(cmd, worldPushAddr, frameIndex, terrainOrigin, camWorldPos, jitterOffset);
+    public void dispatchInjection(VkCommandBuffer cmd, CausticaConfig.Rt.VolumetricFog cfg,
+                                  long worldPushAddr, long tableAddr, long entityTableAddr, long materialTableAddr,
+                                  int renderW, int renderH,
+                                  int frameIndex, float exposure,
+                                  float[] terrainOrigin, float[] camWorldPos,
+                                  float[] jitterOffset,
+                                  float[] sunDir, float[] sunIllum,
+                                  float[] moonDir, float[] moonIllum) {
+        dispatchInjection(cmd, worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
+                renderW, renderH, frameIndex, exposure, terrainOrigin, camWorldPos, jitterOffset, sunDir, sunIllum, moonDir, moonIllum);
     }
 
     public void dispatchIntegration(VkCommandBuffer cmd,
@@ -349,44 +397,15 @@ public final class RtVolumetricFog {
                                     float[] sunDir, float[] sunIllum,
                                     float[] moonDir, float[] moonIllum) {
         if (froxelVolume == null) return;
-        int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
-        float nearPlane = 0.1f;
-        float farPlane = CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, integrationPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, integrationLayout, 0, stack.longs(integrationSet), null);
             ByteBuffer push = stack.malloc(FogIntegrationPushData.BYTE_SIZE);
-            FogIntegrationPushData data = new FogIntegrationPushData(
-                    worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
-                    new FogIntegrationPushData.Int2(renderW, renderH),
-                    new FogIntegrationPushData.Int2(dims[0], dims[1]), dims[2],
-                    nearPlane, farPlane,
-                    CausticaConfig.Rt.VolumetricFog.DENSITY.value(),
-                    CausticaConfig.Rt.VolumetricFog.ANISOTROPY.value(),
-                    CausticaConfig.Rt.VolumetricFog.SCATTERING.value(),
-                    CausticaConfig.Rt.VolumetricFog.EXTINCTION.value(),
-                    CausticaConfig.Rt.VolumetricFog.HEIGHT_FALLOFF.value(),
-                    CausticaConfig.Rt.VolumetricFog.SUN_INTENSITY.value(),
-                    CausticaConfig.Rt.VolumetricFog.MOON_INTENSITY.value(),
-                    CausticaConfig.Rt.VolumetricFog.JITTER_STRENGTH.value(),
-                    CausticaConfig.Rt.VolumetricFog.MAX_DISTANCE.value(),
-                    frameIndex,
-                    effectiveSampleCount(),
-                    CausticaConfig.Rt.VolumetricFog.TEMPORAL.value() ? 1 : 0,
-                    CausticaConfig.Rt.VolumetricFog.COLOR_TRANSMISSION.value() ? 1 : 0,
-                    exposure,
-                    new FogIntegrationPushData.Float2(jitterOffset[0], jitterOffset[1]),
-                    new FogIntegrationPushData.Float2(1.0f / renderW, 1.0f / renderH),
-                    new FogIntegrationPushData.Float3(terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]),
-                    new FogIntegrationPushData.Float3(camWorldPos[0], camWorldPos[1], camWorldPos[2]),
-                    new FogIntegrationPushData.Float3(sunDir[0], sunDir[1], sunDir[2]),
-                    new FogIntegrationPushData.Float3(sunIllum[0], sunIllum[1], sunIllum[2]),
-                    new FogIntegrationPushData.Float3(moonDir[0], moonDir[1], moonDir[2]),
-                    new FogIntegrationPushData.Float3(moonIllum[0], moonIllum[1], moonIllum[2])
-            );
-            data.write(push);
+            buildPush(worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
+                    renderW, renderH, frameIndex, exposure, terrainOrigin, camWorldPos,
+                    jitterOffset, sunDir, sunIllum, moonDir, moonIllum).write(push);
             VK10.vkCmdPushConstants(cmd, integrationLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-            VK10.vkCmdDispatch(cmd, (renderW + 15) / 16, (renderH + 15) / 16, 1);
+            VK10.vkCmdDispatch(cmd, (renderW + 7) / 8, (renderH + 7) / 8, 1);
         }
     }
 

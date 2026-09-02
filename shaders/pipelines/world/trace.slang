@@ -92,6 +92,7 @@ public Payload makeShadowPayload() {
     shadowPayload.roughMetal = 0u;
     shadowPayload.emissionSss = 0u;
     shadowPayload.iorTransmission = 0u;
+    // Reused on shadow rays as a transmissive-crossing counter; radiance traces keep their packed cone here.
     shadowPayload.rayCone = 0u;
     return shadowPayload;
 }
