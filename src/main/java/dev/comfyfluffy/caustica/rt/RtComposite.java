@@ -1233,91 +1233,70 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // trace color + guides visible to fog compositing
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // trace color + guides visible to fog/RR
 
-            // ---- Volumetric fog: injection + per-pixel integration BEFORE RR/upscale ----
+            float[] fogTerrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
+            float[] fogCamWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
+            float[] fogJitterOffset = new float[]{jitterX, jitterY};
+
+            // Sun / moon directions from same celestial math as sky.slang: celestialDirection(angle, tilt)
+            // dir = (-sin(angle), cos(tilt)*cos(angle), sin(tilt)*cos(angle))
+            float sunAngle = sky.celestial().x();
+            float moonAngle = sky.celestial().y();
+            float sunTilt = sky.look1().x();
+            float cosTilt = (float) Math.cos(sunTilt);
+            float sinTilt = (float) Math.sin(sunTilt);
+            float sinSun = (float) Math.sin(sunAngle);
+            float cosSun = (float) Math.cos(sunAngle);
+            float sinMoon = (float) Math.sin(moonAngle);
+            float cosMoon = (float) Math.cos(moonAngle);
+            float[] fogSunDir = new float[]{-sinSun, cosTilt * cosSun, sinTilt * cosSun};
+            float[] fogMoonDir = new float[]{-sinMoon, cosTilt * cosMoon, sinTilt * cosMoon};
+
+            float sunIllumLux = sky.look0().x();
+            float moonIllumLux = sky.look0().y();
+            float phaseFixed = sky.look1().w();
+            float moonPhaseIdx = sky.look2().w();
+            float moonLitFrac = Math.abs(moonPhaseIdx - 4.0f) / 4.0f;
+            float moonIllumFactor = phaseFixed + (1.0f - phaseFixed) * moonLitFrac;
+
+            // Feed the fog pass the same scene-referred illuminance scale the rest of the renderer reasons
+            // about, then let the fog composite bring that radiance into the traced buffer's pre-exposed
+            // storage space. The shader still applies pc.sunIntensity / pc.moonIntensity from the push
+            // constants, so do not multiply the config again here or the user-facing intensity sliders square.
+            float fogSunScale = fogSunDir[1] > 0.0f ? Math.max(sunIllumLux, 0.0f) : 0.0f;
+            float fogMoonScale = fogMoonDir[1] > 0.0f
+                    ? Math.max(moonIllumLux * moonIllumFactor, 0.0f) : 0.0f;
+            // Match the path tracer's direct-light model: one dominant celestial at a time. This removes
+            // wasted duplicate fog lighting work and keeps the fog lit by the same dominant body.
+            if (fogSunScale >= fogMoonScale) {
+                fogMoonScale = 0.0f;
+            } else {
+                fogSunScale = 0.0f;
+            }
+            float[] fogSunIllum = new float[]{fogSunScale, fogSunScale, fogSunScale};
+            float[] fogMoonIllum = new float[]{fogMoonScale, fogMoonScale, fogMoonScale};
+
+            // ---- Volumetric fog injection BEFORE RR/upscale ----
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFog")) {
-                    // Re-evaluate fog resources every frame: quality toggles can still resize the froxel
-                    // volume without a window resize, while the actual fog composite now runs at guide/render
-                    // resolution so silhouette depth edges match the traced scene one-to-one before RR.
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog injection");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogInject")) {
                     volumetricFog.ensureImages(displayW, displayH, renderW, renderH);
                     volumetricFog.setInjectionImage();
                     long blockAlbedoView = boundBlockAlbedoAtlasHandle;
                     long blockSampler = atlasSampler(ctx);
-                    // Injection now owns the expensive shadow/transmission ray queries, so it gets TLAS + block atlas.
                     volumetricFog.setInjectionTracingResources(frameTlas.accel.handle, blockAlbedoView, blockSampler);
-                    // Integration now just reads froxels + fog-stop depth and composites back into the scene color.
-                    volumetricFog.setIntegrationImages(gFogDepth.view, output.view);
-
-                    float[] terrainOrigin = new float[]{terrain.blockX, terrain.blockY, terrain.blockZ};
-                    float[] camWorldPos = new float[]{(float) camX, (float) camY, (float) camZ};
-                    float[] jitterOffset = new float[]{jitterX, jitterY};
-
-                    // Sun / moon directions from same celestial math as sky.slang: celestialDirection(angle, tilt)
-                    // dir = (-sin(angle), cos(tilt)*cos(angle), sin(tilt)*cos(angle))
-                    float sunAngle = sky.celestial().x();
-                    float moonAngle = sky.celestial().y();
-                    float sunTilt = sky.look1().x();
-                    float cosTilt = (float) Math.cos(sunTilt);
-                    float sinTilt = (float) Math.sin(sunTilt);
-                    float sinSun = (float) Math.sin(sunAngle);
-                    float cosSun = (float) Math.cos(sunAngle);
-                    float sinMoon = (float) Math.sin(moonAngle);
-                    float cosMoon = (float) Math.cos(moonAngle);
-                    float[] sunDir = new float[]{-sinSun, cosTilt * cosSun, sinTilt * cosSun};
-                    float[] moonDir = new float[]{-sinMoon, cosTilt * cosMoon, sinTilt * cosMoon};
-
-                    float sunIllumLux = sky.look0().x();
-                    float moonIllumLux = sky.look0().y();
-                    float phaseFixed = sky.look1().w();
-                    float moonPhaseIdx = sky.look2().w();
-                    float moonLitFrac = Math.abs(moonPhaseIdx - 4.0f) / 4.0f;
-                    float moonIllumFactor = phaseFixed + (1.0f - phaseFixed) * moonLitFrac;
-
-                    // Feed the fog pass the same scene-referred illuminance scale the rest of the renderer
-                    // reasons about, then let the fog composite bring that radiance into the traced buffer's
-                    // pre-exposed storage space. The old ~100k lux -> 1.0 normalization hid that mismatch;
-                    // once fog was composited with the trace's exposure model it made shafts collapse toward
-                    // black and confused auto-exposure because fog lived in a different radiometric scale.
-                    // The shader still applies pc.sunIntensity / pc.moonIntensity from the push constants,
-                    // so do not multiply the config again here or the user-facing intensity sliders square.
-                    float sunScale = sunDir[1] > 0.0f ? Math.max(sunIllumLux, 0.0f) : 0.0f;
-                    float moonScale = moonDir[1] > 0.0f
-                            ? Math.max(moonIllumLux * moonIllumFactor, 0.0f) : 0.0f;
-                    // Match the path tracer's direct-light model: one dominant celestial at a time. This
-                    // removes wasted duplicate shadow work and avoids double-lighting the fog when both
-                    // bodies are technically above the horizon but one is negligible.
-                    if (sunScale >= moonScale) {
-                        moonScale = 0.0f;
-                    } else {
-                        sunScale = 0.0f;
-                    }
-                    float[] sunIllum = new float[]{sunScale, sunScale, sunScale};
-                    float[] moonIllum = new float[]{moonScale, moonScale, moonScale};
-
-                    // Injection now precomputes shadowed/tinted directional lighting per froxel.
                     volumetricFog.dispatchInjection(cmd,
                             pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
                             renderW, renderH, (int) frameCounter, exposure.preExposure(),
-                            terrainOrigin, camWorldPos, jitterOffset,
-                            sunDir, sunIllum, moonDir, moonIllum);
-                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
-
-                    // Integration + in-place compositing into the render-resolution scene color.
-                    volumetricFog.dispatchIntegration(cmd,
-                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
-                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
-                            terrainOrigin, camWorldPos, jitterOffset,
-                            sunDir, sunIllum, moonDir, moonIllum);
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 }
             }
 
-            // DLSS-RR denoise + upscale. The render-res scene already includes volumetric fog, so RR sees
-            // the same depth-aligned fogged image the final display will use instead of resolving fog after
-            // reconstruction from a separate low-res buffer.
+            // DLSS-RR denoise + upscale. Fog lighting is now precomputed per froxel, so the expensive part
+            // stays before RR while the final view-ray integration can move to display resolution below.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
@@ -1338,7 +1317,25 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure + display mapping
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog integration / exposure
+
+            // ---- Volumetric fog integration AFTER RR/upscale ----
+            // The old screen-space cost reason for doing this at render resolution is gone now that shadow
+            // rays moved into froxel injection. Integrating at display resolution avoids asking RR to
+            // reconstruct a volume layer it has no guide representation for, which showed up as coarse,
+            // motion-dependent fog breakup even on high settings.
+            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog integration");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogIntegrate")) {
+                    volumetricFog.setIntegrationImages(gFogDepth.view, rrOutput.view);
+                    volumetricFog.dispatchIntegration(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            displayW, displayH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
