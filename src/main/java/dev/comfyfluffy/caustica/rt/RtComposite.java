@@ -1276,12 +1276,16 @@ public final class RtComposite {
                     float moonLitFrac = Math.abs(moonPhaseIdx - 4.0f) / 4.0f;
                     float moonIllumFactor = phaseFixed + (1.0f - phaseFixed) * moonLitFrac;
 
-                    // Normalize physical lux to the fog shader's working scale (~100k lux noon -> ~1.0).
-                    // The shader applies pc.sunIntensity / pc.moonIntensity from the push constants, so do
-                    // not multiply the config again here or the user-facing intensity sliders are squared.
-                    float sunScale = sunDir[1] > 0.0f ? Math.max(sunIllumLux / 100000.0f, 0.0f) : 0.0f;
+                    // Feed the fog pass the same scene-referred illuminance scale the rest of the renderer
+                    // reasons about, then let the fog composite bring that radiance into the traced buffer's
+                    // pre-exposed storage space. The old ~100k lux -> 1.0 normalization hid that mismatch;
+                    // once fog was composited with the trace's exposure model it made shafts collapse toward
+                    // black and confused auto-exposure because fog lived in a different radiometric scale.
+                    // The shader still applies pc.sunIntensity / pc.moonIntensity from the push constants,
+                    // so do not multiply the config again here or the user-facing intensity sliders square.
+                    float sunScale = sunDir[1] > 0.0f ? Math.max(sunIllumLux, 0.0f) : 0.0f;
                     float moonScale = moonDir[1] > 0.0f
-                            ? Math.max((moonIllumLux / 100000.0f) * moonIllumFactor, 0.0f) : 0.0f;
+                            ? Math.max(moonIllumLux * moonIllumFactor, 0.0f) : 0.0f;
                     // Match the path tracer's direct-light model: one dominant celestial at a time. This
                     // removes wasted duplicate shadow work and avoids double-lighting the fog when both
                     // bodies are technically above the horizon but one is negligible.
