@@ -64,7 +64,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         int texSlot = int(epr.tint.w + 0.5);
         float4 texel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(uv, 0.0);
         bool stochasticAlpha = false;
-        MaterialHeader materialHeader;
+        // Zero-initialised so the declaration is well-defined on every path; every meaningful read below
+        // is guarded by `instanceKind == ENTITY_BIT`, the same condition under which it is assigned, but
+        // the compiler's may-be-uninitialized analysis (E41035, fatal under -warnings-as-errors) cannot
+        // prove that across the intervening IgnoreHit() control flow. The zero value is inert: it is only
+        // ever observable on the particle path, which short-circuits before either model comparison.
+        MaterialHeader materialHeader = {};
         if (instanceKind == ENTITY_BIT) {
             materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[epr.materialId];
             stochasticAlpha = (materialHeader.features & MATERIAL_FEATURE_STOCHASTIC_ALPHA) != 0u;

@@ -110,9 +110,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
             }
             occluded += query.CommittedStatus() != COMMITTED_NOTHING ? 1.0 : 0.0;
         }
-        float occl = occluded / float(SHADOW_SAMPLES);
+        // Fraction of jittered rays that reached the light: 1 in open air, 0 in full shadow. The froxel
+        // in-scatters only the visible fraction -- shafts appear where light gets through, and shadowed
+        // columns of air stay dark (occluded rays must not *add* light).
+        float visibility = 1.0 - occluded / float(SHADOW_SAMPLES);
 
-        inScatter = sigmaS * phase * sunRadiance * occl * pc.ref.yzw;
+        inScatter = sigmaS * phase * sunRadiance * visibility * pc.ref.yzw;
     }
 
     uint lin = (slice * tileH + tileY) * tileW + tileX;

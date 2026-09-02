@@ -67,7 +67,7 @@ public void frustumRay(float2 ndc, float4x4 invViewProj, out float3 nearP, out f
 // averaging cannot shimmer.
 public float hash3(float3 p) {
     p = frac(p * 0.1031);
-    p += dot(p, float3(p.yzx, p.zyx) + 31.32);
+    p += dot(p, p.zyx + 31.32);
     return frac((p.x + p.y) * p.z);
 }
 
