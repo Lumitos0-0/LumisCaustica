@@ -287,7 +287,7 @@ public final class RtVolumetricFog {
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
 
             VkDescriptorImageInfo.Buffer froxelInfo = VkDescriptorImageInfo.calloc(1, stack);
-            froxelInfo.get(0).imageView(froxelVolume.view).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            froxelInfo.get(0).imageView(froxelVolume.view).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(froxelInfo);
 
@@ -398,7 +398,7 @@ public final class RtVolumetricFog {
                     renderW, renderH, frameIndex, exposure, terrainOrigin, camWorldPos,
                     jitterOffset, sunDir, sunIllum, moonDir, moonIllum).write(push);
             VK10.vkCmdPushConstants(cmd, integrationLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-            VK10.vkCmdDispatch(cmd, (renderW + 7) / 8, (renderH + 7) / 8, 1);
+            VK10.vkCmdDispatch(cmd, (renderW + 15) / 16, (renderH + 15) / 16, 1);
         }
     }
 
