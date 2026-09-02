@@ -1,8 +1,8 @@
 // Froxel volumetric fog final composite.
-// Reconstructs fog from the column-integrated cumulative volume built by integration.comp.slang. The
-// local resolved froxel field is still sampled for partial-slice recovery, while depth-aware XY
-// reconstruction rejects cross-surface blending that would otherwise leak bright background shafts across
-// foreground silhouettes.
+// Reconstructs fog from the column-integrated cumulative volume built by integration.comp.slang.
+// Depth-aware XY reconstruction rejects cross-surface blending that would otherwise leak bright
+// background shafts across foreground silhouettes, while linear Z reconstruction between cumulative
+// slice boundaries smooths the remaining froxel pattern instead of re-exposing one raw local slice.
 
 import world_common;
 import volumetric_fog_common;
@@ -15,23 +15,7 @@ import volumetric_fog_common;
 [[vk::binding(2, 0)]] Sampler2D fogStopDepth;
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> sceneImage;
 
-static const float PI = 3.14159265359;
 static const float SKY_DEPTH_EPSILON = 1.0e-6;
-
-float hgPhase(float cosTheta, float g) {
-    // Fog anisotropy is defined as forward scattering in the UI: looking toward the light should brighten.
-    g = clamp(g, 0.0, 0.8);
-    float g2 = g * g;
-    return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1.0e-4), 1.5));
-}
-
-float3 primaryRayDirFromPush(float2 ndc, WorldPush worldPush) {
-    float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
-    float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
-    float3 farP = farH.xyz / farH.w;
-    return normalize(farP - nearP);
-}
 
 float3 reconstructRebasedPos(float2 ndc, float ndcDepth, WorldPush worldPush) {
     float4 clip = float4(ndc.x, ndc.y, ndcDepth, 1.0);
@@ -57,20 +41,6 @@ float depthToMarchDistance(float2 ndc, float depth, WorldPush worldPush) {
     return min(tMax, pc.maxDistance);
 }
 
-float activePhase(float3 rayDir) {
-    float3 sunIllum = pc.sunIlluminance * pc.sunIntensity;
-    float3 moonIllum = pc.moonIlluminance * pc.moonIntensity;
-    bool sunEnabled = max(sunIllum.r, max(sunIllum.g, sunIllum.b)) > 1.0e-6;
-    bool moonEnabled = max(moonIllum.r, max(moonIllum.g, moonIllum.b)) > 1.0e-6;
-    if (sunEnabled) {
-        return hgPhase(dot(rayDir, normalize(pc.sunDir)), pc.anisotropy);
-    }
-    if (moonEnabled) {
-        return hgPhase(dot(rayDir, normalize(pc.moonDir)), pc.anisotropy);
-    }
-    return hgPhase(0.0, pc.anisotropy);
-}
-
 struct FogState {
     float3 scattering;
     float transmittance;
@@ -83,28 +53,6 @@ FogState emptyFog() {
     return fog;
 }
 
-float3 localLitScatterCoeff(float4 froxel, float phase) {
-    float extinction = max(froxel.a, 0.0);
-    float3 directionalIllum = max(froxel.rgb, float3(0.0, 0.0, 0.0));
-    float scatterOverExtinction = pc.extinction > 1.0e-6 ? pc.scattering / pc.extinction : 0.0;
-    return directionalIllum * (extinction * scatterOverExtinction) * phase;
-}
-
-FogState integrateHomogeneousSegment(float3 litScatterCoeff, float extinction, float segmentLength) {
-    FogState fog = emptyFog();
-    if (!(segmentLength > 0.0)) {
-        return fog;
-    }
-    if (extinction > 1.0e-6) {
-        fog.transmittance = exp(-extinction * segmentLength);
-        fog.scattering = litScatterCoeff * ((1.0 - fog.transmittance) / extinction);
-    } else {
-        fog.transmittance = 1.0;
-        fog.scattering = litScatterCoeff * segmentLength;
-    }
-    return fog;
-}
-
 void sampleColumnStop(int2 cell, WorldPush worldPush, int3 dim, out float stopDistance, out bool isSky) {
     float2 cellUv = (float2(cell) + float2(0.5, 0.5)) / float2(dim.xy);
     float depth = fogStopDepth.SampleLevel(cellUv, 0.0).r;
@@ -112,113 +60,105 @@ void sampleColumnStop(int2 cell, WorldPush worldPush, int3 dim, out float stopDi
     stopDistance = depthToMarchDistance(cellUv * 2.0 - 1.0, depth, worldPush);
 }
 
+float columnTentWeight(float sampleCoord, int cellCoord) {
+    float center = float(cellCoord) + 0.5;
+    return max(1.5 - abs(center - sampleCoord), 0.0);
+}
+
 float depthAwareColumnWeight(float currentStopDistance, bool currentSky,
                              float columnStopDistance, bool columnSky) {
     if (currentSky != columnSky) {
         return 0.0;
     }
-    float depthDelta = abs(columnStopDistance - currentStopDistance);
-    float relativeDelta = depthDelta / max(max(currentStopDistance, columnStopDistance), 1.0);
-    float absoluteDelta = depthDelta / max(min(currentStopDistance, columnStopDistance), 2.0);
-    float weight = exp(-relativeDelta * 18.0 - absoluteDelta * 1.25);
-    if (!currentSky && relativeDelta > 0.25) {
-        weight *= 0.1;
-    }
-    return weight;
+    float tolerance = max(0.75, currentStopDistance * 0.15);
+    return exp(-abs(columnStopDistance - currentStopDistance) / tolerance);
 }
 
-FogState evaluateColumnFog(int2 cell, float targetDistance, WorldPush worldPush,
-                           int3 dim, float nearP, float farP) {
-    FogState fog = emptyFog();
-    if (!(targetDistance > nearP)) {
-        return fog;
-    }
-
-    float2 cellUv = (float2(cell) + float2(0.5, 0.5)) / float2(dim.xy);
-    float slicePos = saturate(froxelUnitFromDepth(targetDistance, nearP, farP)) * float(dim.z);
-    int sliceIndex = min(int(floor(slicePos)), dim.z - 1);
-    float sliceStart = froxelBoundaryDepth(sliceIndex, dim.z, nearP, farP);
-    float sliceEnd = froxelBoundaryDepth(sliceIndex + 1, dim.z, nearP, farP);
-    float partialLength = clamp(targetDistance - sliceStart, 0.0, max(sliceEnd - sliceStart, 0.0));
-
-    if (sliceIndex > 0) {
-        float3 prevUvw = float3(cellUv, (float(sliceIndex - 1) + 0.5) / float(dim.z));
-        float4 prev = integratedVolume.SampleLevel(prevUvw, 0.0);
-        fog.scattering = max(prev.rgb, float3(0.0, 0.0, 0.0));
-        fog.transmittance = clamp(prev.a, 0.0, 1.0);
-    }
-
-    float3 rayDir = primaryRayDirFromPush(cellUv * 2.0 - 1.0, worldPush);
-    float phase = activePhase(rayDir);
-    float3 localUvw = float3(cellUv, (float(sliceIndex) + 0.5) / float(dim.z));
-    float4 localFroxel = froxelVolume.SampleLevel(localUvw, 0.0);
-    float extinction = max(localFroxel.a, 0.0);
-    FogState partial = integrateHomogeneousSegment(localLitScatterCoeff(localFroxel, phase), extinction, partialLength);
-    fog.scattering += partial.scattering * fog.transmittance;
-    fog.transmittance *= partial.transmittance;
-    return fog;
-}
-
-void accumulateColumnCandidate(int2 cell, float bilinearWeight,
-                               float currentStopDistance, bool currentSky,
-                               WorldPush worldPush, int3 dim, float nearP, float farP,
-                               inout float3 scatteringSum,
-                               inout float transmittanceSum,
-                               inout float weightSum) {
+float4 loadIntegratedColumn(int2 cell, int zIndex, int3 dim) {
     int2 clampedCell = clamp(cell, int2(0, 0), dim.xy - int2(1, 1));
-    float columnStopDistance;
-    bool columnSky;
-    sampleColumnStop(clampedCell, worldPush, dim, columnStopDistance, columnSky);
+    int clampedZ = clamp(zIndex, 0, dim.z - 1);
+    float3 uvw = float3((float2(clampedCell) + float2(0.5, 0.5)) / float2(dim.xy),
+            (float(clampedZ) + 0.5) / float(dim.z));
+    return integratedVolume.SampleLevel(uvw, 0.0);
+}
 
-    float weight = bilinearWeight * depthAwareColumnWeight(currentStopDistance, currentSky,
-            columnStopDistance, columnSky);
-    if (weight <= 1.0e-5) {
-        return;
+float4 sampleIntegratedColumn(int2 cell, float zCoord, int3 dim) {
+    float boundedZ = clamp(zCoord, 0.0, float(dim.z - 1));
+    int zLo = int(floor(boundedZ));
+    int zHi = min(zLo + 1, dim.z - 1);
+    float zf = frac(boundedZ);
+    float4 nearValue = loadIntegratedColumn(cell, zLo, dim);
+    float4 farValue = loadIntegratedColumn(cell, zHi, dim);
+    return lerp(nearValue, farValue, zf);
+}
+
+float4 depthAwareIntegrated(float3 coordinate, float pixelDistance, bool currentSky,
+                            WorldPush worldPush, int3 dim) {
+    float3 bounded = clamp(coordinate, float3(0.0, 0.0, 0.0),
+            float3(float(dim.x - 1), float(dim.y - 1), float(dim.z - 1)));
+    int2 base = int2(floor(bounded.xy));
+    float2 sampleCoord = bounded.xy + 0.5;
+
+    float4 total = float4(0.0, 0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+
+    for (int oy = -1; oy <= 1; ++oy) {
+        for (int ox = -1; ox <= 1; ++ox) {
+            int2 cell = clamp(base + int2(ox, oy), int2(0, 0), dim.xy - int2(1, 1));
+            float spatialWeight = columnTentWeight(sampleCoord.x, cell.x)
+                    * columnTentWeight(sampleCoord.y, cell.y);
+            if (spatialWeight <= 1.0e-5) {
+                continue;
+            }
+
+            float columnStopDistance;
+            bool columnSky;
+            sampleColumnStop(cell, worldPush, dim, columnStopDistance, columnSky);
+            float depthWeight = depthAwareColumnWeight(pixelDistance, currentSky,
+                    columnStopDistance, columnSky);
+            float weight = spatialWeight * depthWeight;
+            if (weight <= 1.0e-5) {
+                continue;
+            }
+
+            total += sampleIntegratedColumn(cell, bounded.z, dim) * weight;
+            weightSum += weight;
+        }
     }
 
-    FogState fog = evaluateColumnFog(clampedCell, min(currentStopDistance, columnStopDistance),
-            worldPush, dim, nearP, farP);
-    scatteringSum += fog.scattering * weight;
-    transmittanceSum += fog.transmittance * weight;
-    weightSum += weight;
+    if (weightSum <= 1.0e-6) {
+        int2 nearest = clamp(int2(round(bounded.xy)), int2(0, 0), dim.xy - int2(1, 1));
+        return sampleIntegratedColumn(nearest, bounded.z, dim);
+    }
+    return total / weightSum;
 }
 
 FogState reconstructFog(float2 uv, float currentStopDistance, bool currentSky,
                         WorldPush worldPush, int3 dim, float nearP, float farP) {
-    float2 froxelPos = uv * float2(dim.xy) - 0.5;
-    int2 base = int2(floor(froxelPos));
-    float2 fracPart = frac(froxelPos);
-
-    float3 scatteringSum = float3(0.0, 0.0, 0.0);
-    float transmittanceSum = 0.0;
-    float weightSum = 0.0;
-
-    accumulateColumnCandidate(base + int2(0, 0), (1.0 - fracPart.x) * (1.0 - fracPart.y),
-            currentStopDistance, currentSky, worldPush, dim, nearP, farP,
-            scatteringSum, transmittanceSum, weightSum);
-    accumulateColumnCandidate(base + int2(1, 0), fracPart.x * (1.0 - fracPart.y),
-            currentStopDistance, currentSky, worldPush, dim, nearP, farP,
-            scatteringSum, transmittanceSum, weightSum);
-    accumulateColumnCandidate(base + int2(0, 1), (1.0 - fracPart.x) * fracPart.y,
-            currentStopDistance, currentSky, worldPush, dim, nearP, farP,
-            scatteringSum, transmittanceSum, weightSum);
-    accumulateColumnCandidate(base + int2(1, 1), fracPart.x * fracPart.y,
-            currentStopDistance, currentSky, worldPush, dim, nearP, farP,
-            scatteringSum, transmittanceSum, weightSum);
-
     FogState fog = emptyFog();
-    if (weightSum > 1.0e-5) {
-        fog.scattering = scatteringSum / weightSum;
-        fog.transmittance = transmittanceSum / weightSum;
+    if (!(currentStopDistance > 0.0)) {
         return fog;
     }
 
-    int2 fallbackCell = clamp(int2(floor(froxelPos + 0.5)), int2(0, 0), dim.xy - int2(1, 1));
-    float fallbackStopDistance;
-    bool fallbackSky;
-    sampleColumnStop(fallbackCell, worldPush, dim, fallbackStopDistance, fallbackSky);
-    return evaluateColumnFog(fallbackCell, min(currentStopDistance, fallbackStopDistance),
-            worldPush, dim, nearP, farP);
+    float slice = saturate(froxelUnitFromDepth(currentStopDistance, nearP, farP)) * float(dim.z);
+    float3 coordinate = float3(uv * float2(dim.xy) - 0.5, slice - 1.0);
+    float4 integrated = depthAwareIntegrated(coordinate, currentStopDistance, currentSky, worldPush, dim);
+
+    if (slice < 1.0) {
+        // Texel zero stores fog integrated through the first boundary. Recover a partial constant-medium
+        // segment so fog starts continuously at the camera instead of appearing only once the first slice
+        // is fully entered.
+        float fraction = saturate(slice);
+        float fullTransmittance = clamp(integrated.a, 1.0e-6, 1.0);
+        float partialTransmittance = pow(fullTransmittance, fraction);
+        float fullOpacity = max(1.0 - fullTransmittance, 1.0e-6);
+        integrated.rgb *= (1.0 - partialTransmittance) / fullOpacity;
+        integrated.a = partialTransmittance;
+    }
+
+    fog.scattering = max(integrated.rgb, float3(0.0, 0.0, 0.0));
+    fog.transmittance = clamp(integrated.a, 0.0, 1.0);
+    return fog;
 }
 
 [shader("compute")]

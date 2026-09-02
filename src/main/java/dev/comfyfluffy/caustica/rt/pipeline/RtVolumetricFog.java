@@ -65,6 +65,7 @@ public final class RtVolumetricFog {
     private final long compositePipeline;
 
     private final long linearSampler;
+    private final long nearestSampler;
 
     private RtImage rawFroxelVolume;
     private RtImage[] filteredFroxelVolumes = new RtImage[0];
@@ -91,7 +92,7 @@ public final class RtVolumetricFog {
                             long resolveDsl, long resolvePool, long resolveSet, long resolveLayout, long resolvePipeline,
                             long integrationDsl, long integrationPool, long integrationSet, long integrationLayout, long integrationPipeline,
                             long compositeDsl, long compositePool, long compositeSet, long compositeLayout, long compositePipeline,
-                            long linearSampler) {
+                            long linearSampler, long nearestSampler) {
         this.ctx = ctx;
         this.injectionDsl = injectionDsl;
         this.injectionPool = injectionPool;
@@ -114,6 +115,7 @@ public final class RtVolumetricFog {
         this.compositeLayout = compositeLayout;
         this.compositePipeline = compositePipeline;
         this.linearSampler = linearSampler;
+        this.nearestSampler = nearestSampler;
     }
 
     public static RtVolumetricFog create(RtContext ctx) {
@@ -318,12 +320,23 @@ public final class RtVolumetricFog {
             long linearSampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, linearSampler, "fog linear sampler");
 
+            VkSamplerCreateInfo nearestSamplerCi = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                    .magFilter(VK10.VK_FILTER_NEAREST).minFilter(VK10.VK_FILTER_NEAREST)
+                    .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                    .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .minLod(0.0f).maxLod(0.0f);
+            check(VK10.vkCreateSampler(vk, nearestSamplerCi, null, p), "vkCreateSampler(fog nearest)");
+            long nearestSampler = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, nearestSampler, "fog nearest sampler");
+
             return new RtVolumetricFog(ctx,
                     injectionDsl, injectionPool, injectionSet, injectionLayout, injectionPipeline,
                     resolveDsl, resolvePool, resolveSet, resolveLayout, resolvePipeline,
                     integrationDsl, integrationPool, integrationSet, integrationLayout, integrationPipeline,
                     compositeDsl, compositePool, compositeSet, compositeLayout, compositePipeline,
-                    linearSampler);
+                    linearSampler, nearestSampler);
         }
     }
 
@@ -531,7 +544,11 @@ public final class RtVolumetricFog {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(integratedInfo);
 
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
-            depthInfo.get(0).imageView(fogDepthView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            // Depth-aware XY reconstruction should classify silhouettes against actual guide-depth texels,
+            // not a linearly blurred depth field. Using a nearest/clamp sampler here sharply reduces the
+            // bright-side fog bleed that otherwise appears when display-res reconstruction samples across a
+            // lower-resolution fog-stop edge.
+            depthInfo.get(0).imageView(fogDepthView).sampler(nearestSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             writes.get(2).sType$Default().dstSet(compositeSet).dstBinding(2)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
 
@@ -753,6 +770,7 @@ public final class RtVolumetricFog {
         VK10.vkDestroyDescriptorPool(vk, compositePool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, compositeDsl, null);
         VK10.vkDestroySampler(vk, linearSampler, null);
+        VK10.vkDestroySampler(vk, nearestSampler, null);
         destroyed = true;
     }
 
