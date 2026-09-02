@@ -3,6 +3,7 @@
 // complete Std430DataLayout: field types, byte offsets, total size, matrix mode, and array counts.
 import world_common;
 import display_common;
+import froxel_common;
 
 struct WorldPushLayoutProbe {
     WorldPush values[2]; // array stride is the complete, tail-padded WorldPush byte size
@@ -92,5 +93,16 @@ void probePushAddr(uint3 id : SV_DispatchThreadID) {
 void probeBloomPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
+    }
+}
+
+// The froxel volume compute passes carry their own push block (WorldPush address + froxel buffer
+// addresses + grid parameters); see shaders/pipelines/froxel/froxel_common.slang.
+[[vk::push_constant]] FroxelPush froxelPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFroxelPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(froxelPushProbe.packedGridDims) + froxelPushProbe.params.x + froxelPushProbe.look.w;
     }
 }
