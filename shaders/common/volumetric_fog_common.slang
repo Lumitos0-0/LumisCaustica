@@ -77,3 +77,35 @@ public float froxelUnitFromDepth(float depth, float nearPlane, float farPlane) {
     float linear01 = saturate((depth - nearPlane) / span);
     return pow(linear01, 1.0 / FROXEL_DEPTH_CURVE);
 }
+
+// Small tiled progressive blue-noise-style sequence shared by fog passes. The per-frame golden-ratio
+// Cranley-Patterson rotation makes it spatiotemporal: each pixel/froxel keeps the same good spatial
+// distribution every frame, but the sample advances through the unit interval over time instead of
+// freezing a visible lattice into the volume.
+static const float FOG_BLUE_NOISE_8X8[64] = {
+    0.281250, 0.968750, 0.375000, 0.859375, 0.250000, 0.937500, 0.406250, 0.812500,
+    0.593750, 0.187500, 0.734375, 0.046875, 0.578125, 0.218750, 0.703125, 0.015625,
+    0.453125, 0.765625, 0.328125, 0.921875, 0.484375, 0.796875, 0.343750, 0.890625,
+    0.640625, 0.093750, 0.546875, 0.156250, 0.671875, 0.078125, 0.515625, 0.125000,
+    0.265625, 0.953125, 0.421875, 0.828125, 0.296875, 0.984375, 0.390625, 0.843750,
+    0.562500, 0.234375, 0.687500, 0.000000, 0.609375, 0.203125, 0.718750, 0.031250,
+    0.468750, 0.781250, 0.359375, 0.875000, 0.437500, 0.750000, 0.312500, 0.906250,
+    0.656250, 0.062500, 0.500000, 0.140625, 0.625000, 0.109375, 0.531250, 0.171875
+};
+
+public float fogBlueNoiseScalar(uint2 pixel, uint frame, uint salt) {
+    uint2 p = (pixel + uint2(salt * 3u, salt * 5u)) & uint2(7u, 7u);
+    float base = FOG_BLUE_NOISE_8X8[int(p.y * 8u + p.x)];
+    return frac(base + float((frame + salt * 17u) & 255u) * 0.61803398875);
+}
+
+public float fogBlueNoiseScalar3D(uint3 cell, uint frame, uint salt) {
+    uint2 folded = cell.xy + uint2(cell.z * 13u + salt * 7u, cell.z * 17u + salt * 11u);
+    return fogBlueNoiseScalar(folded, frame, salt);
+}
+
+public float2 fogBlueNoiseOffset2D(uint3 cell, uint frame, uint salt) {
+    float x = fogBlueNoiseScalar3D(cell, frame, salt * 2u + 0u);
+    float y = fogBlueNoiseScalar3D(cell.yzx, frame, salt * 2u + 1u);
+    return float2(x, y) - 0.5;
+}

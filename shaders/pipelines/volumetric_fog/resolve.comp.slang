@@ -14,9 +14,9 @@ import volumetric_fog_common;
 [[vk::binding(2, 0)]] [format("rgba16f")] RWTexture3D<float4> resolvedVolume;
 
 static const float CURRENT_EXTINCTION_SIGMA = 12.0;
-static const float CURRENT_LIGHTING_SIGMA = 4.0;
+static const float CURRENT_LIGHTING_SIGMA = 3.0;
 static const float HISTORY_EXTINCTION_SIGMA = 10.0;
-static const float HISTORY_LIGHTING_SIGMA = 5.0;
+static const float HISTORY_LIGHTING_SIGMA = 4.0;
 
 float fogLuma(float3 v) {
     return dot(max(v, float3(0.0)), ACESCG_LUMA);
@@ -116,14 +116,19 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float4 neighborhoodMax = center;
 
     // Smooth the lighting field mainly across XY where the camera-frustum grid is most visible, with only
-    // a mild Z influence so distant slabs blend without washing out near silhouettes.
-    accumulateCurrentTap(cell, dim, center, 0.50, accum, weightSum, neighborhoodMin, neighborhoodMax);
-    accumulateCurrentTap(cell + int3(-1, 0, 0), dim, center, 0.10, accum, weightSum, neighborhoodMin, neighborhoodMax);
-    accumulateCurrentTap(cell + int3(1, 0, 0), dim, center, 0.10, accum, weightSum, neighborhoodMin, neighborhoodMax);
-    accumulateCurrentTap(cell + int3(0, -1, 0), dim, center, 0.10, accum, weightSum, neighborhoodMin, neighborhoodMax);
-    accumulateCurrentTap(cell + int3(0, 1, 0), dim, center, 0.10, accum, weightSum, neighborhoodMin, neighborhoodMax);
-    accumulateCurrentTap(cell + int3(0, 0, -1), dim, center, 0.05, accum, weightSum, neighborhoodMin, neighborhoodMax);
-    accumulateCurrentTap(cell + int3(0, 0, 1), dim, center, 0.05, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    // a mild Z influence so distant slabs blend without washing out near silhouettes. Include diagonals so
+    // shafts through small openings do not keep a plus-shaped reconstruction footprint.
+    accumulateCurrentTap(cell, dim, center, 0.36, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(-1, 0, 0), dim, center, 0.09, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(1, 0, 0), dim, center, 0.09, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(0, -1, 0), dim, center, 0.09, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(0, 1, 0), dim, center, 0.09, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(-1, -1, 0), dim, center, 0.055, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(-1, 1, 0), dim, center, 0.055, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(1, -1, 0), dim, center, 0.055, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(1, 1, 0), dim, center, 0.055, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(0, 0, -1), dim, center, 0.04, accum, weightSum, neighborhoodMin, neighborhoodMax);
+    accumulateCurrentTap(cell + int3(0, 0, 1), dim, center, 0.04, accum, weightSum, neighborhoodMin, neighborhoodMax);
 
     float4 resolved = accum / max(weightSum, 1.0e-5);
     // The visible artifact is mainly the coarse directional-light field, not the base density/extinction.
@@ -141,8 +146,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
             float extinctionTrust = exp(-abs(history.a - center.a) * HISTORY_EXTINCTION_SIGMA);
             float lightingTrust = exp(-relativeLightingDelta(history.rgb, resolved.rgb) * HISTORY_LIGHTING_SIGMA);
-            float motionTrust = 1.0 / (1.0 + reprojPixels * 0.35);
-            float distanceHistory = lerp(0.55, 0.82, saturate(depth * (1.0 / 32.0)));
+            float motionTrust = 1.0 / (1.0 + reprojPixels * 0.25);
+            float distanceHistory = lerp(0.62, 0.90, saturate(depth * (1.0 / 32.0)));
             float historyWeight = distanceHistory * extinctionTrust * lightingTrust * motionTrust;
             resolved.rgb = lerp(resolved.rgb, history.rgb, historyWeight);
             resolved.a = lerp(center.a, history.a, min(historyWeight, 0.35));

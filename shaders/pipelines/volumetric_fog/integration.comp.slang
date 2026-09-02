@@ -15,19 +15,6 @@ import volumetric_fog_common;
 
 static const float PI = 3.14159265359;
 
-uint pcgHash(uint v) {
-    v = v * 747796405u + 2891336453u;
-    uint w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
-    return (w >> 22u) ^ w;
-}
-float rnd(inout uint s) {
-    s = pcgHash(s);
-    return float(s >> 8u) * (1.0 / 16777216.0);
-}
-float ign(float2 p) {
-    float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
-    return frac(magic.z * frac(dot(p, magic.xy)));
-}
 float hgPhase(float cosTheta, float g) {
     // Fog anisotropy is defined as forward scattering in the UI: looking toward the light should brighten.
     g = clamp(g, 0.0, 0.8);
@@ -86,7 +73,7 @@ struct FogIntegralResult {
 };
 
 FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
-                                  uint seedBase, float temporalJitter, float2 sampleUv) {
+                                  uint2 pixel, float temporalJitter, float2 sampleUv) {
     FogIntegralResult result;
     result.scattering = float3(0.0, 0.0, 0.0);
     result.transmittance = 1.0;
@@ -98,10 +85,12 @@ FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
     float farP = min(max(pc.farPlane, nearP + 1.0), pc.maxDistance);
     float phase = activePhase(rayDir);
     float stepSize = tMax / float(sampleCount);
-    uint seed = seedBase;
 
     for (int i = 0; i < sampleCount; i++) {
-        float jitter = pc.jitterStrength != 0.0 ? (rnd(seed) - 0.5) * pc.jitterStrength : 0.0;
+        float jitter = pc.jitterStrength != 0.0
+                ? (fogBlueNoiseScalar(pixel + uint2(uint(i) * 13u, uint(i) * 29u), pc.frameIndex, 53u) - 0.5)
+                    * pc.jitterStrength
+                : 0.0;
         float t = (float(i) + temporalJitter + jitter) * stepSize;
         t = clamp(t, 0.0, tMax);
 
@@ -152,13 +141,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float tMax = depthToMarchDistance(ndc, sceneDepth, worldPush);
 
     int sampleCount = max(pc.sampleCount, 1);
-    uint seed = pix.x * 1973u + pix.y * 9277u + pc.frameIndex * 2654435761u;
+    uint2 pixel = uint2(dispatchId.xy);
     float temporalJitter = pc.temporalEnabled != 0
-            ? ign(float2(pix) + float(pc.frameIndex) * 0.5)
+            ? fogBlueNoiseScalar(pixel, pc.frameIndex, 7u)
             : 0.5;
 
     FogIntegralResult fog = integrateFogRay(rayDir, tMax, sampleCount,
-            seed, temporalJitter, uv);
+            pixel, temporalJitter, uv);
 
     float4 scene = sceneImage[pix];
     // The traced scene buffer is pre-exposed before its fp16 write, so fog scattering must be brought into

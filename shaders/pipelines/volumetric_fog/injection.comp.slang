@@ -22,14 +22,31 @@ static const float TRANSLUCENT_NEUTRAL_EXTINCTION = 0.15;
 static const float TRANSMITTANCE_CUTOFF = 0.01;
 static const uint MAX_TRANSMISSIVE_CROSSINGS = 4u;
 
-uint pcgHash(uint v) {
-    v = v * 747796405u + 2891336453u;
-    uint w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
-    return (w >> 22u) ^ w;
+float hash31(float3 p) {
+    return frac(sin(dot(p, float3(12.9898, 78.233, 45.164))) * 43758.5453);
 }
-float rnd(inout uint s) {
-    s = pcgHash(s);
-    return float(s >> 8u) * (1.0 / 16777216.0);
+
+float smoothValueNoise(float3 p) {
+    float3 i = floor(p);
+    float3 f = frac(p);
+    float3 u = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash31(i + float3(0.0, 0.0, 0.0));
+    float n100 = hash31(i + float3(1.0, 0.0, 0.0));
+    float n010 = hash31(i + float3(0.0, 1.0, 0.0));
+    float n110 = hash31(i + float3(1.0, 1.0, 0.0));
+    float n001 = hash31(i + float3(0.0, 0.0, 1.0));
+    float n101 = hash31(i + float3(1.0, 0.0, 1.0));
+    float n011 = hash31(i + float3(0.0, 1.0, 1.0));
+    float n111 = hash31(i + float3(1.0, 1.0, 1.0));
+
+    float nx00 = lerp(n000, n100, u.x);
+    float nx10 = lerp(n010, n110, u.x);
+    float nx01 = lerp(n001, n101, u.x);
+    float nx11 = lerp(n011, n111, u.x);
+    float nxy0 = lerp(nx00, nx10, u.y);
+    float nxy1 = lerp(nx01, nx11, u.y);
+    return lerp(nxy0, nxy1, u.z);
 }
 
 float3 primaryRayDirFroxel(float2 ndc, WorldPush worldPush) {
@@ -178,6 +195,18 @@ void accumulateLightingTap(float2 uv, float depth, WorldPush worldPush,
     tapCount += 1.0;
 }
 
+void accumulateMirroredLightingPair(uint3 cell, uint pairSalt, float2 uv, float2 froxelTexel,
+                                    float depth, WorldPush worldPush,
+                                    bool sunEnabled, float3 sunDir, float3 sunIllum,
+                                    bool moonEnabled, float3 moonDir, float3 moonIllum,
+                                    inout float3 lighting, inout float tapCount) {
+    float2 offset = fogBlueNoiseOffset2D(cell, pc.frameIndex, pairSalt) * (froxelTexel * 0.85);
+    accumulateLightingTap(uv + offset, depth, worldPush,
+            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+    accumulateLightingTap(uv - offset, depth, worldPush,
+            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 4)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -186,12 +215,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
 
-    // The froxel lighting field is reused by many screen-space march samples, so tying its XY footprint to
-    // per-frame camera jitter or per-frame random offsets makes motion reveal blocky/shimmery voxels that a
-    // still camera can only hide through temporal accumulation. Keep the froxel footprint stable in screen
-    // space and only allow a deterministic per-cell depth offset to soften slice banding.
-    uint seed = dispatchId.x * 1973u + dispatchId.y * 9277u + dispatchId.z * 26699u;
-    float jitterZ = (rnd(seed) - 0.5) * pc.jitterStrength;
+    // The resolved froxel pipeline now has real temporal history, so injection no longer needs to freeze
+    // every sub-froxel decision forever. Use a spatiotemporal blue-noise-style pattern to vary the depth
+    // slice position and froxel-footprint lighting taps over time; the resolve pass accumulates that into a
+    // smoother volume instead of letting one static sample pattern imprint itself permanently on shafts.
+    float jitterZ = (fogBlueNoiseScalar3D(dispatchId.xyz, pc.frameIndex, 29u) - 0.5) * pc.jitterStrength;
 
     float2 uv = (float2(dispatchId.xy) + float2(0.5, 0.5)) / float2(dim.xy);
     float2 ndc = uv * 2.0 - 1.0;
@@ -211,9 +239,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float distanceFade = 1.0 / (1.0 + depth * 0.001);
 
     float baseDensity = pc.density * heightFactor * highAltitudeFade * distanceFade;
-    float3 noisePos = worldPos * 0.02;
-    float n = frac(sin(dot(noisePos, float3(12.9898, 78.233, 45.164))) * 43758.5453);
-    n = lerp(0.8, 1.2, n);
+    // The old single-sample froxel path made this density modulation read back as visible static grain.
+    // Keep only a much smoother, lower-amplitude world-space variation so global fog stays natural
+    // without injecting a hash-shaped breakup into every shaft.
+    float3 noisePos = worldPos * 0.01;
+    float n = smoothValueNoise(noisePos);
+    n = lerp(0.94, 1.06, n);
     baseDensity *= n;
     baseDensity = max(baseDensity, 0.0);
 
@@ -234,16 +265,20 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 moonDir = moonEnabled ? normalize(pc.moonDir) : float3(0.0, 1.0, 0.0);
 
     // One shadowed lighting sample per froxel kept the new architecture fast, but it also exposed the
-    // froxel lattice directly in shafts cast through thin openings and distant geometry. A small stable
-    // supersample over the froxel footprint approximates the cell-average lighting while staying far cheaper
-    // than the old per-pixel/per-step shadowing path.
+    // froxel lattice directly in shafts cast through thin openings and distant geometry. Now that the
+    // volume has its own temporal resolve, spend a few taps on the actual root cause: better cell-average
+    // directional lighting in injection. Mirrored blue-noise pairs keep the footprint unbiased and let the
+    // resolve pass integrate sub-froxel structure over time.
     float2 froxelTexel = 1.0 / float2(float(dim.x), float(dim.y));
-    float2 diag = froxelTexel * 0.35;
-    bool supersampleLighting = dim.x >= 224 || dim.z >= 48;
-    if (supersampleLighting) {
-        accumulateLightingTap(uv + float2(-diag.x, -diag.y), depth, worldPush,
+    bool mediumQuality = dim.x >= 224 || dim.z >= 32;
+    bool highQuality = dim.x >= 336 || dim.z >= 48;
+    if (highQuality) {
+        accumulateMirroredLightingPair(dispatchId.xyz, 0u, uv, froxelTexel, depth, worldPush,
                 sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
-        accumulateLightingTap(uv + float2(diag.x, diag.y), depth, worldPush,
+        accumulateMirroredLightingPair(dispatchId.xyz, 19u, uv, froxelTexel, depth, worldPush,
+                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+    } else if (mediumQuality) {
+        accumulateMirroredLightingPair(dispatchId.xyz, 0u, uv, froxelTexel, depth, worldPush,
                 sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
     } else {
         accumulateLightingTap(uv, depth, worldPush,
