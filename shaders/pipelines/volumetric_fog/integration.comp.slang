@@ -76,10 +76,10 @@ float sampleDepthBilinear(float2 uv) {
     int2 p01 = clamp(base + int2(0, 1), int2(0, 0), int2(pc.displaySize) - 1);
     int2 p11 = clamp(base + int2(1, 1), int2(0, 0), int2(pc.displaySize) - 1);
 
-    float d00 = fogStopDepth[p00];
-    float d10 = fogStopDepth[p10];
-    float d01 = fogStopDepth[p01];
-    float d11 = fogStopDepth[p11];
+    float d00 = fogStopDepth[p00].x;
+    float d10 = fogStopDepth[p10].x;
+    float d01 = fogStopDepth[p01].x;
+    float d11 = fogStopDepth[p11].x;
 
     float dx0 = lerp(d00, d10, f.x);
     float dx1 = lerp(d01, d11, f.x);
