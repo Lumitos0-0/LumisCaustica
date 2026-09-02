@@ -1,5 +1,5 @@
 // Froxel fog material + directional-light injection pass.
-// Fills a 3D frustum-aligned froxel volume with pre-lit single-scattering coefficients in rgb and
+// Fills a 3D frustum-aligned froxel volume with pre-shadowed directional illumination in rgb and
 // extinction in a. Directional-light shadow/transmission is evaluated once per froxel here so the final
 // screen-space integration pass no longer fires shadow rays per pixel sample.
 
@@ -175,15 +175,15 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
     return result;
 }
 
-void accumulateLightingTap(float2 uv, float depth, WorldPush worldPush,
-                           bool sunEnabled, float3 sunDir, float3 sunIllum,
-                           bool moonEnabled, float3 moonDir, float3 moonIllum,
-                           inout float3 lighting, inout float tapCount) {
+float3 sampleLightingTap(float2 uv, float depth, WorldPush worldPush,
+                         bool sunEnabled, float3 sunDir, float3 sunIllum,
+                         bool moonEnabled, float3 moonDir, float3 moonIllum) {
     float2 clampedUv = clamp(uv, float2(1.0e-4, 1.0e-4), float2(0.9999, 0.9999));
     float2 ndc = clampedUv * 2.0 - 1.0;
     float3 tapRayDir = primaryRayDirFroxel(ndc, worldPush);
     float3 tapRebasedPos = worldPush.camOffset + tapRayDir * depth;
 
+    float3 lighting = float3(0.0, 0.0, 0.0);
     if (sunEnabled) {
         ShadowResult sunShadow = traceShadowWithTransmission(tapRebasedPos + sunDir * 0.01, sunDir, 10000.0);
         lighting += sunIllum * sunShadow.transmittance;
@@ -192,19 +192,36 @@ void accumulateLightingTap(float2 uv, float depth, WorldPush worldPush,
         ShadowResult moonShadow = traceShadowWithTransmission(tapRebasedPos + moonDir * 0.01, moonDir, 10000.0);
         lighting += moonIllum * moonShadow.transmittance;
     }
+    return lighting;
+}
+
+float lightingLuma(float3 lighting) {
+    return dot(max(lighting, float3(0.0)), ACESCG_LUMA);
+}
+
+void accumulateLightingSample(float3 sampleLighting,
+                              inout float3 lighting, inout float tapCount,
+                              inout float minLuma, inout float maxLuma) {
+    float luma = lightingLuma(sampleLighting);
+    lighting += sampleLighting;
     tapCount += 1.0;
+    minLuma = min(minLuma, luma);
+    maxLuma = max(maxLuma, luma);
 }
 
 void accumulateMirroredLightingPair(uint3 cell, uint pairSalt, float2 uv, float2 froxelTexel,
                                     float depth, WorldPush worldPush,
                                     bool sunEnabled, float3 sunDir, float3 sunIllum,
                                     bool moonEnabled, float3 moonDir, float3 moonIllum,
-                                    inout float3 lighting, inout float tapCount) {
+                                    inout float3 lighting, inout float tapCount,
+                                    inout float minLuma, inout float maxLuma) {
     float2 offset = fogBlueNoiseOffset2D(cell, pc.frameIndex, pairSalt) * (froxelTexel * 0.85);
-    accumulateLightingTap(uv + offset, depth, worldPush,
-            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
-    accumulateLightingTap(uv - offset, depth, worldPush,
-            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+    float3 plusLighting = sampleLightingTap(uv + offset, depth, worldPush,
+            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum);
+    float3 minusLighting = sampleLightingTap(uv - offset, depth, worldPush,
+            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum);
+    accumulateLightingSample(plusLighting, lighting, tapCount, minLuma, maxLuma);
+    accumulateLightingSample(minusLighting, lighting, tapCount, minLuma, maxLuma);
 }
 
 [shader("compute")]
@@ -244,19 +261,21 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // without injecting a hash-shaped breakup into every shaft.
     float3 noisePos = worldPos * 0.01;
     float n = smoothValueNoise(noisePos);
-    n = lerp(0.94, 1.06, n);
+    n = lerp(0.98, 1.02, n);
     baseDensity *= n;
     baseDensity = max(baseDensity, 0.0);
 
     float extinction = baseDensity * pc.extinction;
-    float scatteringCoeff = baseDensity * pc.scattering;
-    if (extinction <= 1.0e-6 && scatteringCoeff <= 1.0e-6) {
+    float scatteringDensity = baseDensity * pc.scattering;
+    if (extinction <= 1.0e-6 && scatteringDensity <= 1.0e-6) {
         froxelVolume[dispatchId] = float4(0.0, 0.0, 0.0, 0.0);
         return;
     }
 
     float3 lighting = float3(0.0, 0.0, 0.0);
     float tapCount = 0.0;
+    float minLuma = 1.0e30;
+    float maxLuma = 0.0;
     float3 sunIllum = pc.sunIlluminance * pc.sunIntensity;
     float3 moonIllum = pc.moonIlluminance * pc.moonIntensity;
     bool sunEnabled = max(sunIllum.r, max(sunIllum.g, sunIllum.b)) > 1.0e-6;
@@ -266,25 +285,40 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     // One shadowed lighting sample per froxel kept the new architecture fast, but it also exposed the
     // froxel lattice directly in shafts cast through thin openings and distant geometry. Now that the
-    // volume has its own temporal resolve, spend a few taps on the actual root cause: better cell-average
-    // directional lighting in injection. Mirrored blue-noise pairs keep the footprint unbiased and let the
-    // resolve pass integrate sub-froxel structure over time.
+    // volume has its own temporal resolve, spend taps where they matter: estimate the cell-average
+    // directional lighting, and adaptively refine only when the first samples disagree strongly.
     float2 froxelTexel = 1.0 / float2(float(dim.x), float(dim.y));
     bool mediumQuality = dim.x >= 224 || dim.z >= 32;
     bool highQuality = dim.x >= 336 || dim.z >= 48;
-    if (highQuality) {
+
+    float3 centerLighting = sampleLightingTap(uv, depth, worldPush,
+            sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum);
+    accumulateLightingSample(centerLighting, lighting, tapCount, minLuma, maxLuma);
+
+    if (mediumQuality) {
         accumulateMirroredLightingPair(dispatchId.xyz, 0u, uv, froxelTexel, depth, worldPush,
-                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
-        accumulateMirroredLightingPair(dispatchId.xyz, 19u, uv, froxelTexel, depth, worldPush,
-                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
-    } else if (mediumQuality) {
-        accumulateMirroredLightingPair(dispatchId.xyz, 0u, uv, froxelTexel, depth, worldPush,
-                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
-    } else {
-        accumulateLightingTap(uv, depth, worldPush,
-                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum,
+                lighting, tapCount, minLuma, maxLuma);
+
+        float contrast = (maxLuma - minLuma) / max(maxLuma, 1.0e-3);
+        bool refineMedium = contrast > 0.10;
+        bool refineHigh = contrast > 0.28;
+
+        if (refineMedium) {
+            accumulateMirroredLightingPair(dispatchId.xyz, 19u, uv, froxelTexel, depth, worldPush,
+                    sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum,
+                    lighting, tapCount, minLuma, maxLuma);
+        }
+        if (highQuality && refineHigh) {
+            accumulateMirroredLightingPair(dispatchId.xyz, 37u, uv, froxelTexel, depth, worldPush,
+                    sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum,
+                    lighting, tapCount, minLuma, maxLuma);
+            accumulateMirroredLightingPair(dispatchId.xyz, 59u, uv, froxelTexel, depth, worldPush,
+                    sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum,
+                    lighting, tapCount, minLuma, maxLuma);
+        }
     }
     lighting /= max(tapCount, 1.0);
 
-    froxelVolume[dispatchId] = float4(float3(scatteringCoeff) * lighting, extinction);
+    froxelVolume[dispatchId] = float4(lighting, extinction);
 }

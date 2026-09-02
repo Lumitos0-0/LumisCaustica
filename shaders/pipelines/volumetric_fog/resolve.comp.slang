@@ -1,7 +1,7 @@
 // Froxel volumetric fog lighting resolve.
-// Filters the raw per-froxel lighting field in volume space and blends in a reprojected history sample.
-// Doing this once per froxel is dramatically cheaper than asking the full-resolution view-ray integration
-// pass to repair coarse lighting with many screen-space taps at every march step.
+// Filters the raw per-froxel directional-illumination field in volume space and blends in a reprojected
+// history sample. Doing this once per froxel is dramatically cheaper than asking the full-resolution
+// view-ray integration pass to repair coarse lighting with many screen-space taps at every march step.
 
 import world_common;
 import volumetric_fog_common;

@@ -1,7 +1,7 @@
 // Froxel volumetric fog integration.
-// Directional-light shadow/transmission is precomputed per froxel in injection.comp.slang, then the raw
-// lighting field is filtered and temporally resolved in resolve.comp.slang. This pass restores the
-// high-quality view-ray march while sampling only that cheaper prelit volume.
+// Directional-light shadow/transmission is precomputed per froxel in injection.comp.slang as a raw
+// directional-illumination field, then filtered and temporally resolved in resolve.comp.slang. This pass
+// restores the high-quality view-ray march while sampling only that cheaper prelit volume.
 
 import world_common;
 import volumetric_fog_common;
@@ -85,6 +85,7 @@ FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
     float farP = min(max(pc.farPlane, nearP + 1.0), pc.maxDistance);
     float phase = activePhase(rayDir);
     float stepSize = tMax / float(sampleCount);
+    float scatterOverExtinction = pc.extinction > 1.0e-6 ? pc.scattering / pc.extinction : 0.0;
 
     for (int i = 0; i < sampleCount; i++) {
         float jitter = pc.jitterStrength != 0.0
@@ -99,7 +100,8 @@ FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
 
         float4 froxel = froxelVolume.SampleLevel(float3(sampleUv, linear01), 0.0);
         float extinction = max(froxel.a, 0.0);
-        float3 litScatterCoeff = max(froxel.rgb, float3(0.0));
+        float3 directionalIllum = max(froxel.rgb, float3(0.0));
+        float3 litScatterCoeff = directionalIllum * (extinction * scatterOverExtinction);
         if (extinction <= 1.0e-6 && max(litScatterCoeff.r, max(litScatterCoeff.g, litScatterCoeff.b)) <= 1.0e-6) {
             continue;
         }
