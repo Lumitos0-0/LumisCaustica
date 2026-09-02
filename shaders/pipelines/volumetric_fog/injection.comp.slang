@@ -158,6 +158,26 @@ ShadowResult traceShadowWithTransmission(float3 origin, float3 dir, float tMax) 
     return result;
 }
 
+void accumulateLightingTap(float2 uv, float depth, WorldPush worldPush,
+                           bool sunEnabled, float3 sunDir, float3 sunIllum,
+                           bool moonEnabled, float3 moonDir, float3 moonIllum,
+                           inout float3 lighting, inout float tapCount) {
+    float2 clampedUv = clamp(uv, float2(1.0e-4, 1.0e-4), float2(0.9999, 0.9999));
+    float2 ndc = clampedUv * 2.0 - 1.0;
+    float3 tapRayDir = primaryRayDirFroxel(ndc, worldPush);
+    float3 tapRebasedPos = worldPush.camOffset + tapRayDir * depth;
+
+    if (sunEnabled) {
+        ShadowResult sunShadow = traceShadowWithTransmission(tapRebasedPos + sunDir * 0.01, sunDir, 10000.0);
+        lighting += sunIllum * sunShadow.transmittance;
+    }
+    if (moonEnabled) {
+        ShadowResult moonShadow = traceShadowWithTransmission(tapRebasedPos + moonDir * 0.01, moonDir, 10000.0);
+        lighting += moonIllum * moonShadow.transmittance;
+    }
+    tapCount += 1.0;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 4)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -205,6 +225,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     float3 lighting = float3(0.0, 0.0, 0.0);
+    float tapCount = 0.0;
     float3 sunIllum = pc.sunIlluminance * pc.sunIntensity;
     float3 moonIllum = pc.moonIlluminance * pc.moonIntensity;
     bool sunEnabled = max(sunIllum.r, max(sunIllum.g, sunIllum.b)) > 1.0e-6;
@@ -212,16 +233,23 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 sunDir = sunEnabled ? normalize(pc.sunDir) : float3(0.0, 1.0, 0.0);
     float3 moonDir = moonEnabled ? normalize(pc.moonDir) : float3(0.0, 1.0, 0.0);
 
-    // The host keeps only the dominant celestial active for fog, so one froxel rgb triplet is enough to
-    // store the pre-shadowed directional illumination consumed later by the screen integration pass.
-    if (sunEnabled) {
-        ShadowResult sunShadow = traceShadowWithTransmission(rebasedPos + sunDir * 0.01, sunDir, 10000.0);
-        lighting += sunIllum * sunShadow.transmittance;
+    // One shadowed lighting sample per froxel kept the new architecture fast, but it also exposed the
+    // froxel lattice directly in shafts cast through thin openings and distant geometry. A small stable
+    // supersample over the froxel footprint approximates the cell-average lighting while staying far cheaper
+    // than the old per-pixel/per-step shadowing path.
+    float2 froxelTexel = 1.0 / float2(float(dim.x), float(dim.y));
+    float2 diag = froxelTexel * 0.35;
+    bool supersampleLighting = dim.x >= 224 || dim.z >= 48;
+    if (supersampleLighting) {
+        accumulateLightingTap(uv + float2(-diag.x, -diag.y), depth, worldPush,
+                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+        accumulateLightingTap(uv + float2(diag.x, diag.y), depth, worldPush,
+                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
+    } else {
+        accumulateLightingTap(uv, depth, worldPush,
+                sunEnabled, sunDir, sunIllum, moonEnabled, moonDir, moonIllum, lighting, tapCount);
     }
-    if (moonEnabled) {
-        ShadowResult moonShadow = traceShadowWithTransmission(rebasedPos + moonDir * 0.01, moonDir, 10000.0);
-        lighting += moonIllum * moonShadow.transmittance;
-    }
+    lighting /= max(tapCount, 1.0);
 
     froxelVolume[dispatchId] = float4(float3(scatteringCoeff) * lighting, extinction);
 }

@@ -79,13 +79,63 @@ float activePhase(float3 rayDir) {
     return hgPhase(0.0, pc.anisotropy);
 }
 
+static const float FROXEL_RECON_RADIUS = 0.8;
+static const float FROXEL_RECON_EDGE_SOFTNESS_MIN = 0.35;
+static const float FROXEL_RECON_EDGE_SOFTNESS_SCALE = 0.02;
+
+float sampleFogStopDistance(float2 uv, WorldPush worldPush) {
+    float2 uvMin = pc.invDisplaySize * 0.5;
+    float2 uvMax = float2(1.0, 1.0) - uvMin;
+    float2 clampedUv = clamp(uv, uvMin, uvMax);
+    float sceneDepth = fogStopDepth.SampleLevel(clampedUv, 0.0).r;
+    return depthToMarchDistance(clampedUv * 2.0 - 1.0, sceneDepth, worldPush);
+}
+
+void accumulateFroxelTap(float2 tapUv, float baseWeight, float linear01, float sampleDepth,
+                         WorldPush worldPush, inout float4 accum, inout float weightSum) {
+    float2 uvMin = pc.invDisplaySize * 0.5;
+    float2 uvMax = float2(1.0, 1.0) - uvMin;
+    float2 clampedUv = clamp(tapUv, uvMin, uvMax);
+    float edgeSoftness = max(FROXEL_RECON_EDGE_SOFTNESS_MIN, sampleDepth * FROXEL_RECON_EDGE_SOFTNESS_SCALE);
+    float tapStopDistance = sampleFogStopDistance(clampedUv, worldPush);
+    float visibilityWeight = smoothstep(-edgeSoftness, edgeSoftness, tapStopDistance - sampleDepth);
+    float weight = baseWeight * visibilityWeight;
+    if (weight <= 1.0e-5) {
+        return;
+    }
+    accum += froxelVolume.SampleLevel(float3(clampedUv, linear01), 0.0) * weight;
+    weightSum += weight;
+}
+
+float4 reconstructedFroxel(float2 uv, float linear01, float sampleDepth, WorldPush worldPush) {
+    float2 froxelTexel = 1.0 / float2(float(pc.froxelDim.x), float(pc.froxelDim.y));
+    float2 radius = froxelTexel * FROXEL_RECON_RADIUS;
+
+    float4 accum = float4(0.0, 0.0, 0.0, 0.0);
+    float weightSum = 0.0;
+    accumulateFroxelTap(uv, 0.5, linear01, sampleDepth, worldPush, accum, weightSum);
+    accumulateFroxelTap(uv + float2(-radius.x, 0.0), 0.125, linear01, sampleDepth, worldPush, accum, weightSum);
+    accumulateFroxelTap(uv + float2(radius.x, 0.0), 0.125, linear01, sampleDepth, worldPush, accum, weightSum);
+    accumulateFroxelTap(uv + float2(0.0, -radius.y), 0.125, linear01, sampleDepth, worldPush, accum, weightSum);
+    accumulateFroxelTap(uv + float2(0.0, radius.y), 0.125, linear01, sampleDepth, worldPush, accum, weightSum);
+
+    if (weightSum <= 1.0e-5) {
+        float2 uvMin = pc.invDisplaySize * 0.5;
+        float2 uvMax = float2(1.0, 1.0) - uvMin;
+        float2 clampedUv = clamp(uv, uvMin, uvMax);
+        return froxelVolume.SampleLevel(float3(clampedUv, linear01), 0.0);
+    }
+    return accum / weightSum;
+}
+
 struct FogIntegralResult {
     float3 scattering;
     float transmittance;
 };
 
 FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
-                                  uint seedBase, float temporalJitter, float2 sampleUv) {
+                                  uint seedBase, float temporalJitter, float2 sampleUv,
+                                  WorldPush worldPush) {
     FogIntegralResult result;
     result.scattering = float3(0.0, 0.0, 0.0);
     result.transmittance = 1.0;
@@ -107,7 +157,7 @@ FogIntegralResult integrateFogRay(float3 rayDir, float tMax, int sampleCount,
         float safeT = max(t, nearP);
         float linear01 = froxelUnitFromDepth(safeT, nearP, farP);
 
-        float4 froxel = froxelVolume.SampleLevel(float3(sampleUv, linear01), 0.0);
+        float4 froxel = reconstructedFroxel(sampleUv, linear01, safeT, worldPush);
         float extinction = max(froxel.a, 0.0);
         float3 litScatterCoeff = max(froxel.rgb, float3(0.0));
         if (extinction <= 1.0e-6 && max(litScatterCoeff.r, max(litScatterCoeff.g, litScatterCoeff.b)) <= 1.0e-6) {
@@ -157,7 +207,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             : 0.5;
 
     FogIntegralResult fog = integrateFogRay(rayDir, tMax, sampleCount,
-            seed, temporalJitter, uv);
+            seed, temporalJitter, uv, worldPush);
 
     float4 scene = sceneImage[pix];
     // The traced scene buffer is pre-exposed before its fp16 write, so fog scattering must be brought into
