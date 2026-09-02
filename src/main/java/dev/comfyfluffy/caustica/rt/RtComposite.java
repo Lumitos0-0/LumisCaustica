@@ -845,6 +845,9 @@ public final class RtComposite {
         reloadRebindRequested = true;
         materialBindingsReady = false;
         setCelestialUvAtlas(0L);
+        if (volumetricFog != null) {
+            volumetricFog.invalidateHistory();
+        }
         RtEntities.INSTANCE.onResourceReload();
         RtContext ctx = RtContext.currentOrNull();
         if (ctx != null) {
@@ -1277,6 +1280,8 @@ public final class RtComposite {
             float[] fogSunIllum = new float[]{fogSunScale, fogSunScale, fogSunScale};
             float[] fogMoonIllum = new float[]{fogMoonScale, fogMoonScale, fogMoonScale};
 
+            boolean fogResolvedThisFrame = false;
+
             // ---- Volumetric fog injection BEFORE RR/upscale ----
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog injection");
@@ -1292,6 +1297,17 @@ public final class RtComposite {
                             fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
                             fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog resolve");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogResolve")) {
+                    volumetricFog.setResolveImages();
+                    volumetricFog.dispatchResolve(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    fogResolvedThisFrame = true;
                 }
             }
 
@@ -1324,7 +1340,7 @@ public final class RtComposite {
             // rays moved into froxel injection. Integrating at display resolution avoids asking RR to
             // reconstruct a volume layer it has no guide representation for, which showed up as coarse,
             // motion-dependent fog breakup even on high settings.
-            if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null) {
+            if (fogResolvedThisFrame && volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog integration");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogIntegrate")) {
                     volumetricFog.setIntegrationImages(gFogDepth.view, rrOutput.view);
@@ -1334,6 +1350,9 @@ public final class RtComposite {
                             fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
                             fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                }
+                if (fogResolvedThisFrame) {
+                    volumetricFog.advanceHistory();
                 }
             }
 
