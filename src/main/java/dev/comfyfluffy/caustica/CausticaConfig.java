@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.Froxel.ENABLED, Ngx.PATH,
         };
     }
 
@@ -95,6 +95,13 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("froxel",
+                " Froxel-based volumetric fog and light shafts. The renderer builds a frustum-aligned volume\n"
+                        + " once per frame, casts amortized ray-traced occlusion rays toward the dominant sun/moon light\n"
+                        + " to bake god rays, then integrates the volume along each view ray. density is per-block\n"
+                        + " extinction; scatter-albedo is the single-scattering albedo; phase-g is the HG forward-scatter\n"
+                        + " asymmetry (positive = brighter in the sun direction, i.e. visible shafts). temporal blends the\n"
+                        + " volume with the previous frame on a still camera to stabilize the shadow rays.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -580,6 +587,43 @@ public final class CausticaConfig {
                     intAtLeast("caustica.rt.lightDumpRadius", "lights.dump-radius", 12, 1);
 
             private Lights() {
+            }
+        }
+
+        /**
+         * Froxel-based volumetric fog and light shafts. The renderer builds a frustum-aligned volume
+         * (froxel grid) once per frame, casts amortized ray-traced occlusion rays toward the dominant
+         * sun/moon light to bake god rays, then integrates the volume along each view ray. Density is
+         * per-block extinction; scatter fraction is the single-scattering albedo.
+         */
+        public static final class Froxel {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.froxel", "froxel.enabled", true);
+            public static final IntSetting TILE_SIZE =
+                    intChoice("caustica.rt.froxel.tileSize", "froxel.tile-size", 8, List.of(4, 8, 16, 32));
+            public static final IntSetting DEPTH_SLICES =
+                    clampedInt("caustica.rt.froxel.depthSlices", "froxel.depth-slices", 48, 16, 128);
+            public static final FloatSetting FAR =
+                    finiteFloat("caustica.rt.froxel.far", "froxel.far", 192.0f);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.froxel.density", "froxel.density", 0.020f, 0.001f, 2.0f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.froxel.heightFalloff", "froxel.height-falloff", 0.06f, 0.0f, 1.0f);
+            public static final FloatSetting PHASE_G =
+                    clampedFloat("caustica.rt.froxel.phaseG", "froxel.phase-g", 0.60f, -0.9f, 0.9f);
+            public static final FloatSetting SCATTER_ALBEDO =
+                    clampedFloat("caustica.rt.froxel.scatterAlbedo", "froxel.scatter-albedo", 0.95f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_INTENSITY =
+                    clampedFloat("caustica.rt.froxel.noiseIntensity", "froxel.noise-intensity", 0.15f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_SCALE =
+                    finiteFloat("caustica.rt.froxel.noiseScale", "froxel.noise-scale", 6.0f);
+            public static final FloatSetting INTENSITY =
+                    clampedFloat("caustica.rt.froxel.intensity", "froxel.intensity", 1.0f, 0.0f, 20.0f);
+            public static final BooleanSetting TEMPORAL =
+                    bool("caustica.rt.froxel.temporal", "froxel.temporal", true);
+            public static final FloatSetting TEMPORAL_BLEND =
+                    clampedFloat("caustica.rt.froxel.temporalBlend", "froxel.temporal-blend", 0.80f, 0.0f, 1.0f);
+
+            private Froxel() {
             }
         }
 

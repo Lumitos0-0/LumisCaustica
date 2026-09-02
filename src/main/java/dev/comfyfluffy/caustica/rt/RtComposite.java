@@ -60,6 +60,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtFroxel;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -177,12 +178,16 @@ public final class RtComposite {
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
+    private RtFroxel froxel;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
     private RtToneLut lookLut;
     private int loadedHdrLutNits = -1;
     private RtImage output;
+    // Froxel fog composite: the path-traced `output` + guide depth -> fogged radiance, still at render res.
+    // DLSS-RR (or the fallback upscale) consumes this instead of `output` when froxel fog is active.
+    private RtImage foggedOutput;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
@@ -600,6 +605,9 @@ public final class RtComposite {
                 // ensureWorld's own binding order otherwise guarantees never happens.
                 skyLut = RtSkyLut.create(ctx);
             }
+            if (froxel == null) {
+                froxel = RtFroxel.create(ctx, skyLut.transmittanceView(), skyLut.sampler());
+            }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
@@ -896,7 +904,7 @@ public final class RtComposite {
         // the RR path whose render-resolution guide inputs the debug pass visualizes.
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
-        if (output != null && continuationQueue != null
+        if (output != null && foggedOutput != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
@@ -913,6 +921,10 @@ public final class RtComposite {
         destroyBloomLevels();
         if (output != null) {
             output.destroy();
+        }
+        if (foggedOutput != null) {
+            foggedOutput.destroy();
+            foggedOutput = null;
         }
         if (continuationQueue != null) {
             continuationQueue.destroy();
@@ -938,6 +950,8 @@ public final class RtComposite {
         // R8G8B8A8 to match the main target it is copied into
         // (vkCmdCopyImage requires texel-size-compatible formats).
         output = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
+        foggedOutput = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "froxel fogged color " + renderW + "x" + renderH);
         long pixelRecords = Math.multiplyExact((long) renderW, (long) renderH);
         long continuationBytes = Math.multiplyExact(
                 Math.multiplyExact(pixelRecords, 2L), PATH_RECORD_BYTES);
@@ -977,6 +991,10 @@ public final class RtComposite {
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
+        }
+        if (froxel != null) {
+            froxel.ensureGrid(ctx, renderW, renderH);
+            froxel.setIntegrateImages(ctx, output, gDepth, foggedOutput);
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
@@ -1211,12 +1229,29 @@ public final class RtComposite {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            // Froxel volumetric fog + light shafts. The lighting pass bakes the sun/moon-shaded volume at
+            // froxel resolution (amortized ray-queried occlusion -> god rays), then the integrate pass
+            // accumulates it along each view ray and composites over the path-traced radiance. When the
+            // feature is disabled the integrate pass is a 1:1 copy, so downstream passes always read a
+            // valid, fully-written image. Fog runs at render res so RR/denoise/bloom see it.
+            if (froxel != null) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel lighting");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.froxelLighting")) {
+                    froxel.recordLighting(cmd, pushBuf.deviceAddress, frameTlas.accel.handle,
+                            graphicsUse, graphicsUseWaiter, renderW, renderH);
+                }
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel integrate");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.froxelIntegrate")) {
+                    froxel.recordIntegrate(cmd, pushBuf.deviceAddress, renderW, renderH);
+                }
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // foggedOutput visible to DLSS-RR / upscale
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
-            // RR reads them and writes the display-res denoised result straight into rrOutput.
+            // RR reads them (fogged, when active) and writes the display-res denoised result into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
-                    rrDone = RtDlssRr.INSTANCE.evaluate(cmd.address(), output, gDepth, gMotion, gAlbedo,
+                    rrDone = RtDlssRr.INSTANCE.evaluate(cmd.address(), rrSceneImage(), gDepth, gMotion, gAlbedo,
                             gSpecAlbedo, gNormal, gSpecMotion, rrOutput, renderW, renderH, displayW, displayH,
                             -jitterX, -jitterY, frameViewRotation, frameProjection);
                 }
@@ -1230,7 +1265,7 @@ public final class RtComposite {
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fallback upscale");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.upscale")) {
-                    blitUpscale(cmd, stack, output, rrOutput);
+                    blitUpscale(cmd, stack, rrSceneImage(), rrOutput);
                 }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
@@ -1488,6 +1523,14 @@ public final class RtComposite {
         if (output != null) {
             output.destroy();
             output = null;
+        }
+        if (foggedOutput != null) {
+            foggedOutput.destroy();
+            foggedOutput = null;
+        }
+        if (froxel != null) {
+            froxel.destroy();
+            froxel = null;
         }
         if (continuationQueue != null) {
             continuationQueue.destroy();
@@ -1857,6 +1900,15 @@ public final class RtComposite {
             enc.signalSemaphore(presentSem, 0L, 4096L);
         }
         return true;
+    }
+
+    /**
+     * The render-resolution scene image DLSS-RR (or the fallback upscale) consumes. When the froxel fog
+     * pass is active this is the fogged color; otherwise it is the raw path-traced color. Chosen at the
+     * RR/blit call site so the same downstream resources see a uniformly-written image either way.
+     */
+    private RtImage rrSceneImage() {
+        return froxel != null ? foggedOutput : output;
     }
 
     /**
