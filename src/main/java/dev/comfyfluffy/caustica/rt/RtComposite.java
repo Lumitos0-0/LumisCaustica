@@ -1280,9 +1280,13 @@ public final class RtComposite {
             float[] fogSunIllum = new float[]{fogSunScale, fogSunScale, fogSunScale};
             float[] fogMoonIllum = new float[]{fogMoonScale, fogMoonScale, fogMoonScale};
 
-            boolean fogResolvedThisFrame = false;
+            boolean fogPreparedThisFrame = false;
 
-            // ---- Volumetric fog injection BEFORE RR/upscale ----
+            // ---- Volumetric fog froxel work BEFORE RR/upscale ----
+            // The local froxel field is still injected and temporally resolved first, but now we immediately
+            // prefix-integrate each XY column into a second cumulative volume. That moves the structural
+            // cleanup step into froxel space instead of trying to repair the raw lattice later with an
+            // expensive per-pixel fullscreen march.
             if (volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null && boundBlockAlbedoAtlasHandle != 0L) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog injection");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogInject")) {
@@ -1307,12 +1311,22 @@ public final class RtComposite {
                             fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
                             fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
-                    fogResolvedThisFrame = true;
+                }
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog integration");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogIntegrate")) {
+                    volumetricFog.setIntegrationImages();
+                    volumetricFog.dispatchIntegration(cmd,
+                            pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
+                            renderW, renderH, (int) frameCounter, exposure.preExposure(),
+                            fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
+                            fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
+                    VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    fogPreparedThisFrame = true;
                 }
             }
 
-            // DLSS-RR denoise + upscale. Fog lighting is now precomputed per froxel, so the expensive part
-            // stays before RR while the final view-ray integration can move to display resolution below.
+            // DLSS-RR denoise + upscale. Fog lighting and its column integration stay before RR, while the
+            // final fog composite runs afterwards as a single depth-aware lookup into the cumulative volume.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
@@ -1323,8 +1337,8 @@ public final class RtComposite {
             }
 
             // When DLSS-RR did not produce the display-res image (disabled or a runtime failure), bring
-            // the already-fogged render-res trace up to display res with a linear blit so the display mapper
-            // and downstream debug pass always have a valid display-res scene image. With RR off render ==
+            // the traced render-res scene up to display res with a linear blit so the display mapper and
+            // downstream debug pass always have a valid display-res scene image. With RR off render ==
             // display, so this is a 1:1 copy.
             if (!rrDone) {
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -1333,27 +1347,25 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog integration / exposure
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog composite / exposure
 
-            // ---- Volumetric fog integration AFTER RR/upscale ----
-            // The old screen-space cost reason for doing this at render resolution is gone now that shadow
-            // rays moved into froxel injection. Integrating at display resolution avoids asking RR to
-            // reconstruct a volume layer it has no guide representation for, which showed up as coarse,
-            // motion-dependent fog breakup even on high settings.
-            if (fogResolvedThisFrame && volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null) {
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog integration");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogIntegrate")) {
-                    volumetricFog.setIntegrationImages(gFogDepth.view, rrOutput.view);
-                    volumetricFog.dispatchIntegration(cmd,
+            // ---- Volumetric fog composite AFTER RR/upscale ----
+            // Reconstruct the final fog from the integrated froxel volume once per display pixel, with a
+            // depth-aware XY gather plus analytic partial-slice recovery. This is the architectural shift
+            // borrowed from the older fork: keep the cheap froxel lighting path, but stop re-marching the
+            // raw local field in fullscreen.
+            if (fogPreparedThisFrame && volumetricFog != null && CausticaConfig.Rt.VolumetricFog.ENABLED.value() && gFogDepth != null) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog composite");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetricFogComposite")) {
+                    volumetricFog.setCompositeImages(gFogDepth.view, rrOutput.view);
+                    volumetricFog.dispatchComposite(cmd,
                             pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(), RtMaterialRegistry.INSTANCE.tableAddress(),
                             displayW, displayH, (int) frameCounter, exposure.preExposure(),
                             fogTerrainOrigin, fogCamWorldPos, fogJitterOffset,
                             fogSunDir, fogSunIllum, fogMoonDir, fogMoonIllum);
                     VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 }
-                if (fogResolvedThisFrame) {
-                    volumetricFog.advanceHistory();
-                }
+                volumetricFog.advanceHistory();
             }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw

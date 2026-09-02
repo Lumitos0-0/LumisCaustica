@@ -57,10 +57,18 @@ public final class RtVolumetricFog {
     private final long integrationSet;
     private final long integrationLayout;
     private final long integrationPipeline;
+
+    private final long compositeDsl;
+    private final long compositePool;
+    private final long compositeSet;
+    private final long compositeLayout;
+    private final long compositePipeline;
+
     private final long linearSampler;
 
     private RtImage rawFroxelVolume;
     private RtImage[] filteredFroxelVolumes = new RtImage[0];
+    private RtImage integratedFroxelVolume;
     private int historyReadIndex;
     private int historyWriteIndex;
     private boolean historyValid;
@@ -69,7 +77,10 @@ public final class RtVolumetricFog {
     private long boundResolveInputView;
     private long boundResolveHistoryView;
     private long boundResolveOutputView;
-    private long boundIntegrationFroxelView;
+    private long boundIntegrationInputView;
+    private long boundIntegrationOutputView;
+    private long boundCompositeLocalView;
+    private long boundCompositeIntegratedView;
     private long boundFogDepthView;
     private long boundSceneColorView;
     private long boundBlockAlbedoView;
@@ -79,6 +90,7 @@ public final class RtVolumetricFog {
                             long injectionDsl, long injectionPool, long injectionSet, long injectionLayout, long injectionPipeline,
                             long resolveDsl, long resolvePool, long resolveSet, long resolveLayout, long resolvePipeline,
                             long integrationDsl, long integrationPool, long integrationSet, long integrationLayout, long integrationPipeline,
+                            long compositeDsl, long compositePool, long compositeSet, long compositeLayout, long compositePipeline,
                             long linearSampler) {
         this.ctx = ctx;
         this.injectionDsl = injectionDsl;
@@ -96,6 +108,11 @@ public final class RtVolumetricFog {
         this.integrationSet = integrationSet;
         this.integrationLayout = integrationLayout;
         this.integrationPipeline = integrationPipeline;
+        this.compositeDsl = compositeDsl;
+        this.compositePool = compositePool;
+        this.compositeSet = compositeSet;
+        this.compositeLayout = compositeLayout;
+        this.compositePipeline = compositePipeline;
         this.linearSampler = linearSampler;
     }
 
@@ -198,20 +215,18 @@ public final class RtVolumetricFog {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, resolvePipeline, "fog resolve pipeline");
             VK10.vkDestroyShaderModule(vk, resolveModule, null);
 
-            VkDescriptorSetLayoutBinding.Buffer intBinds = VkDescriptorSetLayoutBinding.calloc(3, stack);
+            VkDescriptorSetLayoutBinding.Buffer intBinds = VkDescriptorSetLayoutBinding.calloc(2, stack);
             intBinds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            intBinds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            intBinds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            intBinds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo intDslCi = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(intBinds);
-            check(VK10.vkCreateDescriptorSetLayout(vk, intDslCi, null, p), "vkCreateDescriptorSetLayout(fog integration set0)");
+            check(VK10.vkCreateDescriptorSetLayout(vk, intDslCi, null, p), "vkCreateDescriptorSetLayout(fog integration)");
             long integrationDsl = p.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, integrationDsl, "fog integration dsl0");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, integrationDsl, "fog integration dsl");
 
             VkDescriptorPoolSize.Buffer intPoolSizes = VkDescriptorPoolSize.calloc(2, stack);
-            intPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
+            intPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
             intPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
             VkDescriptorPoolCreateInfo intPoolCi = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(1).pPoolSizes(intPoolSizes);
@@ -223,7 +238,7 @@ public final class RtVolumetricFog {
                     .descriptorPool(integrationPool).pSetLayouts(stack.longs(integrationDsl));
             check(VK10.vkAllocateDescriptorSets(vk, intAlloc, pSet), "vkAllocateDescriptorSets(fog integration)");
             long integrationSet = pSet.get(0);
-            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, integrationSet, "fog integration set0");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, integrationSet, "fog integration set");
 
             VkPushConstantRange.Buffer intPushRange = VkPushConstantRange.calloc(1, stack);
             intPushRange.get(0).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(FogIntegrationPushData.BYTE_SIZE);
@@ -244,6 +259,54 @@ public final class RtVolumetricFog {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, integrationPipeline, "fog integration pipeline");
             VK10.vkDestroyShaderModule(vk, intModule, null);
 
+            VkDescriptorSetLayoutBinding.Buffer compBinds = VkDescriptorSetLayoutBinding.calloc(4, stack);
+            compBinds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            compBinds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            compBinds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            compBinds.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            VkDescriptorSetLayoutCreateInfo compDslCi = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(compBinds);
+            check(VK10.vkCreateDescriptorSetLayout(vk, compDslCi, null, p), "vkCreateDescriptorSetLayout(fog composite)");
+            long compositeDsl = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, compositeDsl, "fog composite dsl");
+
+            VkDescriptorPoolSize.Buffer compPoolSizes = VkDescriptorPoolSize.calloc(2, stack);
+            compPoolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
+            compPoolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1);
+            VkDescriptorPoolCreateInfo compPoolCi = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
+                    .maxSets(1).pPoolSizes(compPoolSizes);
+            check(VK10.vkCreateDescriptorPool(vk, compPoolCi, null, p), "vkCreateDescriptorPool(fog composite)");
+            long compositePool = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, compositePool, "fog composite pool");
+
+            VkDescriptorSetAllocateInfo compAlloc = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
+                    .descriptorPool(compositePool).pSetLayouts(stack.longs(compositeDsl));
+            check(VK10.vkAllocateDescriptorSets(vk, compAlloc, pSet), "vkAllocateDescriptorSets(fog composite)");
+            long compositeSet = pSet.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, compositeSet, "fog composite set");
+
+            VkPushConstantRange.Buffer compPushRange = VkPushConstantRange.calloc(1, stack);
+            compPushRange.get(0).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(FogIntegrationPushData.BYTE_SIZE);
+            VkPipelineLayoutCreateInfo compPlCi = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+                    .pSetLayouts(stack.longs(compositeDsl)).pPushConstantRanges(compPushRange);
+            check(VK10.vkCreatePipelineLayout(vk, compPlCi, null, p), "vkCreatePipelineLayout(fog composite)");
+            long compositeLayout = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, compositeLayout, "fog composite layout");
+
+            long compModule = loadModule(vk, stack, "composite.comp.spv");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, compModule, "fog composite module");
+            VkPipelineShaderStageCreateInfo compStage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
+                    .stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(compModule).pName(stack.UTF8("main"));
+            VkComputePipelineCreateInfo.Buffer compPipeCi = VkComputePipelineCreateInfo.calloc(1, stack);
+            compPipeCi.get(0).sType$Default().stage(compStage).layout(compositeLayout);
+            check(VK10.vkCreateComputePipelines(vk, VK10.VK_NULL_HANDLE, compPipeCi, null, pPipe), "vkCreateComputePipelines(fog composite)");
+            long compositePipeline = pPipe.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, compositePipeline, "fog composite pipeline");
+            VK10.vkDestroyShaderModule(vk, compModule, null);
+
             VkSamplerCreateInfo samplerCi = VkSamplerCreateInfo.calloc(stack).sType$Default()
                     .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
                     .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_LINEAR)
@@ -259,6 +322,7 @@ public final class RtVolumetricFog {
                     injectionDsl, injectionPool, injectionSet, injectionLayout, injectionPipeline,
                     resolveDsl, resolvePool, resolveSet, resolveLayout, resolvePipeline,
                     integrationDsl, integrationPool, integrationSet, integrationLayout, integrationPipeline,
+                    compositeDsl, compositePool, compositeSet, compositeLayout, compositePipeline,
                     linearSampler);
         }
     }
@@ -276,10 +340,10 @@ public final class RtVolumetricFog {
     }
 
     private static int effectiveSampleCount() {
-        // The old limits were tuned for the pre-rewrite path where every integration sample also launched
-        // a shadow/transmission query. After prelighting froxels, the quality tier itself should now buy a
-        // denser view-ray march, because RR can hide some residual error when static but not the coarse
-        // motion-time breakup of an undersampled volume.
+        // The integrated-volume rewrite no longer ray-marches the display image sample-by-sample, but the
+        // shared reflected push ABI still carries sampleCount and the generated Java serializer is not
+        // checked into source. Keep writing a sane, quality-tier-aware value until the layout can be
+        // regenerated alongside a later dedicated ABI cleanup.
         int qualityFloor = switch (CausticaConfig.Rt.VolumetricFog.QUALITY.value()) {
             case 0 -> 32;
             case 2 -> 96;
@@ -303,7 +367,9 @@ public final class RtVolumetricFog {
                 || filteredFroxelVolumes[0] == null
                 || filteredFroxelVolumes[1] == null
                 || filteredFroxelVolumes[0].width != fw || filteredFroxelVolumes[0].height != fh || filteredFroxelVolumes[0].depth != fd
-                || filteredFroxelVolumes[1].width != fw || filteredFroxelVolumes[1].height != fh || filteredFroxelVolumes[1].depth != fd;
+                || filteredFroxelVolumes[1].width != fw || filteredFroxelVolumes[1].height != fh || filteredFroxelVolumes[1].depth != fd
+                || integratedFroxelVolume == null
+                || integratedFroxelVolume.width != fw || integratedFroxelVolume.height != fh || integratedFroxelVolume.depth != fd;
 
         // Fog quality can be changed live from the video settings, which resizes the froxel volume without a
         // window resize and therefore outside ensureOutput()'s existing waitIdle path. Recreating it while
@@ -314,11 +380,16 @@ public final class RtVolumetricFog {
             for (RtImage filteredFroxelVolume : filteredFroxelVolumes) {
                 if (filteredFroxelVolume != null) filteredFroxelVolume.destroy();
             }
+            if (integratedFroxelVolume != null) {
+                integratedFroxelVolume.destroy();
+            }
             rawFroxelVolume = ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog raw froxel volume");
             filteredFroxelVolumes = new RtImage[]{
                     ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog resolved froxel volume A"),
                     ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog resolved froxel volume B")
             };
+            integratedFroxelVolume = ctx.createStorageImage3D(fw, fh, fd, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "fog integrated froxel volume");
             historyReadIndex = 0;
             historyWriteIndex = 1;
             historyValid = false;
@@ -326,7 +397,10 @@ public final class RtVolumetricFog {
             boundResolveInputView = 0L;
             boundResolveHistoryView = 0L;
             boundResolveOutputView = 0L;
-            boundIntegrationFroxelView = 0L;
+            boundIntegrationInputView = 0L;
+            boundIntegrationOutputView = 0L;
+            boundCompositeLocalView = 0L;
+            boundCompositeIntegratedView = 0L;
             boundFogDepthView = 0L;
             boundSceneColorView = 0L;
             boundBlockAlbedoView = 0L;
@@ -407,35 +481,69 @@ public final class RtVolumetricFog {
         boundResolveOutputView = outputView;
     }
 
-    public void setIntegrationImages(long fogDepthView, long sceneColorView) {
-        if (rawFroxelVolume == null) return;
-        long froxelView = currentResolvedVolume().view;
-        if (boundIntegrationFroxelView == froxelView
+    public void setIntegrationImages() {
+        if (rawFroxelVolume == null || integratedFroxelVolume == null) return;
+        long inputView = currentResolvedVolume().view;
+        long outputView = integratedFroxelVolume.view;
+        if (boundIntegrationInputView == inputView && boundIntegrationOutputView == outputView) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+
+            VkDescriptorImageInfo.Buffer inputInfo = VkDescriptorImageInfo.calloc(1, stack);
+            inputInfo.get(0).imageView(inputView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(inputInfo);
+
+            VkDescriptorImageInfo.Buffer outputInfo = VkDescriptorImageInfo.calloc(1, stack);
+            outputInfo.get(0).imageView(outputView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(1).sType$Default().dstSet(integrationSet).dstBinding(1)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
+
+            VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
+        }
+        boundIntegrationInputView = inputView;
+        boundIntegrationOutputView = outputView;
+    }
+
+    public void setCompositeImages(long fogDepthView, long sceneColorView) {
+        if (rawFroxelVolume == null || integratedFroxelVolume == null) return;
+        long localView = currentResolvedVolume().view;
+        long integratedView = integratedFroxelVolume.view;
+        if (boundCompositeLocalView == localView
+                && boundCompositeIntegratedView == integratedView
                 && boundFogDepthView == fogDepthView
                 && boundSceneColorView == sceneColorView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
 
-            VkDescriptorImageInfo.Buffer froxelInfo = VkDescriptorImageInfo.calloc(1, stack);
-            froxelInfo.get(0).imageView(froxelView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            writes.get(0).sType$Default().dstSet(integrationSet).dstBinding(0)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(froxelInfo);
+            VkDescriptorImageInfo.Buffer localInfo = VkDescriptorImageInfo.calloc(1, stack);
+            localInfo.get(0).imageView(localView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(0).sType$Default().dstSet(compositeSet).dstBinding(0)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(localInfo);
+
+            VkDescriptorImageInfo.Buffer integratedInfo = VkDescriptorImageInfo.calloc(1, stack);
+            integratedInfo.get(0).imageView(integratedView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(1).sType$Default().dstSet(compositeSet).dstBinding(1)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(integratedInfo);
 
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
             depthInfo.get(0).imageView(fogDepthView).sampler(linearSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            writes.get(1).sType$Default().dstSet(integrationSet).dstBinding(1)
+            writes.get(2).sType$Default().dstSet(compositeSet).dstBinding(2)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
 
             VkDescriptorImageInfo.Buffer outputInfo = VkDescriptorImageInfo.calloc(1, stack);
             outputInfo.get(0).imageView(sceneColorView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            writes.get(2).sType$Default().dstSet(integrationSet).dstBinding(2)
+            writes.get(3).sType$Default().dstSet(compositeSet).dstBinding(3)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
 
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
-        boundIntegrationFroxelView = froxelView;
+        boundCompositeLocalView = localView;
+        boundCompositeIntegratedView = integratedView;
         boundFogDepthView = fogDepthView;
         boundSceneColorView = sceneColorView;
     }
@@ -547,7 +655,8 @@ public final class RtVolumetricFog {
                                     float[] jitterOffset,
                                     float[] sunDir, float[] sunIllum,
                                     float[] moonDir, float[] moonIllum) {
-        if (rawFroxelVolume == null) return;
+        if (rawFroxelVolume == null || integratedFroxelVolume == null) return;
+        int[] dims = CausticaConfig.Rt.VolumetricFog.froxelDimensions();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, integrationPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, integrationLayout, 0, stack.longs(integrationSet), null);
@@ -557,7 +666,7 @@ public final class RtVolumetricFog {
                     jitterOffset, sunDir, sunIllum, moonDir, moonIllum,
                     CausticaConfig.Rt.VolumetricFog.TEMPORAL.value()).write(push);
             VK10.vkCmdPushConstants(cmd, integrationLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-            VK10.vkCmdDispatch(cmd, (renderW + 15) / 16, (renderH + 15) / 16, 1);
+            VK10.vkCmdDispatch(cmd, (dims[0] + 7) / 8, (dims[1] + 7) / 8, 1);
         }
     }
 
@@ -574,9 +683,33 @@ public final class RtVolumetricFog {
                 renderW, renderH, frameIndex, exposure, terrainOrigin, camWorldPos, jitterOffset, sunDir, sunIllum, moonDir, moonIllum);
     }
 
+    public void dispatchComposite(VkCommandBuffer cmd,
+                                  long worldPushAddr, long tableAddr, long entityTableAddr, long materialTableAddr,
+                                  int renderW, int renderH,
+                                  int frameIndex, float exposure,
+                                  float[] terrainOrigin, float[] camWorldPos,
+                                  float[] jitterOffset,
+                                  float[] sunDir, float[] sunIllum,
+                                  float[] moonDir, float[] moonIllum) {
+        if (rawFroxelVolume == null || integratedFroxelVolume == null) return;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, compositePipeline);
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, compositeLayout, 0, stack.longs(compositeSet), null);
+            ByteBuffer push = stack.malloc(FogIntegrationPushData.BYTE_SIZE);
+            buildPush(worldPushAddr, tableAddr, entityTableAddr, materialTableAddr,
+                    renderW, renderH, frameIndex, exposure, terrainOrigin, camWorldPos,
+                    jitterOffset, sunDir, sunIllum, moonDir, moonIllum,
+                    CausticaConfig.Rt.VolumetricFog.TEMPORAL.value()).write(push);
+            VK10.vkCmdPushConstants(cmd, compositeLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            VK10.vkCmdDispatch(cmd, (renderW + 15) / 16, (renderH + 15) / 16, 1);
+        }
+    }
+
     public void invalidateHistory() {
         historyValid = false;
         boundResolveHistoryView = 0L;
+        boundIntegrationInputView = 0L;
+        boundCompositeLocalView = 0L;
     }
 
     public void advanceHistory() {
@@ -588,7 +721,9 @@ public final class RtVolumetricFog {
         historyWriteIndex = 1 - historyWriteIndex;
         boundResolveHistoryView = 0L;
         boundResolveOutputView = 0L;
-        boundIntegrationFroxelView = 0L;
+        boundIntegrationInputView = 0L;
+        boundCompositeLocalView = 0L;
+        boundCompositeIntegratedView = 0L;
     }
 
     public void destroy() {
@@ -597,6 +732,9 @@ public final class RtVolumetricFog {
         if (rawFroxelVolume != null) rawFroxelVolume.destroy();
         for (RtImage filteredFroxelVolume : filteredFroxelVolumes) {
             if (filteredFroxelVolume != null) filteredFroxelVolume.destroy();
+        }
+        if (integratedFroxelVolume != null) {
+            integratedFroxelVolume.destroy();
         }
         VK10.vkDestroyPipeline(vk, injectionPipeline, null);
         VK10.vkDestroyPipelineLayout(vk, injectionLayout, null);
@@ -610,6 +748,10 @@ public final class RtVolumetricFog {
         VK10.vkDestroyPipelineLayout(vk, integrationLayout, null);
         VK10.vkDestroyDescriptorPool(vk, integrationPool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, integrationDsl, null);
+        VK10.vkDestroyPipeline(vk, compositePipeline, null);
+        VK10.vkDestroyPipelineLayout(vk, compositeLayout, null);
+        VK10.vkDestroyDescriptorPool(vk, compositePool, null);
+        VK10.vkDestroyDescriptorSetLayout(vk, compositeDsl, null);
         VK10.vkDestroySampler(vk, linearSampler, null);
         destroyed = true;
     }

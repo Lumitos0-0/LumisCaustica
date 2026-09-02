@@ -78,6 +78,14 @@ public float froxelUnitFromDepth(float depth, float nearPlane, float farPlane) {
     return pow(linear01, 1.0 / FROXEL_DEPTH_CURVE);
 }
 
+public float froxelBoundaryDepth(int boundaryIndex, int depthDim, float nearPlane, float farPlane) {
+    return froxelDepthFromUnit(float(boundaryIndex) / float(max(depthDim, 1)), nearPlane, farPlane);
+}
+
+public float froxelSliceCenterDepth(int sliceIndex, int depthDim, float nearPlane, float farPlane) {
+    return froxelDepthFromUnit((float(sliceIndex) + 0.5) / float(max(depthDim, 1)), nearPlane, farPlane);
+}
+
 // Small tiled progressive blue-noise-style sequence shared by fog passes. The per-frame golden-ratio
 // Cranley-Patterson rotation makes it spatiotemporal: each pixel/froxel keeps the same good spatial
 // distribution every frame, but the sample advances through the unit interval over time instead of
