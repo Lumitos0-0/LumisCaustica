@@ -567,7 +567,7 @@ public final class CausticaConfig {
             public static final FloatSetting MAX_DISTANCE =
                     clampedFloat("caustica.rt.fog.maxDistance", "fog.max-distance", 192.0f, 16.0f, 512.0f);
             public static final IntSetting FROXEL_TILE_SIZE =
-                    clampedInt("caustica.rt.fog.froxelTileSize", "fog.froxel-tile-size", 16, 4, 32);
+                    clampedInt("caustica.rt.fog.froxelTileSize", "fog.froxel-tile-size", 8, 4, 32);
             public static final IntSetting Z_SLICES =
                     clampedInt("caustica.rt.fog.zSlices", "fog.z-slices", 48, 16, 96);
             public static final FloatSetting DIRECT_STRENGTH =
@@ -577,9 +577,15 @@ public final class CausticaConfig {
             public static final FloatSetting DIRECT_ANISOTROPY =
                     clampedFloat("caustica.rt.fog.directAnisotropy", "fog.direct-anisotropy", 0.78f, -0.95f, 0.95f);
             public static final FloatSetting GI_TEMPORAL_BLEND =
-                    clampedFloat("caustica.rt.fog.giTemporalBlend", "fog.gi-temporal-blend", 0.93f, 0.0f, 0.98f);
+                    clampedFloat("caustica.rt.fog.giTemporalBlend", "fog.gi-temporal-blend", 0.78f, 0.0f, 0.95f);
             public static final IntSetting GI_SAMPLES =
-                    clampedInt("caustica.rt.fog.giSamples", "fog.gi-samples", 1, 1, 2);
+                    clampedInt("caustica.rt.fog.giSamples", "fog.gi-samples", 2, 1, 4);
+            public static final IntSetting DIRECT_SAMPLES =
+                    clampedInt("caustica.rt.fog.directSamples", "fog.direct-samples", 2, 1, 4);
+            public static final FloatSetting GI_SPATIAL_RADIUS =
+                    clampedFloat("caustica.rt.fog.giSpatialRadius", "fog.gi-spatial-radius", 1.0f, 0.0f, 2.0f);
+            public static final IntSetting LOCAL_SAMPLES =
+                    clampedInt("caustica.rt.fog.localSamples", "fog.local-samples", 4, 1, 8);
             public static final FloatSetting LOCAL_STRENGTH =
                     clampedFloat("caustica.rt.fog.localStrength", "fog.local-strength", 0.8f, 0.0f, 4.0f);
             public static final FloatSetting SCATTERING_STRENGTH =

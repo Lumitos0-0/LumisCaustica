@@ -47,6 +47,13 @@ public final class RtVideoOptions {
             spp(),
             maxBounces(),
             fogEnabled(),
+            fogQuality(),
+            fogDistance(),
+            fogDirectSamples(),
+            fogLocalSamples(),
+            fogGiSamples(),
+            fogGiSoftness(),
+            fogGiHistory(),
             entities(),
             particles(),
             waterWaves(),
@@ -126,6 +133,94 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> fogEnabled() {
         return bool("caustica.options.rt.fog", CausticaConfig.Rt.Fog.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Fog.FROXEL_TILE_SIZE;
+        List<Integer> tiles = List.of(16, 12, 8, 4);
+        int initial = 0;
+        for (int i = 0; i < tiles.size(); i++) {
+            if (Math.abs(tiles.get(i) - setting.value()) < Math.abs(tiles.get(initial) - setting.value())) {
+                initial = i;
+            }
+        }
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            (caption, position) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.fogQuality." + tiles.get(position))),
+            new OptionInstance.IntRange(0, tiles.size() - 1),
+            initial,
+            position -> setting.set(tiles.get(position)));
+    }
+
+    private static OptionInstance<Integer> fogDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDistance.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal(value + " blocks")),
+            new OptionInstance.IntRange(16, 512),
+            Math.clamp(Math.round(setting.value()), 16, 512),
+            value -> setting.set(value.floatValue()));
+    }
+
+    private static OptionInstance<Integer> fogDirectSamples() {
+        IntSetting setting = CausticaConfig.Rt.Fog.DIRECT_SAMPLES;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDirectSamples",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDirectSamples.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(1, 4),
+            Math.clamp(setting.value(), 1, 4),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogLocalSamples() {
+        IntSetting setting = CausticaConfig.Rt.Fog.LOCAL_SAMPLES;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogLocalSamples",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogLocalSamples.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(1, 8),
+            Math.clamp(setting.value(), 1, 8),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogGiSamples() {
+        IntSetting setting = CausticaConfig.Rt.Fog.GI_SAMPLES;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogGiSamples",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogGiSamples.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(1, 4),
+            Math.clamp(setting.value(), 1, 4),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogGiSoftness() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.GI_SPATIAL_RADIUS;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogGiSoftness",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogGiSoftness.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f froxels", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogGiHistory() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.GI_TEMPORAL_BLEND;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogGiHistory",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogGiHistory.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.0f%%", hundredths.floatValue()))),
+            new OptionInstance.IntRange(0, 95),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 95),
+            hundredths -> setting.set(hundredths / 100.0f));
     }
 
     private static OptionInstance<Boolean> entities() {

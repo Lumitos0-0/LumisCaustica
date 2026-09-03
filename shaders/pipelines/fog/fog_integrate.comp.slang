@@ -31,9 +31,12 @@ float3 fogVolumeSample(Sampler2D volume, float2 uv, float z, float3 dimensions) 
     uint z1 = min(z0 + 1u, uint(gz - 1.0));
     float zBlend = zf - float(z0);
     float2 atlasSize = float2(gx, gy * gz);
+    // uv is already a normalized screen position. The atlas coordinate must preserve that position; a
+    // second half-texel offset would make every pixel read the next froxel and turn the shaft boundaries
+    // into visible stair-stepping.
     float2 localTexel = float2(uv.x * gx, uv.y * gy);
-    float2 uv0 = (localTexel + float2(0.5, 0.5 + float(z0) * gy)) / atlasSize;
-    float2 uv1 = (localTexel + float2(0.5, 0.5 + float(z1) * gy)) / atlasSize;
+    float2 uv0 = (localTexel + float2(0.0, float(z0) * gy)) / atlasSize;
+    float2 uv1 = (localTexel + float2(0.0, float(z1) * gy)) / atlasSize;
     return lerp(volume.SampleLevel(uv0, 0.0).rgb,
             volume.SampleLevel(uv1, 0.0).rgb, zBlend);
 }

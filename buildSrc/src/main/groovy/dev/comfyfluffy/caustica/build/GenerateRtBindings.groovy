@@ -39,7 +39,7 @@ abstract class GenerateRtBindings extends DefaultTask {
                     SDR_TONE_LUT: "toneLut", HDR_TONE_LUT: "hdrToneLut", LOOK_LUT: "lookLut", BLOOM: "bloomImage"]],
             [prefix: "FOG_LIGHTING", source: "pipelines/fog/fog_lighting.comp.slang", resources: [
                     TLAS: "topLevelAS", DIRECT: "directVolume", GI: "giVolume", HISTORY: "giHistory",
-                    SCENE: "sceneImage", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut"]],
+                    SCENE: "sceneImage", DEPTH: "depthImage", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut"]],
             [prefix: "FOG_INTEGRATE", source: "pipelines/fog/fog_integrate.comp.slang", resources: [
                     OUTPUT: "outputImage", DEPTH: "depthImage", DIRECT: "directVolume", GI: "giVolume"]],
             [prefix: "DEBUG_PRESENT", source: "pipelines/debug_present/main.comp.slang", resources: [

@@ -80,7 +80,7 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
-- [x] Primary-view hybrid volumetric fog: froxel medium integration, sharp TLAS-shadowed sun/moon shafts, local emissive lighting, and temporally accumulated GI
+- [x] Primary-view hybrid volumetric fog: shared froxel medium integration, corrected directional sun/moon shafts, local emissive lighting, and spatially filtered temporally accumulated GI
 - [ ] Full world-space participating-medium transport for arbitrary secondary rays
 - [ ] Nether/End sky and weather
 - [ ] NRD + FSR for non-NVIDIA GPUs

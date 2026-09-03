@@ -124,7 +124,7 @@ public final class RtFroxelFogPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, lightingLayout,
                     "fog lighting descriptor set layout");
 
-            long lightingPool = createPool(vk, stack, RING, RING * 2, RING * 4, "fog lighting");
+            long lightingPool = createPool(vk, stack, RING, RING * 2, RING * 5, "fog lighting");
             long[] lightingSets = allocateSets(vk, stack, lightingPool, lightingLayout, "fog lighting");
 
             VkPushConstantRange.Buffer lightingPushRange = VkPushConstantRange.calloc(1, stack);
@@ -195,7 +195,7 @@ public final class RtFroxelFogPipeline {
         }
         currentSet = (currentSet + 1) % RING;
         graphicsUseWaiter.await(descriptorSetUses[currentSet]);
-        writeLightingDescriptors(currentSet, tlas, output, direct, gi, history,
+        writeLightingDescriptors(currentSet, tlas, output, depth, direct, gi, history,
                 skyView, transmittance, skySampler);
         writeIntegrateDescriptors(currentSet, output, depth, direct, gi);
         descriptorSetUses[currentSet].mark(graphicsUse);
@@ -263,9 +263,9 @@ public final class RtFroxelFogPipeline {
         destroyed = true;
     }
 
-    private void writeLightingDescriptors(int setIndex, long tlas, RtImage output, RtImage direct,
-                                          RtImage gi, RtImage history, long skyView, long transmittance,
-                                          long skySampler) {
+    private void writeLightingDescriptors(int setIndex, long tlas, RtImage output, RtImage depth,
+                                          RtImage direct, RtImage gi, RtImage history,
+                                          long skyView, long transmittance, long skySampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkWriteDescriptorSetAccelerationStructureKHR asWrite =
                     VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
@@ -280,6 +280,9 @@ public final class RtFroxelFogPipeline {
                     .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer sceneInfo = VkDescriptorImageInfo.calloc(1, stack);
             sceneInfo.get(0).sampler(linearSampler).imageView(output.view)
+                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
+            depthInfo.get(0).sampler(pointSampler).imageView(depth.view)
                     .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer skyInfo = VkDescriptorImageInfo.calloc(1, stack);
             skyInfo.get(0).sampler(skySampler).imageView(skyView)
@@ -304,6 +307,9 @@ public final class RtFroxelFogPipeline {
             writes.get(FOG_LIGHTING_SCENE).sType$Default().dstSet(lightingDescriptorSets[setIndex])
                     .dstBinding(FOG_LIGHTING_SCENE).descriptorCount(1)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(sceneInfo);
+            writes.get(FOG_LIGHTING_DEPTH).sType$Default().dstSet(lightingDescriptorSets[setIndex])
+                    .dstBinding(FOG_LIGHTING_DEPTH).descriptorCount(1)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
             writes.get(FOG_LIGHTING_SKY_VIEW).sType$Default().dstSet(lightingDescriptorSets[setIndex])
                     .dstBinding(FOG_LIGHTING_SKY_VIEW).descriptorCount(1)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(skyInfo);

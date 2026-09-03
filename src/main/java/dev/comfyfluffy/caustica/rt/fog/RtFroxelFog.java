@@ -43,6 +43,7 @@ public final class RtFroxelFog {
     private int atlasWidth = -1;
     private int atlasHeight = -1;
     private boolean historyValid;
+    private float historyFarDistance = -1.0f;
     private boolean destroyed;
     private boolean failed;
     private boolean activeLastFrame;
@@ -98,6 +99,13 @@ public final class RtFroxelFog {
             historyValid = false;
         }
         activeLastFrame = true;
+        float maxDistance = CausticaConfig.Rt.Fog.MAX_DISTANCE.value();
+        if (Float.floatToIntBits(maxDistance) != Float.floatToIntBits(historyFarDistance)) {
+            // The logarithmic Z mapping is part of the history address. Do not blend a volume built with
+            // the old far plane into a newly selected fog distance.
+            historyValid = false;
+            historyFarDistance = maxDistance;
+        }
         int tile = CausticaConfig.Rt.Fog.FROXEL_TILE_SIZE.value();
         int wantedX = Math.max(1, (renderWidth + tile - 1) / tile);
         int wantedY = Math.max(1, (renderHeight + tile - 1) / tile);
@@ -171,9 +179,14 @@ public final class RtFroxelFog {
                 CausticaConfig.Rt.Fog.DIRECT_ANISOTROPY.value(),
                 CausticaConfig.Rt.Fog.LOCAL_STRENGTH.value(),
                 historyBlend,
-                CausticaConfig.Rt.Fog.GI_SAMPLES.value());
+                CausticaConfig.Rt.Fog.LOCAL_SAMPLES.value());
+        FogLightingPushData.Float4 giSettings = new FogLightingPushData.Float4(
+                CausticaConfig.Rt.Fog.GI_SAMPLES.value(),
+                CausticaConfig.Rt.Fog.GI_SPATIAL_RADIUS.value(),
+                CausticaConfig.Rt.Fog.DIRECT_SAMPLES.value(),
+                0.0f);
         pipeline.dispatchLighting(cmd, atlasWidth, atlasHeight,
-                new FogLightingPushData(worldPushAddr, lightBufAddr, grid, settings,
+                new FogLightingPushData(worldPushAddr, lightBufAddr, grid, settings, giSettings,
                         lightCount, (int) frameIndex));
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -243,5 +256,6 @@ public final class RtFroxelFog {
         atlasWidth = -1;
         atlasHeight = -1;
         historyValid = false;
+        historyFarDistance = -1.0f;
     }
 }

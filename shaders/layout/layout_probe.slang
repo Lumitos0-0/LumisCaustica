@@ -102,7 +102,7 @@ void probeBloomPush(uint3 id : SV_DispatchThreadID) {
 void probeFogLightingPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = fogLightingPushProbe.grid.x + fogLightingPushProbe.settings.x
-                + float(fogLightingPushProbe.lightCount);
+                + fogLightingPushProbe.giSettings.x + float(fogLightingPushProbe.lightCount);
     }
 }
 

@@ -1,9 +1,10 @@
 // Froxel lighting for the primary camera view.
 //
 // The two output fields intentionally have different estimators. Direct sunlight, moonlight, and local
-// emissive rectangles are evaluated at the froxel with hard TLAS visibility and a forward HG phase, so
-// shafts retain their directional shadow boundaries. GI is a one-bounce radiance-cache estimate: a small
-// inline ray query lands on the already rendered surface image, then a reprojected, clamped history makes
+// emissive rectangles are evaluated at deterministic sub-froxel positions with hard TLAS visibility and a
+// forward HG phase, so shafts retain directional shadow boundaries without blocky edge transitions. GI is
+// a one-bounce radiance-cache estimate: a small inline ray query lands on the already rendered surface
+// image, then a reprojected, clamped history makes
 // that low-frequency field quiet. Neither channel carries extinction; fog_integrate applies one shared
 // medium model to both channels.
 import world_common;
@@ -19,8 +20,9 @@ import fog_common;
 [[vk::binding(2, 0)]] [format("rgba16f")] public RWTexture2D<float4> giVolume;
 [[vk::binding(3, 0)]] public Sampler2D giHistory;
 [[vk::binding(4, 0)]] public Sampler2D sceneImage;
-[[vk::binding(5, 0)]] public Sampler2D skyViewLut;
-[[vk::binding(6, 0)]] public Sampler2D transmittanceLut;
+[[vk::binding(5, 0)]] public Sampler2D depthImage;
+[[vk::binding(6, 0)]] public Sampler2D skyViewLut;
+[[vk::binding(7, 0)]] public Sampler2D transmittanceLut;
 
 [[vk::push_constant]] FogLightingPush pc;
 
@@ -132,10 +134,10 @@ float3 fogLocalRadiance(WorldPush push, float3 position, float3 viewDirection, i
         return float3(0.0);
     }
 
-    // Uniform light selection is intentionally capped at two samples. The light list is already a power
-    // hierarchy for the surface path; fog uses its result as a broad, temporally filtered emissive field
-    // rather than paying a second RIS reservoir for every froxel.
-    const uint sampleCount = 2u;
+    // The light list is already a power hierarchy for the surface path. Fog uses uniform area samples as a
+    // stable direct-emissive estimate; unlike GI this channel is not temporally accumulated, so expose a
+    // small quality knob to trade local-light noise against ray-query cost.
+    uint sampleCount = clamp(uint(pc.settings.w), 1u, 8u);
     float3 result = float3(0.0);
     for (uint sample = 0u; sample < sampleCount; sample++) {
         seed = fogPcg(seed);
@@ -166,7 +168,10 @@ float3 fogLocalRadiance(WorldPush push, float3 position, float3 viewDirection, i
         }
         float solidAngleEstimate = area * emitterCosine / distanceSquared;
         result += fogLightRadiance(light) * solidAngleEstimate
-                * fogHg(dot(viewDirection, lightDirection), pc.settings.x);
+                // lightDirection points from the fog point toward the emitter. The photon travels in the
+                // opposite direction, so use dot(-wi, wo); using dot(wi, wo) mirrors the HG lobe and makes
+                // the shafts appear behind the sun/moon.
+                * fogHg(dot(viewDirection, -lightDirection), pc.settings.x);
     }
     return result * (float(pc.lightCount) / float(sampleCount)) * pc.settings.y;
 }
@@ -180,6 +185,17 @@ bool fogSceneRadiance(WorldPush push, float3 hitPosition, out float3 radiance) {
     }
     float2 uv = clip.xy / clip.w * 0.5 + 0.5;
     if (any(uv < float2(0.0)) || any(uv > float2(1.0))) {
+        radiance = float3(0.0);
+        return false;
+    }
+    float hitDepth = clip.z / clip.w;
+    float primaryDepth = depthImage.SampleLevel(uv, 0.0).r;
+    // A secondary GI ray can hit a back wall that projects through a nearer primary surface. Sampling the
+    // primary scene at that UV in that case leaks the front wall's radiance into the volume and produces
+    // large, boiling blobs. With reversed-Z, a value lower than the primary depth is farther away; reject
+    // it and let the low-frequency sky estimate fill the sample instead.
+    if (hitDepth <= 0.0 || hitDepth > 1.001
+            || (primaryDepth > 1.0e-5 && hitDepth < primaryDepth - 0.002)) {
         radiance = float3(0.0);
         return false;
     }
@@ -198,15 +214,36 @@ float3 fogHistorySample(Sampler2D history, float2 uv, float z, float3 dimensions
     uint z1 = min(z0 + 1u, uint(gz - 1.0));
     float zBlend = zf - float(z0);
     float2 atlasSize = float2(gx, gy * gz);
+    // uv is already a normalized position at the current/previous screen pixel. Do not add another
+    // half-texel here: uv * dimensions is a coordinate in the froxel-center space, and adding 0.5 would
+    // shift every reprojection one froxel toward the upper/right neighbor.
     float2 localTexel = float2(uv.x * gx, uv.y * gy);
-    float2 uv0 = (localTexel + float2(0.5, 0.5 + float(z0) * gy)) / atlasSize;
-    float2 uv1 = (localTexel + float2(0.5, 0.5 + float(z1) * gy)) / atlasSize;
+    float2 uv0 = (localTexel + float2(0.0, float(z0) * gy)) / atlasSize;
+    float2 uv1 = (localTexel + float2(0.0, float(z1) * gy)) / atlasSize;
     return lerp(history.SampleLevel(uv0, 0.0).rgb,
             history.SampleLevel(uv1, 0.0).rgb, zBlend);
 }
 
+float3 fogHistorySpatialSample(Sampler2D history, float2 uv, float z, float3 dimensions,
+                               float radius) {
+    float3 center = fogHistorySample(history, uv, z, dimensions);
+    if (radius <= 0.001) {
+        return center;
+    }
+    float2 texel = radius / max(dimensions.xy, float2(1.0));
+    // A compact 5-tap filter removes the high-frequency one-ray GI pattern without spreading the field
+    // across an entire screen pixel. Center weighting preserves broad gradients while the cardinal taps
+    // make the result deliberately low-frequency and soft.
+    float3 filtered = center * 4.0;
+    filtered += fogHistorySample(history, clamp(uv + float2(texel.x, 0.0), 0.0, 1.0), z, dimensions);
+    filtered += fogHistorySample(history, clamp(uv - float2(texel.x, 0.0), 0.0, 1.0), z, dimensions);
+    filtered += fogHistorySample(history, clamp(uv + float2(0.0, texel.y), 0.0, 1.0), z, dimensions);
+    filtered += fogHistorySample(history, clamp(uv - float2(0.0, texel.y), 0.0, 1.0), z, dimensions);
+    return filtered / 8.0;
+}
+
 float3 fogIndirectRadiance(WorldPush push, SkyState sky, float3 position, inout uint seed) {
-    uint samples = clamp(uint(pc.settings.w), 1u, 2u);
+    uint samples = clamp(uint(pc.giSettings.x), 1u, 4u);
     float3 radiance = float3(0.0);
     for (uint sample = 0u; sample < samples; sample++) {
         float3 direction = fogUniformSphere(seed);
@@ -215,7 +252,7 @@ float3 fogIndirectRadiance(WorldPush push, SkyState sky, float3 position, inout 
         ray.Origin = origin;
         ray.TMin = FOG_RAY_TMIN;
         ray.Direction = direction;
-        ray.TMax = min(pc.grid.w, FOG_LOCAL_MAX_DISTANCE);
+        ray.TMax = max(FOG_RAY_TMIN + 0.001, min(pc.grid.w, FOG_LOCAL_MAX_DISTANCE));
 
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
         query.TraceRayInline(topLevelAS, RAY_FLAG_NONE, FOG_SECONDARY_MASK, ray);
@@ -258,8 +295,7 @@ bool fogPreviousCoordinates(WorldPush push, float3 position, out float2 uv, out 
     return all(uv >= float2(0.0)) && all(uv <= float2(1.0)) && z >= 0.0 && z <= 1.0;
 }
 
-float3 fogFroxelPosition(WorldPush push, uint3 id, uint3 dimensions, out float3 rayDirection) {
-    float2 uv = (float2(id.xy) + 0.5) / float2(dimensions.xy);
+float3 fogFroxelPositionAt(WorldPush push, float2 uv, float slice, out float3 rayDirection) {
     float2 ndc = uv * 2.0 - 1.0;
     float4 nearH = mul(push.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
     float4 farH = mul(push.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
@@ -267,8 +303,8 @@ float3 fogFroxelPosition(WorldPush push, uint3 id, uint3 dimensions, out float3 
     float3 farP = farH.xyz / farH.w;
     rayDirection = normalize(farP - nearP);
 
-    float slice = float(id.z) / max(float(dimensions.z - 1u), 1.0);
-    float distance = exp2(lerp(log2(FOG_NEAR_DISTANCE), log2(max(pc.grid.w, FOG_NEAR_DISTANCE + 1.0)), slice));
+    float distance = exp2(lerp(log2(FOG_NEAR_DISTANCE),
+            log2(max(pc.grid.w, FOG_NEAR_DISTANCE + 1.0)), slice));
     float nearAlongRay = length(nearP);
     return nearP + rayDirection * max(distance - nearAlongRay, 0.0) + push.camOffset;
 }
@@ -288,35 +324,83 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     WorldPush push = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
     SkyState sky = skyState(push);
     float3 viewRay;
-    float3 position = fogFroxelPosition(push, froxel, uint3(gridX, gridY, gridZ), viewRay);
-    float3 viewDirection = -viewRay;
+    float2 centerUv = (float2(froxel.xy) + 0.5) / float2(gridX, gridY);
+    float3 position = fogFroxelPositionAt(push, centerUv,
+            float(froxel.z) / max(float(gridZ - 1u), 1.0), viewRay);
     uint seed = fogPcg((froxel.x + froxel.y * gridX + froxel.z * gridX * gridY)
             ^ pc.frameIndex * 2654435761u);
 
-    float3 direct = float3(0.0);
+    // Direct lighting gets its own deterministic sub-froxel supersampling. This anti-aliases hard TLAS
+    // shadow boundaries without temporally blurring the sun/moon shafts; GI keeps a separate lower-frequency
+    // estimator below, so increasing GI softness never washes out a directional shaft.
+    uint directSamples = clamp(uint(pc.giSettings.z), 1u, 4u);
     float3 sunRadiance = fogCelestialRadiance(sky, true);
     float3 moonRadiance = fogCelestialRadiance(sky, false);
-    if (max(sunRadiance.r, max(sunRadiance.g, sunRadiance.b)) > 0.0
-            && fogVisible(position, sky.sunDir, 10000.0)) {
-        direct += sunRadiance * fogHg(dot(viewDirection, sky.sunDir), pc.settings.x);
+    float3 direct = float3(0.0);
+    for (uint directSample = 0u; directSample < directSamples; directSample++) {
+        float2 sampleOffset = float2(0.0);
+        if (directSamples == 2u) {
+            sampleOffset = directSample == 0u ? float2(-0.25, 0.0) : float2(0.25, 0.0);
+        } else if (directSamples >= 4u) {
+            sampleOffset = directSample == 0u ? float2(-0.25, -0.25)
+                    : directSample == 1u ? float2(0.25, -0.25)
+                    : directSample == 2u ? float2(-0.25, 0.25)
+                    : float2(0.25, 0.25);
+        }
+        float2 directUv = (float2(froxel.xy) + 0.5 + sampleOffset) / float2(gridX, gridY);
+        float3 directViewRay;
+        float3 directPosition;
+        if (directSamples == 1u) {
+            directPosition = position;
+            directViewRay = viewRay;
+        } else {
+            directPosition = fogFroxelPositionAt(push, directUv,
+                    float(froxel.z) / max(float(gridZ - 1u), 1.0), directViewRay);
+        }
+        float3 directViewDirection = -directViewRay;
+        if (max(sunRadiance.r, max(sunRadiance.g, sunRadiance.b)) > 0.0
+                && fogVisible(directPosition, sky.sunDir, 10000.0)) {
+            // The photon travels from the sun toward the froxel, opposite to the point-to-sun vector.
+            direct += sunRadiance * fogHg(dot(directViewDirection, -sky.sunDir), pc.settings.x);
+        }
+        if (max(moonRadiance.r, max(moonRadiance.g, moonRadiance.b)) > 0.0
+                && fogVisible(directPosition, sky.moonDir, 10000.0)) {
+            direct += moonRadiance * fogHg(dot(directViewDirection, -sky.moonDir), pc.settings.x);
+        }
+        uint directSeed = fogPcg(seed ^ (directSample + 1u) * 3266489917u);
+        direct += fogLocalRadiance(push, directPosition, directViewDirection, directSeed);
     }
-    if (max(moonRadiance.r, max(moonRadiance.g, moonRadiance.b)) > 0.0
-            && fogVisible(position, sky.moonDir, 10000.0)) {
-        direct += moonRadiance * fogHg(dot(viewDirection, sky.moonDir), pc.settings.x);
-    }
-    direct += fogLocalRadiance(push, position, viewDirection, seed);
+    direct /= float(directSamples);
 
-    float3 indirect = fogIndirectRadiance(push, sky, position, seed);
+    // GI is intentionally sampled from a coarser, world-independent pattern than direct lighting. Sharing
+    // a direction set across each 2x2 froxel neighborhood turns isolated one-ray speckles into a broad
+    // radiance gradient; the linear volume lookup and history filter then soften that gradient further.
+    uint giCellX = froxel.x >> 1u;
+    uint giCellY = froxel.y >> 1u;
+    uint giCellZ = froxel.z >> 1u;
+    uint giSeed = fogPcg((giCellX + giCellY * ((gridX + 1u) >> 1u)
+            + giCellZ * ((gridX + 1u) >> 1u) * ((gridY + 1u) >> 1u))
+            ^ pc.frameIndex * 2246822519u);
+    float3 indirect = fogIndirectRadiance(push, sky, position, giSeed);
+    float2 currentUv = (float2(froxel.xy) + 0.5) / float2(gridX, gridY);
     float2 previousUv;
     float previousZ;
     if (pc.settings.z > 0.0 && fogPreviousCoordinates(push, position, previousUv, previousZ)) {
-        float3 history = fogHistorySample(giHistory, previousUv, previousZ, pc.grid.xyz)
-                * FOG_RADIANCE_SCALE;
+        float motionInFroxels = length((previousUv - currentUv) * pc.grid.xy);
+        // Reprojection is useful for stationary pixels but visibly drags when the camera moves. Reduce the
+        // history weight from both screen-space displacement (rotation included) and world translation,
+        // so a moving camera converges quickly while a static view still gets the full soft accumulation.
+        float historyWeight = clamp(pc.settings.z
+                * exp(-0.55 * motionInFroxels)
+                * exp(-0.35 * length(push.camDelta)), 0.0, 0.98);
+        float spatialRadius = max(pc.giSettings.y, 0.0);
+        float3 history = fogHistorySpatialSample(giHistory, previousUv, previousZ, pc.grid.xyz,
+                spatialRadius) * FOG_RADIANCE_SCALE;
         // History rejection is deliberately conservative. GI is the soft channel; clamping only extreme
         // excursions preserves accumulation while stopping a newly revealed emissive block from trailing
         // a bright ribbon behind the camera.
         history = min(history, indirect * 4.0 + float3(8.0));
-        indirect = lerp(indirect, history, clamp(pc.settings.z, 0.0, 0.98));
+        indirect = lerp(indirect, history, historyWeight);
     }
 
     // Keep the shared fields in the fp16-safe representation. Integration multiplies by the same constant

@@ -15,8 +15,10 @@ public struct FogLightingPush {
     public uint64_t lightBufAddr;
     // xyz = froxel atlas dimensions (x, y, z), w = logarithmic far distance in world blocks.
     public float4 grid;
-    // x = direct phase anisotropy, y = local-emissive strength, z = history blend, w = GI samples.
+    // x = direct phase anisotropy, y = local-emissive strength, z = history blend, w = local samples.
     public float4 settings;
+    // x = GI ray samples, y = spatial history radius in froxels, z = direct froxel samples, w reserved.
+    public float4 giSettings;
     public uint lightCount;
     public uint frameIndex;
 };
