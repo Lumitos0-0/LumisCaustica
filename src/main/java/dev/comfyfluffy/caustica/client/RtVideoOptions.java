@@ -46,6 +46,7 @@ public final class RtVideoOptions {
             gamma(),
             spp(),
             maxBounces(),
+            fogEnabled(),
             entities(),
             particles(),
             waterWaves(),
@@ -121,6 +122,10 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(2, 8),
             Math.clamp(setting.value(), 2, 8),
             setting::set);
+    }
+
+    private static OptionInstance<Boolean> fogEnabled() {
+        return bool("caustica.options.rt.fog", CausticaConfig.Rt.Fog.ENABLED);
     }
 
     private static OptionInstance<Boolean> entities() {

@@ -53,6 +53,7 @@ import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import dev.comfyfluffy.caustica.rt.entity.RtEntities;
 import dev.comfyfluffy.caustica.rt.entity.RtEntityTextures;
+import dev.comfyfluffy.caustica.rt.fog.RtFroxelFog;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.material.RtEmissionSemantics;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
@@ -247,6 +248,9 @@ public final class RtComposite {
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
+    // Camera-view hybrid fog owns its direct/GI froxel atlases and integrates into output before RR.
+    // It is kept outside RtPipeline so the world SBT and surface payload ABI remain unchanged.
+    private final RtFroxelFog froxelFog = new RtFroxelFog();
     private final RtExposure exposure = new RtExposure();
 
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
@@ -504,6 +508,7 @@ public final class RtComposite {
     /** Reset exposure filtering after an explicit render-state invalidation such as F3+A. */
     public void resetExposureHistory() {
         exposure.requestReset();
+        froxelFog.invalidateHistory();
     }
 
     /**
@@ -643,6 +648,9 @@ public final class RtComposite {
                 }
             }
             ensureOutput(ctx, width, height);
+            // Fog has its own atlas shape controls, so check it every frame even when the main render
+            // images did not resize. A live tile/Z change waits only on the rare reallocation path.
+            froxelFog.ensureResources(ctx, renderW, renderH);
             // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
@@ -667,6 +675,11 @@ public final class RtComposite {
             }
             refreshMaterialBindingsIfNeeded(ctx);
             updateMotion();
+            // A large teleport invalidates camera-frustum history; ordinary translation/rotation is
+            // handled by the froxel reprojection in fog_lighting.comp.
+            if (Math.abs(mvCamDeltaX) + Math.abs(mvCamDeltaY) + Math.abs(mvCamDeltaZ) > 32.0f) {
+                froxelFog.invalidateHistory();
+            }
             recordFrame(ctx, active, nativeColor);
             if (!loggedActive) {
                 loggedActive = true;
@@ -796,6 +809,7 @@ public final class RtComposite {
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
         // incrementally displaying old UVs/IDs against the new atlas/table.
         RtTerrain.requestFullClear();
+        froxelFog.invalidateHistory();
         materialEpochTraceGate = true;
     }
 
@@ -832,6 +846,7 @@ public final class RtComposite {
     public void onResourceReloadStart() {
         reloadRebindRequested = true;
         materialBindingsReady = false;
+        froxelFog.invalidateHistory();
         setCelestialUvAtlas(0L);
         RtEntities.INSTANCE.onResourceReload();
         RtContext ctx = RtContext.currentOrNull();
@@ -973,6 +988,7 @@ public final class RtComposite {
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
+        froxelFog.invalidateHistory(); // render-size/projection change invalidates camera-volume reprojection
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
@@ -1210,7 +1226,22 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // world RT writes visible to fog and DLSS reads
+
+            // The fog graph is deliberately after the world traces: its GI probe samples the completed
+            // scene image, while its direct channel still queries the exact frame TLAS. Integration writes
+            // the render-resolution scene at the seam immediately before DLSS-RR.
+            if (froxelFog.enabled()) {
+                int seaLevel = Minecraft.getInstance().level != null
+                        ? Minecraft.getInstance().level.getSeaLevel() : 63;
+                float fogBaseHeight = seaLevel - terrain.blockY;
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.fog")) {
+                    froxelFog.record(cmd, currentTlasHandle, output, gDepth, pushBuf.deviceAddress,
+                            terrain.lightBufferAddress(), terrain.lightCount(), skyLut, fogBaseHeight,
+                            frameCounter, graphicsUse, graphicsUseWaiter);
+                }
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog integration visible to DLSS reads
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1494,6 +1525,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        froxelFog.destroy();
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();

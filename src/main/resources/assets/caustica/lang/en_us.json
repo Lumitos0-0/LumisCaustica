@@ -18,6 +18,9 @@
 	"caustica.options.rt.maxBounces": "Path Bounces",
 	"caustica.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
 
+	"caustica.options.rt.fog": "Volumetric Fog",
+	"caustica.options.rt.fog.tooltip": "Primary-view hybrid fog with sharp, TLAS-shadowed sun and moon shafts plus soft temporally accumulated GI haze.",
+
 	"caustica.options.rt.entities": "Ray-Traced Entities",
 	"caustica.options.rt.entities.tooltip": "Include entities and block entities in the ray-traced scene.",
 
