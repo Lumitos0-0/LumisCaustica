@@ -12,6 +12,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRAccelerationStructure;
 import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
 import org.lwjgl.vulkan.VkDescriptorImageInfo;
 import org.lwjgl.vulkan.VkDescriptorPoolCreateInfo;
@@ -191,13 +192,13 @@ public final class RtFroxel {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, lightingSet, "froxel lighting set");
 
             // Bind the transmittance LUT once (the sky LUT lives for the device's lifetime).
-            VkDescriptorImageInfo lutImg = VkDescriptorImageInfo.calloc(1, stack)
-                    .sampler(transmittanceSampler).imageView(transmittanceView)
+            VkDescriptorImageInfo.Buffer lutImg = VkDescriptorImageInfo.calloc(1, stack);
+            lutImg.get(0).sampler(transmittanceSampler).imageView(transmittanceView)
                     .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkWriteDescriptorSet lutWrite = VkWriteDescriptorSet.calloc(1, stack)
-                    .sType$Default().dstSet(lightingSet).dstBinding(BIND_LUT)
+            VkWriteDescriptorSet.Buffer lutWrite = VkWriteDescriptorSet.calloc(1, stack);
+            lutWrite.get(0).sType$Default().dstSet(lightingSet).dstBinding(BIND_LUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .pImageInfo(VkDescriptorImageInfo.create(lutImg.address(0), 1));
+                    .pImageInfo(lutImg);
             VK10.vkUpdateDescriptorSets(vk, lutWrite, null);
 
             // Integrate set (set 1, bindings 0..2): source color, guide depth, fogged output.
