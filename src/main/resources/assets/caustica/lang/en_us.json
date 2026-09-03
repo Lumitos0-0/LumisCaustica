@@ -29,6 +29,14 @@
 
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
+	"caustica.options.rt.fog": "Volumetric Fog",
+	"caustica.options.rt.fog.tooltip": "Froxel volumetric fog with ray-traced light shafts, applied at render resolution and denoised with the scene. Takes effect immediately.",
+	"caustica.options.rt.fogDensity": "Fog Density",
+	"caustica.options.rt.fogDensity.tooltip": "Base fog thickness as extinction per block. Higher values make the air hazier and the light shafts denser; the default 0.020 is a light morning haze.",
+	"caustica.options.rt.fogBrightness": "Fog Brightness",
+	"caustica.options.rt.fogBrightness.tooltip": "Overall brightness of the light scattered in the fog (sun/moon shafts and ambient sky light). 0 leaves only the dimming effect of the fog.",
+	"caustica.options.rt.fogSkyLight": "Fog Sky Light",
+	"caustica.options.rt.fogSkyLight.tooltip": "How strongly the fog scatters ambient sky light. 0 keeps only direct sun/moon shafts, so shadowed fog goes dark; 1 is the physical balance.",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",

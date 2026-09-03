@@ -26,6 +26,14 @@
 
 	"caustica.options.rt.waterWaves": "動態水面",
 	"caustica.options.rt.waterWaves.tooltip": "對水面法線進行動畫處理，以顯示移動波浪高光。",
+	"caustica.options.rt.fog": "體積霧",
+	"caustica.options.rt.fog.tooltip": "基於體素（froxel）的體積霧與光線追蹤光柱，以渲染解析度套用，並隨場景一同降噪。立即生效。",
+	"caustica.options.rt.fogDensity": "霧氣密度",
+	"caustica.options.rt.fogDensity.tooltip": "以每方塊消光量表示的基礎霧氣厚度。數值越高空氣越濃，光柱也越密；預設值 0.020 是輕微的晨霧。",
+	"caustica.options.rt.fogBrightness": "霧中光照",
+	"caustica.options.rt.fogBrightness.tooltip": "霧中散射光（日月光柱與天空環境光）的整體亮度。設為 0 則只剩下霧的遮蔽效果。",
+	"caustica.options.rt.fogSkyLight": "霧中天光",
+	"caustica.options.rt.fogSkyLight.tooltip": "霧散射天空環境光的強度。設為 0 時只保留日月直射光柱，陰影中的霧會變暗；設為 1 為物理平衡。",
 
 	"caustica.options.rt.hdr": "HDR 輸出",
 	"caustica.options.rt.hdr.tooltip": "當顯示器支援時，以 HDR (ST.2084/PQ) 而不是 SDR 顯示。重新啟動遊戲後生效。",

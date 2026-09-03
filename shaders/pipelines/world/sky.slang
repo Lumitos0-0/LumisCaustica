@@ -318,6 +318,23 @@ public float lightViewCosine(float3 viewDir, float3 lightDir) {
     return clamp(dot(viewAzimuth / viewLen, lightAzimuth / lightLen), -1.0, 1.0);
 }
 
+/**
+ * Atmosphere in-scatter for a world direction: both bodies' slices of the sky-view LUT, summed. This is
+ * everything the sky physically is — the below-horizon ground plate included — but excluding the drawn
+ * sun/moon discs, the starfield and the night airglow floor, which the miss shader layers on separately.
+ *
+ * <p>Public so consumers other than the miss shader can evaluate the dome: the froxel lighting pass
+ * averages a few fixed directions of it as the fog's ambient skylight term, so fog in shadow and at night
+ * keeps its sky light instead of collapsing to pure (black) extinction.
+ */
+public float3 skyDomeRadiance(SkyState state, Sampler2D lut, float3 dir) {
+    float2 sunUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, state.sunDir), SKY_VIEW_BODY_SUN);
+    float2 moonUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, state.moonDir), SKY_VIEW_BODY_MOON);
+    return lut.SampleLevel(sunUv, 0.0).rgb + lut.SampleLevel(moonUv, 0.0).rgb;
+}
+
 public struct ScatteringResult {
     public float3 luminance;      // cd/m²
     public float3 multiScatAs1;   // per-unit-illuminance response used to build the multiscatter LUT

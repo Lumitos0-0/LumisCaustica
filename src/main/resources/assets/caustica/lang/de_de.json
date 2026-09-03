@@ -26,6 +26,14 @@
 
 	"caustica.options.rt.waterWaves": "Animiertes Wasser",
 	"caustica.options.rt.waterWaves.tooltip": "Animiert Wasseroberflächen-Normalen für bewegte Wellenlichter.",
+	"caustica.options.rt.fog": "Volumetrischer Nebel",
+	"caustica.options.rt.fog.tooltip": "Froxel-basierter volumetrischer Nebel mit raygetraceten Lichtstrahlen, in Renderauflösung angewendet und mit der Szene entrauscht. Wirkt sofort.",
+	"caustica.options.rt.fogDensity": "Nebeldichte",
+	"caustica.options.rt.fogDensity.tooltip": "Basisdicke des Nebels als Extinktion pro Block. Höhere Werte machen die Luft dunstiger und die Lichtstrahlen dichter; der Standard 0,020 ist ein leichter Morgennebel.",
+	"caustica.options.rt.fogBrightness": "Nebelhelligkeit",
+	"caustica.options.rt.fogBrightness.tooltip": "Gesamthelligkeit des im Nebel gestreuten Lichts (Sonnen-/Mondstrahlen und Umgebungslicht des Himmels). 0 lässt nur die abdunkelnde Wirkung des Nebels übrig.",
+	"caustica.options.rt.fogSkyLight": "Himmelslicht im Nebel",
+	"caustica.options.rt.fogSkyLight.tooltip": "Wie stark der Nebel das Umgebungslicht des Himmels streut. 0 behält nur direkte Sonnen-/Mondstrahlen, sodass Schattennebel dunkel bleibt; 1 ist die physikalische Balance.",
 
 	"caustica.options.rt.hdr": "HDR-Ausgabe",
 	"caustica.options.rt.hdr.tooltip": "Gibt, wenn der Bildschirm es unterstützt, in HDR (ST.2084/PQ) statt SDR aus. Wird nach einem Neustart des Spiels wirksam.",

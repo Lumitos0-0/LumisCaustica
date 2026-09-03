@@ -26,6 +26,14 @@
 
 	"caustica.options.rt.waterWaves": "Acqua animata",
 	"caustica.options.rt.waterWaves.tooltip": "Anima le normali della superficie dell'acqua per riflessi di onde in movimento.",
+	"caustica.options.rt.fog": "Nebbia volumetrica",
+	"caustica.options.rt.fog.tooltip": "Nebbia volumetrica a froxel con fasci di luce ray-traced, applicata alla risoluzione di rendering e denoizzata con la scena. Ha effetto immediatamente.",
+	"caustica.options.rt.fogDensity": "Densità della nebbia",
+	"caustica.options.rt.fogDensity.tooltip": "Spessore base della nebbia come estinzione per blocco. Valori più alti rendono l'aria più foschiosa e i fasci di luce più densi; il valore predefinito 0.020 è una leggera foschia mattutina.",
+	"caustica.options.rt.fogBrightness": "Luminosità della nebbia",
+	"caustica.options.rt.fogBrightness.tooltip": "Luminosità complessiva della luce diffusa nella nebbia (fasci di sole/luna e luce ambientale del cielo). 0 lascia solo l'effetto di attenuazione della nebbia.",
+	"caustica.options.rt.fogSkyLight": "Luce del cielo nella nebbia",
+	"caustica.options.rt.fogSkyLight.tooltip": "Quanto la nebbia diffonde la luce ambientale del cielo. 0 mantiene solo i fasci diretti di sole/luna, quindi la nebbia in ombra resta scura; 1 è l'equilibrio fisico.",
 
 	"caustica.options.rt.hdr": "Uscita HDR",
 	"caustica.options.rt.hdr.tooltip": "Presenta in HDR (ST.2084/PQ) invece che in SDR, quando il display lo supporta. Ha effetto dopo il riavvio del gioco.",

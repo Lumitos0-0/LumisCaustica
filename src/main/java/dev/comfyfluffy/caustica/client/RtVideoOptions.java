@@ -49,6 +49,10 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricFog(),
+            fogDensity(),
+            fogBrightness(),
+            fogSkyLight(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -133,6 +137,51 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    // The froxel settings re-read their config value every frame in RtFroxel.recordLighting /
+    // recordIntegrate, so all four of these apply on the very next frame after they change.
+    private static OptionInstance<Boolean> volumetricFog() {
+        return bool("caustica.options.rt.fog", CausticaConfig.Rt.Froxel.ENABLED);
+    }
+
+    // 0..1.0 in thousandths; the config clamp still admits higher densities through the TOML file.
+    private static OptionInstance<Integer> fogDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Froxel.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDensity.tooltip")),
+            (caption, thousandths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", thousandths / 1000.0f))),
+            new OptionInstance.IntRange(0, 1000),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, 1000),
+            thousandths -> setting.set(thousandths / 1000.0f));
+    }
+
+    // 0..20 in tenths, matching the intensity clamp.
+    private static OptionInstance<Integer> fogBrightness() {
+        FloatSetting setting = CausticaConfig.Rt.Froxel.INTENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogBrightness",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogBrightness.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1f", tenths / 10.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 10.0f), 0, 200),
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    // 0..8 in twentieths, matching the sky-intensity clamp.
+    private static OptionInstance<Integer> fogSkyLight() {
+        FloatSetting setting = CausticaConfig.Rt.Froxel.SKY_INTENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogSkyLight",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogSkyLight.tooltip")),
+            (caption, twentieths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", twentieths / 20.0f))),
+            new OptionInstance.IntRange(0, 160),
+            Math.clamp(Math.round(setting.value() * 20.0f), 0, 160),
+            twentieths -> setting.set(twentieths / 20.0f));
     }
 
     private static OptionInstance<Integer> dlssQuality() {

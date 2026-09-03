@@ -44,8 +44,10 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  *   <li><b>lighting</b> ({@code lighting.comp}) fills the volume. One thread per froxel samples the fog
  *       density field, casts several ray-queried occlusion rays toward the dominant sun/moon light (the
  *       amortized "path-traced volumetric shadow" that yields god rays / light shafts), and writes the
- *       result. The dominant light and its transmittance LUT come from the same sky module the path tracer
- *       uses, so fog, terrain light and the drawn disc never disagree.</li>
+ *       result. The direct term and an ambient term — the sky-view LUT averaged over the sphere, so
+ *       shadowed and night fog keeps its skylight instead of collapsing to black extinction — both come
+ *       from the same sky module the path tracer uses, so fog, terrain light and the drawn disc never
+ *       disagree.</li>
  *   <li><b>integrate</b> ({@code integrate.comp}) accumulates the volume along each view ray against the
  *       guide depth and composites the fog over the path-traced radiance. Its output feeds DLSS-RR (or the
  *       fallback upscale), so the fog is denoised, exposed and bloomed with the scene.</li>
@@ -63,6 +65,7 @@ public final class RtFroxel {
     // Descriptor bindings, must stay in lock-step with the .comp.slang files.
     private static final int BIND_TLAS = 0;            // set 0 (lighting only)
     private static final int BIND_LUT = 0;             // set 1, lighting (combined image sampler)
+    private static final int BIND_SKY_VIEW = 1;        // set 1, lighting (combined image sampler)
     private static final int BIND_SOURCE = 0;          // set 1, integrate (storage image)
     private static final int BIND_DEPTH = 1;           // set 1, integrate (storage image)
     private static final int BIND_OUT = 2;             // set 1, integrate (storage image)
@@ -125,8 +128,14 @@ public final class RtFroxel {
         this.integratePipeline = integratePipeline;
     }
 
-    /** Builds the pipelines and empty descriptor slots. {@link #ensureGrid} binds the volume buffers first. */
-    public static RtFroxel create(RtContext ctx, long transmittanceView, long transmittanceSampler) {
+    /**
+     * Builds the pipelines and empty descriptor slots. {@link #ensureGrid} binds the volume buffers first.
+     *
+     * @param transmittanceView the sky transmittance LUT view the occlusion light's illuminance reads
+     * @param skyViewView       the sky-view LUT view the ambient skylight term averages over
+     * @param sampler           the LUTs' shared sampler (both are sampled, not stored, from here)
+     */
+    public static RtFroxel create(RtContext ctx, long transmittanceView, long skyViewView, long sampler) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             LongBuffer p = stack.mallocLong(1);
@@ -165,9 +174,13 @@ public final class RtFroxel {
                 RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, tlasSets[i], "froxel TLAS set " + i);
             }
 
-            // Lighting set (set 1, binding 0): the sky transmittance LUT sampled by the occlusion light.
-            VkDescriptorSetLayoutBinding.Buffer lutBinds = VkDescriptorSetLayoutBinding.calloc(1, stack);
+            // Lighting set (set 1, bindings 0..1): the sky transmittance LUT sampled by the occlusion
+            // light, and the sky-view LUT the ambient skylight term averages over. Both are combined
+            // image samplers sharing the sky LUT pipeline's own sampler.
+            VkDescriptorSetLayoutBinding.Buffer lutBinds = VkDescriptorSetLayoutBinding.calloc(2, stack);
             lutBinds.get(0).binding(BIND_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            lutBinds.get(1).binding(BIND_SKY_VIEW).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo lutDsl = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(lutBinds);
@@ -176,7 +189,7 @@ public final class RtFroxel {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, lightingSetLayout, "froxel lighting set layout");
 
             VkDescriptorPoolSize.Buffer lutPoolSize = VkDescriptorPoolSize.calloc(1, stack);
-            lutPoolSize.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
+            lutPoolSize.get(0).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
             VkDescriptorPoolCreateInfo lutPoolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
                     .sType$Default().maxSets(1).pPoolSizes(lutPoolSize);
             check(VK10.vkCreateDescriptorPool(vk, lutPoolInfo, null, p), "vkCreateDescriptorPool(froxel lighting)");
@@ -191,15 +204,20 @@ public final class RtFroxel {
             long lightingSet = lightingSetBuf.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, lightingSet, "froxel lighting set");
 
-            // Bind the transmittance LUT once (the sky LUT lives for the device's lifetime).
-            VkDescriptorImageInfo.Buffer lutImg = VkDescriptorImageInfo.calloc(1, stack);
-            lutImg.get(0).sampler(transmittanceSampler).imageView(transmittanceView)
+            // Bind both sky LUTs once (they live for the device's lifetime).
+            VkDescriptorImageInfo.Buffer lutImgs = VkDescriptorImageInfo.calloc(2, stack);
+            lutImgs.get(0).sampler(sampler).imageView(transmittanceView)
                     .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkWriteDescriptorSet.Buffer lutWrite = VkWriteDescriptorSet.calloc(1, stack);
-            lutWrite.get(0).sType$Default().dstSet(lightingSet).dstBinding(BIND_LUT)
+            lutImgs.get(1).sampler(sampler).imageView(skyViewView)
+                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer lutWrites = VkWriteDescriptorSet.calloc(2, stack);
+            lutWrites.get(0).sType$Default().dstSet(lightingSet).dstBinding(BIND_LUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .pImageInfo(lutImg);
-            VK10.vkUpdateDescriptorSets(vk, lutWrite, null);
+                    .pImageInfo(VkDescriptorImageInfo.create(lutImgs.address(0), 1));
+            lutWrites.get(1).sType$Default().dstSet(lightingSet).dstBinding(BIND_SKY_VIEW)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .pImageInfo(VkDescriptorImageInfo.create(lutImgs.address(1), 1));
+            VK10.vkUpdateDescriptorSets(vk, lutWrites, null);
 
             // Integrate set (set 1, bindings 0..2): source color, guide depth, fogged output.
             VkDescriptorSetLayoutBinding.Buffer imgBinds = VkDescriptorSetLayoutBinding.calloc(3, stack);
@@ -278,34 +296,55 @@ public final class RtFroxel {
         return slices;
     }
 
-    /** (Re)allocates the froxel volume (and optional history) buffers for the current render resolution. */
+    /**
+     * (Re)allocates the froxel volume (and optional history) buffers for the current render resolution.
+     *
+     * <p>Called every frame ({@link #recordLighting}); when nothing relevant changed this is a handful of
+     * int compares. A change to the tile size or slice count re-derives the grid, and a change to the
+     * temporal setting grows or frees just the history buffer, so those settings are live rather than
+     * resize-only. Reallocation waits for the device to go idle first: no in-flight frame may reference a
+     * buffer that is about to be destroyed.
+     */
     public void ensureGrid(RtContext ctx, int renderW, int renderH) {
         int tileSize = CausticaConfig.Rt.Froxel.TILE_SIZE.value();
         int sliceCount = CausticaConfig.Rt.Froxel.DEPTH_SLICES.value();
         int newTileW = Math.max(1, (renderW + tileSize - 1) / tileSize);
         int newTileH = Math.max(1, (renderH + tileSize - 1) / tileSize);
-        if (volume != null && newTileW == tileW && newTileH == tileH && sliceCount == slices) {
+        boolean dimsChanged = volume == null || newTileW != tileW || newTileH != tileH || sliceCount != slices;
+        boolean wantHistory = CausticaConfig.Rt.Froxel.TEMPORAL.value();
+        boolean historyChanged = (history != null) != wantHistory;
+        if (!dimsChanged && !historyChanged) {
             return;
         }
-        ctx.waitIdle(); // resize is rare; no in-flight frame may reference the old buffer
-        if (volume != null) {
-            volume.destroy();
-            volume = null;
+        ctx.waitIdle(); // rebuild is rare; no in-flight frame may reference the old buffers
+        if (dimsChanged) {
+            if (volume != null) {
+                volume.destroy();
+                volume = null;
+            }
+            if (history != null) {
+                history.destroy();
+                history = null;
+            }
+            long count = Math.multiplyExact(Math.multiplyExact((long) newTileW, newTileH), sliceCount);
+            long bytes = Math.multiplyExact(count, 16L); // float4 per froxel
+            volume = ctx.createBuffer(bytes, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "froxel volume");
+            tileW = newTileW;
+            tileH = newTileH;
+            slices = sliceCount;
         }
-        if (history != null) {
-            history.destroy();
-            history = null;
-        }
-        long count = Math.multiplyExact(Math.multiplyExact((long) newTileW, newTileH), sliceCount);
-        long bytes = Math.multiplyExact(count, 16L); // float4 per froxel
-        volume = ctx.createBuffer(bytes, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "froxel volume");
-        if (CausticaConfig.Rt.Froxel.TEMPORAL.value()) {
-            history = ctx.createBuffer(bytes, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "froxel history");
+        if (historyChanged) {
+            if (history != null) {
+                history.destroy();
+                history = null;
+            }
+            if (wantHistory) {
+                long count = Math.multiplyExact(Math.multiplyExact((long) tileW, (long) tileH), slices);
+                history = ctx.createBuffer(Math.multiplyExact(count, 16L),
+                        VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "froxel history");
+            }
         }
         historyReady = false; // fresh history: undefined device memory until the first write-back
-        tileW = newTileW;
-        tileH = newTileH;
-        slices = sliceCount;
     }
 
     /** Points the integrate set at the current frame's scene color, guide depth, and fog output. */
@@ -330,6 +369,9 @@ public final class RtFroxel {
                                RtGpuExecutor.GraphicsUse graphicsUse,
                                RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter,
                                int renderW, int renderH) {
+        // Refresh the grid first so a runtime change to tile-size/depth-slices/temporal takes effect this
+        // frame instead of silently waiting for the next window resize.
+        ensureGrid(ctx, renderW, renderH);
         if (volume == null || !CausticaConfig.Rt.Froxel.ENABLED.value()) {
             return;
         }
@@ -359,6 +401,11 @@ public final class RtFroxel {
         float noiseIntensity = CausticaConfig.Rt.Froxel.NOISE_INTENSITY.value();
         float noiseScale = CausticaConfig.Rt.Froxel.NOISE_SCALE.value();
         float intensity = CausticaConfig.Rt.Froxel.INTENSITY.value();
+        float skyIntensity = CausticaConfig.Rt.Froxel.SKY_INTENSITY.value();
+        float underwaterMultiplier = CausticaConfig.Rt.Froxel.UNDERWATER_MULTIPLIER.value();
+        float tintR = CausticaConfig.Rt.Froxel.TINT_R.value();
+        float tintG = CausticaConfig.Rt.Froxel.TINT_G.value();
+        float tintB = CausticaConfig.Rt.Froxel.TINT_B.value();
         // On the first frame (and after a resize) the history buffer is undefined device memory, so the
         // EMA is disabled: the shader writes fresh values to both volume and history, and historyReady
         // flips only once a complete frame's history actually exists to read next frame.
@@ -371,7 +418,8 @@ public final class RtFroxel {
                     new FroxelPushData.Float4(near, far, tileSize, (float) slices),
                     new FroxelPushData.Float4(density, falloff, phaseG, 1.0f),
                     new FroxelPushData.Float4(albedo, noiseIntensity, noiseScale, temporalBlend),
-                    new FroxelPushData.Float4(intensity, 1.0f, 1.0f, 1.0f),
+                    new FroxelPushData.Float4(intensity, tintR, tintG, tintB),
+                    new FroxelPushData.Float4(skyIntensity, underwaterMultiplier, 0.0f, 0.0f),
                     worldPushAddress,
                     volume.deviceAddress,
                     history != null ? history.deviceAddress : 0L,
@@ -404,6 +452,7 @@ public final class RtFroxel {
                     new FroxelPushData.Float4(0.0f, 0.0f, 0.0f, enabled),
                     new FroxelPushData.Float4(0.0f, 0.0f, 0.0f, 0.0f),
                     new FroxelPushData.Float4(0.0f, 1.0f, 1.0f, 1.0f),
+                    new FroxelPushData.Float4(0.0f, 0.0f, 0.0f, 0.0f),
                     worldPushAddress,
                     volume.deviceAddress,
                     history != null ? history.deviceAddress : 0L,

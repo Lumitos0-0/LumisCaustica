@@ -26,6 +26,14 @@
 
 	"caustica.options.rt.waterWaves": "Água animada",
 	"caustica.options.rt.waterWaves.tooltip": "Anima as normais da superfície da água para brilhos de ondas em movimento.",
+	"caustica.options.rt.fog": "Névoa volumétrica",
+	"caustica.options.rt.fog.tooltip": "Névoa volumétrica por froxels com feixes de luz ray-traced, aplicada na resolução de renderização e com denoise junto com a cena. Tem efeito imediato.",
+	"caustica.options.rt.fogDensity": "Densidade da névoa",
+	"caustica.options.rt.fogDensity.tooltip": "Espessura base da névoa como extinção por bloco. Valores maiores deixam o ar mais enevoado e os feixes de luz mais densos; o padrão 0.020 é uma neblina matinal leve.",
+	"caustica.options.rt.fogBrightness": "Brilho da névoa",
+	"caustica.options.rt.fogBrightness.tooltip": "Brilho geral da luz espalhada na névoa (feixes de sol/lua e luz ambiente do céu). 0 deixa apenas o efeito de escurecimento da névoa.",
+	"caustica.options.rt.fogSkyLight": "Luz do céu na névoa",
+	"caustica.options.rt.fogSkyLight.tooltip": "O quanto a névoa espalha a luz ambiente do céu. 0 mantém apenas os feixes diretos de sol/lua, deixando a névoa na sombra escura; 1 é o equilíbrio físico.",
 
 	"caustica.options.rt.hdr": "Saída HDR",
 	"caustica.options.rt.hdr.tooltip": "Apresenta em HDR (ST.2084/PQ) em vez de SDR quando a tela oferece suporte. Entra em vigor após reiniciar o jogo.",

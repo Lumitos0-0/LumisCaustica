@@ -606,7 +606,7 @@ public final class RtComposite {
                 skyLut = RtSkyLut.create(ctx);
             }
             if (froxel == null) {
-                froxel = RtFroxel.create(ctx, skyLut.transmittanceView(), skyLut.sampler());
+                froxel = RtFroxel.create(ctx, skyLut.transmittanceView(), skyLut.skyViewView(), skyLut.sampler());
             }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);

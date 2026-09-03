@@ -19,6 +19,7 @@ public struct FroxelPush {
     public float4  look;    // x base density (per-block extinction), y height falloff, z phase g, w enabled (0/1)
     public float4  aux;     // x scatter fraction (albedo), y noise intensity, z noise scale, w temporal blend 0..1
     public float4  ref;     // x global scattering intensity multiplier, yzw linear tint (1 = neutral)
+    public float4  sky;     // x ambient skylight weight (0 = direct sun/moon shafts only), y submerged density multiplier
     public uint64_t worldPushAddr;
     public uint64_t froxelVolumeAddr;   // current-frame froxel buffer, DevicePtr<float4>
     public uint64_t froxelHistoryAddr;  // previous-frame froxel buffer for temporal blend (0 = no history)

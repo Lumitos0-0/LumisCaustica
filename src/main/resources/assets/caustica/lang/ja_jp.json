@@ -27,6 +27,18 @@
 	"caustica.options.rt.waterWaves": "アニメーションする水",
 	"caustica.options.rt.waterWaves.tooltip": "水面の法線をアニメーションさせ、動く波のハイライトを表示します。",
 
+	"caustica.options.rt.fog": "ボリューメトリックフォグ",
+	"caustica.options.rt.fog.tooltip": "フロクセル方式のボリュームメトリックフォグ（レイトレースの光柱付き）。描画解像度で適用され、シーンと一緒にノイズ除去されます。即座に適用されます。",
+
+	"caustica.options.rt.fogDensity": "フォグの密度",
+	"caustica.options.rt.fogDensity.tooltip": "ブロックあたりの消光度で表すフォグの基本の濃さ。値を上げると空気が濃くなり、光柱も濃くなります。既定値0.020は軽い朝霧です。",
+
+	"caustica.options.rt.fogBrightness": "フォグの明るさ",
+	"caustica.options.rt.fogBrightness.tooltip": "フォグ内で散乱する光（太陽・月の光柱と空の環境光）の全体的な明るさ。0にするとフォグの減光効果だけが残ります。",
+
+	"caustica.options.rt.fogSkyLight": "フォグの天候光",
+	"caustica.options.rt.fogSkyLight.tooltip": "フォグが空の環境光をどれだけ散乱させるか。0にすると太陽・月の直接の光柱だけになり、影の中のフォグは暗いままです。1が物理的なバランスです。",
+
 	"caustica.options.rt.hdr": "HDR 出力",
 	"caustica.options.rt.hdr.tooltip": "ディスプレイが対応している場合、SDR ではなく HDR (ST.2084/PQ) で表示します。ゲームの再起動後に反映されます。",
 

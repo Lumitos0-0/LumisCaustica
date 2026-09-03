@@ -26,6 +26,14 @@
 
 	"caustica.options.rt.waterWaves": "Eau animée",
 	"caustica.options.rt.waterWaves.tooltip": "Anime les normales de surface de l'eau pour des reflets de vagues en mouvement.",
+	"caustica.options.rt.fog": "Brouillard volumétrique",
+	"caustica.options.rt.fog.tooltip": "Brouillard volumétrique par froxeaux avec rais de lumière tracés, appliqué à la résolution de rendu et débruité avec la scène. Prend effet immédiatement.",
+	"caustica.options.rt.fogDensity": "Densité du brouillard",
+	"caustica.options.rt.fogDensity.tooltip": "Épaisseur de base du brouillard en extinction par bloc. Des valeurs plus élevées rendent l'air plus brumeux et les rais de lumière plus denses ; 0.020 par défaut est une légère brume matinale.",
+	"caustica.options.rt.fogBrightness": "Luminosité du brouillard",
+	"caustica.options.rt.fogBrightness.tooltip": "Luminosité globale de la lumière diffusée dans le brouillard (rais de soleil/lune et lumière ambiante du ciel). 0 ne laisse que l'assombrissement du brouillard.",
+	"caustica.options.rt.fogSkyLight": "Lumière du ciel dans le brouillard",
+	"caustica.options.rt.fogSkyLight.tooltip": "À quel point le brouillard diffuse la lumière ambiante du ciel. 0 ne garde que les rais directs de soleil/lune, le brouillard à l'ombre reste donc sombre ; 1 est l'équilibre physique.",
 
 	"caustica.options.rt.hdr": "Sortie HDR",
 	"caustica.options.rt.hdr.tooltip": "Présente en HDR (ST.2084/PQ) au lieu du SDR lorsque l'écran le prend en charge. Prend effet après le redémarrage du jeu.",
