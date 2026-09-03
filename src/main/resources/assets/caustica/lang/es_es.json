@@ -26,14 +26,18 @@
 
 	"caustica.options.rt.waterWaves": "Agua animada",
 	"caustica.options.rt.waterWaves.tooltip": "Anima las normales de la superficie del agua para reflejos de olas en movimiento.",
+
 	"caustica.options.rt.fog": "Niebla volumétrica",
 	"caustica.options.rt.fog.tooltip": "Niebla volumétrica por froxeles con haces de luz trazadas por rayos, aplicada a la resolución de render y eliminada de ruido junto con la escena. Surte efecto al instante.",
+
 	"caustica.options.rt.fogDensity": "Densidad de niebla",
-	"caustica.options.rt.fogDensity.tooltip": "Grosor base de la niebla como extinción por bloque. Valores más altos hacen el aire más brumoso y los haces de luz más densos; el valor 0.020 es una neblina matinal ligera.",
+	"caustica.options.rt.fogDensity.tooltip": "Grosor de la niebla como extinción de luz por bloque. El valor 0.008, el predeterminado, es una neblina ligera; por encima de 0.05 es niebla densa.",
+
 	"caustica.options.rt.fogBrightness": "Brillo de la niebla",
-	"caustica.options.rt.fogBrightness.tooltip": "Brillo global de la luz dispersada en la niebla (haces de sol/luna y luz ambiental del cielo). 0 deja solo el efecto de atenuación de la niebla.",
+	"caustica.options.rt.fogBrightness.tooltip": "Brillo de los haces de luz de sol y luna, escalado respecto al propio cielo para que el día y la noche queden equilibrados. 0 desactiva los haces y deja solo la neblina ambiental.",
+
 	"caustica.options.rt.fogSkyLight": "Luz de cielo en la niebla",
-	"caustica.options.rt.fogSkyLight.tooltip": "Cuánta luz ambiental del cielo dispersa la niebla. 0 mantiene solo los haces directos de sol/luna, de modo que la niebla en sombra queda oscura; 1 es el equilibrio físico.",
+	"caustica.options.rt.fogSkyLight.tooltip": "Cuánta luz ambiental del cielo dispersa la niebla. Súbela para un aspecto más brumoso y luminoso; bájela para una neblina más oscura en la sombra.",
 
 	"caustica.options.rt.hdr": "Salida HDR",
 	"caustica.options.rt.hdr.tooltip": "Presenta en HDR (ST.2084/PQ) en lugar de SDR cuando la pantalla lo admite. Surte efecto después de reiniciar el juego.",

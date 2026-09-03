@@ -99,13 +99,15 @@ public final class CausticaConfig {
                 " Froxel-based volumetric fog and light shafts. The renderer builds a frustum-aligned volume\n"
                         + " once per frame, casts amortized ray-traced occlusion rays toward the dominant sun/moon light\n"
                         + " to bake god rays, then integrates the volume along each view ray. density is per-block\n"
-                        + " extinction; scatter-albedo is the single-scattering albedo; phase-g is the HG forward-scatter\n"
-                        + " asymmetry (positive = brighter in the sun direction, i.e. visible shafts). intensity scales all\n"
-                        + " scattered light (sun/moon shafts and ambient sky alike); sky-intensity weights the ambient\n"
-                        + " skylight term, so shadowed and night fog keeps its sky light instead of going black (0 recovers\n"
-                        + " shafts-only behaviour); tint-r/g/b shade the scattered light linearly (1 = neutral);\n"
-                        + " underwater-density-multiplier thickens the volume while the camera is submerged. temporal\n"
-                        + " blends the volume with the previous frame on a still camera to stabilize the shadow rays.");
+                        + " extinction (0.008, the default, is a light haze; 0.05+ is heavy fog); scatter-albedo is the\n"
+                        + " single-scattering albedo; phase-g is the HG forward-scatter asymmetry (positive = brighter\n"
+                        + " toward the light). All scattered light is anchored to the sky dome instead of the lights'\n"
+                        + " raw lux (the sun is 25,600x brighter than the moon, which made an illuminance-linear fog a\n"
+                        + " whiteout by day and invisible by night), so intensity (sun/moon shafts) and sky-intensity\n"
+                        + " (ambient skylight haze) read consistently around the clock; 0 disables either term.\n"
+                        + " tint-r/g/b shade the scattered light linearly (1 = neutral); underwater-density-multiplier\n"
+                        + " thickens the volume while the camera is submerged. temporal blends the volume with the\n"
+                        + " previous frame while the camera is still (position and orientation) to stabilize shadow rays.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -597,8 +599,16 @@ public final class CausticaConfig {
         /**
          * Froxel-based volumetric fog and light shafts. The renderer builds a frustum-aligned volume
          * (froxel grid) once per frame, casts amortized ray-traced occlusion rays toward the dominant
-         * sun/moon light to bake god rays, then integrates the volume along each view ray. Density is
-         * per-block extinction; scatter fraction is the single-scattering albedo.
+         * sun/moon light to bake god rays, then integrates the volume along each view ray (trilinearly
+         * filtered). Density is per-block extinction; scatter fraction is the single-scattering albedo;
+         * phase-g is the HG forward-scatter asymmetry (positive = brighter toward the light).
+         *
+         * <p>All scattered light is anchored to the sky dome's average radiance rather than the lights'
+         * physical illuminance: the look package's sun (128,000 lux) and moon (5 lux) differ by 25,600:1,
+         * so an illuminance-linear fog is a whiteout by day and invisible by night at any one setting.
+         * Anchoring to the dome keeps the fog readable around the clock — the same reasoning behind UE's
+         * artist-scaled fog scattering. intensity scales the sun/moon shafts and sky-intensity the
+         * ambient skylight haze, both in dome-relative units.
          */
         public static final class Froxel {
             public static final BooleanSetting ENABLED = bool("caustica.rt.froxel", "froxel.enabled", true);
@@ -608,12 +618,17 @@ public final class CausticaConfig {
                     clampedInt("caustica.rt.froxel.depthSlices", "froxel.depth-slices", 48, 16, 128);
             public static final FloatSetting FAR =
                     finiteFloat("caustica.rt.froxel.far", "froxel.far", 192.0f);
+            // Defaults follow the shipping-engine guidance (UE/Frostbite): keep the base density low
+            // (0.008/block ≈ optical depth 1.5 at the 192-block fog far — aerial perspective, not
+            // whiteout) and let the directional scattering carry the look.
             public static final FloatSetting DENSITY =
-                    clampedFloat("caustica.rt.froxel.density", "froxel.density", 0.020f, 0.001f, 2.0f);
+                    clampedFloat("caustica.rt.froxel.density", "froxel.density", 0.008f, 0.001f, 2.0f);
             public static final FloatSetting HEIGHT_FALLOFF =
                     clampedFloat("caustica.rt.froxel.heightFalloff", "froxel.height-falloff", 0.06f, 0.0f, 1.0f);
+            // 0.45 is a moderate forward lobe: strong enough for readable shafts (≈9x the back-scatter
+            // response) without the searchlight glare g=0.6 produced facing the sun.
             public static final FloatSetting PHASE_G =
-                    clampedFloat("caustica.rt.froxel.phaseG", "froxel.phase-g", 0.60f, -0.9f, 0.9f);
+                    clampedFloat("caustica.rt.froxel.phaseG", "froxel.phase-g", 0.45f, -0.9f, 0.9f);
             public static final FloatSetting SCATTER_ALBEDO =
                     clampedFloat("caustica.rt.froxel.scatterAlbedo", "froxel.scatter-albedo", 0.95f, 0.0f, 1.0f);
             public static final FloatSetting NOISE_INTENSITY =

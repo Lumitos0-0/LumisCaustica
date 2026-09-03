@@ -26,14 +26,18 @@
 
 	"caustica.options.rt.waterWaves": "Animiertes Wasser",
 	"caustica.options.rt.waterWaves.tooltip": "Animiert Wasseroberflächen-Normalen für bewegte Wellenlichter.",
+
 	"caustica.options.rt.fog": "Volumetrischer Nebel",
 	"caustica.options.rt.fog.tooltip": "Froxel-basierter volumetrischer Nebel mit raygetraceten Lichtstrahlen, in Renderauflösung angewendet und mit der Szene entrauscht. Wirkt sofort.",
+
 	"caustica.options.rt.fogDensity": "Nebeldichte",
-	"caustica.options.rt.fogDensity.tooltip": "Basisdicke des Nebels als Extinktion pro Block. Höhere Werte machen die Luft dunstiger und die Lichtstrahlen dichter; der Standard 0,020 ist ein leichter Morgennebel.",
+	"caustica.options.rt.fogDensity.tooltip": "Dicke des Nebels als Extinktion pro Block. Der Standard 0,008 ist ein leichter Dunst; Werte über 0,05 sind dichter Nebel.",
+
 	"caustica.options.rt.fogBrightness": "Nebelhelligkeit",
-	"caustica.options.rt.fogBrightness.tooltip": "Gesamthelligkeit des im Nebel gestreuten Lichts (Sonnen-/Mondstrahlen und Umgebungslicht des Himmels). 0 lässt nur die abdunkelnde Wirkung des Nebels übrig.",
+	"caustica.options.rt.fogBrightness.tooltip": "Helligkeit der Sonnen- und Mondlichtstrahlen, skaliert am Himmel selbst, sodass Tag und Nacht im Gleichgewicht bleiben. 0 deaktiviert die Strahlen und lässt nur den Umgebungsduenst.",
+
 	"caustica.options.rt.fogSkyLight": "Himmelslicht im Nebel",
-	"caustica.options.rt.fogSkyLight.tooltip": "Wie stark der Nebel das Umgebungslicht des Himmels streut. 0 behält nur direkte Sonnen-/Mondstrahlen, sodass Schattennebel dunkel bleibt; 1 ist die physikalische Balance.",
+	"caustica.options.rt.fogSkyLight.tooltip": "Wie viel Umgebungslicht des Himmels der Nebel streut. Hoeher fuer einen helleren, dunstigeren Look; niedriger fuer dunkleren Dunst im Schatten.",
 
 	"caustica.options.rt.hdr": "HDR-Ausgabe",
 	"caustica.options.rt.hdr.tooltip": "Gibt, wenn der Bildschirm es unterstützt, in HDR (ST.2084/PQ) statt SDR aus. Wird nach einem Neustart des Spiels wirksam.",

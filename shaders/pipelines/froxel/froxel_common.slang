@@ -18,8 +18,8 @@ public struct FroxelPush {
     public float4  params;  // x near (blocks), y far (blocks), z froxel tile size (px), w depth slice count
     public float4  look;    // x base density (per-block extinction), y height falloff, z phase g, w enabled (0/1)
     public float4  aux;     // x scatter fraction (albedo), y noise intensity, z noise scale, w temporal blend 0..1
-    public float4  ref;     // x global scattering intensity multiplier, yzw linear tint (1 = neutral)
-    public float4  sky;     // x ambient skylight weight (0 = direct sun/moon shafts only), y submerged density multiplier
+    public float4  ref;     // x light-shaft intensity (multiples of the dome anchor), yzw linear tint (1 = neutral)
+    public float4  sky;     // x ambient skylight share, y submerged density multiplier
     public uint64_t worldPushAddr;
     public uint64_t froxelVolumeAddr;   // current-frame froxel buffer, DevicePtr<float4>
     public uint64_t froxelHistoryAddr;  // previous-frame froxel buffer for temporal blend (0 = no history)
@@ -50,6 +50,20 @@ public float sliceFarDist(uint slice, uint slices, float far, float near_) {
 
 public float sliceMidDist(uint slice, uint slices, float far, float near_) {
     return 0.5 * (sliceNearDist(slice, slices, far, near_) + sliceFarDist(slice, slices, far, near_));
+}
+
+/**
+ * Continuous slice coordinate of a view distance — the exact inverse of {@code sliceMidDist}: the centre
+ * of slice k maps to k, the boundary between k and k+1 to k+0.5. The integrate pass uses this to
+ * trilinearly interpolate the volume (bilinear across the four neighbouring tiles, linear across the two
+ * neighbouring slices) instead of nearest-fetching one froxel per 8x8-pixel tile, which renders the fog
+ * as visible pixel blocks — every shipping froxel implementation (Frostbite, UE, Flax) filters the
+ * volume when it samples it.
+ */
+public float sliceCoord(float dist, uint slices, float far, float near_) {
+    float bias = max(far / max(near_, 1.0e-3), 1.0001);
+    float u = log(1.0 + max(dist, 0.0) / far * (bias - 1.0)) / log(bias);
+    return saturate(u) * float(slices) - 0.5;
 }
 
 // Reconstruct the camera-space ray through a tile/pixel centre from the inverse view-projected near and

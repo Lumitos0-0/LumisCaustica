@@ -26,14 +26,18 @@
 
 	"caustica.options.rt.waterWaves": "애니메이션 물",
 	"caustica.options.rt.waterWaves.tooltip": "움직이는 물결 하이라이트를 위해 물 표면 노멀을 애니메이션합니다.",
+
 	"caustica.options.rt.fog": "볼류명 밴탁 안개",
 	"caustica.options.rt.fog.tooltip": "레이 트레이싱 빛 벽심과 함께 프록셀 기반 볼류명 밴탁 안개. 렌더 해상도에서 적용되며 장면과 함께 노이즈 제거됩니다. 즉시 적용됩니다.",
+
 	"caustica.options.rt.fogDensity": "안개 밀도",
-	"caustica.options.rt.fogDensity.tooltip": "블록당 소광도로 나타낸 기본 안개 두께움. 값이 높으면 공기가 잘보이고 빛 벽심이 더 진해집니다. 기본값 0.020은 자우한 아침 안개입니다.",
+	"caustica.options.rt.fogDensity.tooltip": "블록당 소광도로 나타낸 안개의 두께. 기본값 0.008은 가벼운 엷은 안개이며, 0.05 이상은 짙은 안개입니다.",
+
 	"caustica.options.rt.fogBrightness": "안개 밝기",
-	"caustica.options.rt.fogBrightness.tooltip": "안개에서 산란되는 빛(태양/달 빛 벽슬과 하늘 환경광)의 전체 밝기. 0으로 설정하면 안개의 감소 효과만 남습니다.",
+	"caustica.options.rt.fogBrightness.tooltip": "태양과 달의 빛 기둥 밝기입니다. 하늘 자체를 기준으로 조정되어 낮과 밤의 균형이 유지됩니다. 0으로 설정하면 빛 기둥이 꺼지고 환경적 안개만 남습니다.",
+
 	"caustica.options.rt.fogSkyLight": "안개의 하늘 빛",
-	"caustica.options.rt.fogSkyLight.tooltip": "안개가 하늘 환경광을 얼마나 산란하는지 조정합니다. 0은 태양/달의 직접 빛 벽심만 남아 그림자리 안개가 어둡지며, 1이 물리적인 균형입니다.",
+	"caustica.options.rt.fogSkyLight.tooltip": "안개가 산란시키는 하늘 환경광의 양입니다. 올리면 더 밝고 안개 낀 느낌이 강해지고, 내리면 그늘의 안개가 어두워집니다.",
 
 	"caustica.options.rt.hdr": "HDR 출력",
 	"caustica.options.rt.hdr.tooltip": "디스플레이가 지원하는 경우 SDR 대신 HDR(ST.2084/PQ)로 표시합니다. 게임을 다시 시작한 뒤 적용됩니다.",
