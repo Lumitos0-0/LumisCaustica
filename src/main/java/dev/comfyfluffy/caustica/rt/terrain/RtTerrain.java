@@ -185,6 +185,9 @@ public final class RtTerrain {
     private final TreeMap<Integer, RtLightHierarchy.SectionInput> lightSections = new TreeMap<>();
     private boolean lightHierarchyDirty;
     private long lastLightHierarchyRequestNanos;
+    // Monotonic scene/light epochs consumed by camera-volume history validation. Geometry edits and
+    // residency changes advance sceneGeneration; light-grid publication has its own generation.
+    private long sceneGeneration = 1L;
     private boolean windowValid;
     private int windowPcx;
     private int windowPcz;
@@ -303,6 +306,16 @@ public final class RtTerrain {
     /** Number of compact 64-byte records in the published light buffer. */
     public int lightCount() {
         return lightGrid.published().lightCount();
+    }
+
+    /** Scene epoch for invalidating volume history after terrain edits or residency changes. */
+    public long sceneGeneration() {
+        return sceneGeneration;
+    }
+
+    /** Published immutable light-hierarchy epoch for invalidating emitter-dependent volume history. */
+    public long lightHierarchyGeneration() {
+        return lightGrid.published().generation();
     }
 
     /** Per-tick residency update: window sync + dirty drain (plus the streaming fallback, see {@link #frame}). */
@@ -1472,6 +1485,9 @@ public final class RtTerrain {
 
     private void applyBuildChanges(RtContext ctx, List<PreparedSection> prepared, List<SectionGeom> removed,
                                    boolean rebase, int rbx, int rby, int rbz) {
+        if (!prepared.isEmpty() || !removed.isEmpty() || rebase) {
+            sceneGeneration++;
+        }
         GraphicsUse lastGraphicsUse = ctx.gpuExecutor().latestGraphicsUse();
         int baseX = rebase ? rbx : blockX;
         int baseY = rebase ? rby : blockY;
@@ -1677,6 +1693,7 @@ public final class RtTerrain {
         // Device teardown is the one path that must prove every worker and GPU callback has relinquished
         // its resources before the executor, allocator, and VkDevice disappear.
         terrainEpoch++;
+        sceneGeneration++;
         lightGrid.cancelPending();
         drainTasksForClear(ctx);
         cancelAllDirtyGroups();
@@ -1757,6 +1774,7 @@ public final class RtTerrain {
     private void clearAsync(RtContext ctx) {
         ctx.gpuExecutor().throwIfFailed();
         terrainEpoch++;
+        sceneGeneration++;
 
         // Token maps are render-thread ownership, so clearing them makes every old completion unpublishable
         // even in the narrow race where it observed the previous epoch immediately before this increment.

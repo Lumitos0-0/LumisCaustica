@@ -70,6 +70,60 @@ float meteringWeight(float2 uv, float depth, bool emissive) {
     return centerWeight * populationWeight;
 }
 
+void fogDebugCoordinates(float2 uv, float slice, out uint x, out uint row0, out uint row1, out float blend) {
+    float gx = max(pc.fogGrid.x, 1.0);
+    float gy = max(pc.fogGrid.y, 1.0);
+    float gz = max(pc.fogGrid.z, 1.0);
+    uint atlasHeight = max(uint(max(pc.fogGrid.w, 1.0)), 1u);
+    x = min(uint(clamp(uv.x, 0.0, 0.999999) * gx), uint(gx) - 1u);
+    uint y = min(uint(clamp(uv.y, 0.0, 0.999999) * gy), uint(gy) - 1u);
+    float z = clamp(slice, 0.0, 1.0) * (gz - 1.0);
+    uint z0 = uint(floor(z));
+    uint z1 = min(z0 + 1u, uint(gz - 1.0));
+    blend = z - float(z0);
+    row0 = min(y + z0 * uint(gy), atlasHeight - 1u);
+    row1 = min(y + z1 * uint(gy), atlasHeight - 1u);
+}
+
+float4 fogDebugDirectSample(float2 uv, float slice) {
+    uint x, row0, row1;
+    float blend;
+    fogDebugCoordinates(uv, slice, x, row0, row1, blend);
+    return lerp(fogDirect[int2(x, row0)], fogDirect[int2(x, row1)], blend);
+}
+
+float4 fogDebugLocalSample(float2 uv, float slice) {
+    uint x, row0, row1;
+    float blend;
+    fogDebugCoordinates(uv, slice, x, row0, row1, blend);
+    return lerp(fogLocal[int2(x, row0)], fogLocal[int2(x, row1)], blend);
+}
+
+float4 fogDebugGiSample(float2 uv, float slice) {
+    uint x, row0, row1;
+    float blend;
+    fogDebugCoordinates(uv, slice, x, row0, row1, blend);
+    return lerp(fogGi[int2(x, row0)], fogGi[int2(x, row1)], blend);
+}
+
+float4 fogDebugCacheSample(float2 uv, float slice) {
+    uint x, row0, row1;
+    float blend;
+    fogDebugCoordinates(uv, slice, x, row0, row1, blend);
+    return lerp(fogCache[int2(x, row0)], fogCache[int2(x, row1)], blend);
+}
+
+float4 fogDebugAuxSample(float2 uv, float slice) {
+    uint x, row0, row1;
+    float blend;
+    fogDebugCoordinates(uv, slice, x, row0, row1, blend);
+    return lerp(fogAux[int2(x, row0)], fogAux[int2(x, row1)], blend);
+}
+
+float3 fogDebugRadiance(float3 stored) {
+    return acesCgToSrgb(max(stored * 4.0, float3(0.0)));
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -109,6 +163,22 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         dbg = acesCgToSrgb(gSpecAlbedo[guidePix].rgb);
     } else if (pc.debugView == 7u) {
         dbg = float3(clamp(0.5 + gSpecMotion[guidePix] * motionToDisplay * 0.05, 0.0, 1.0), 0.5);
+    } else if (pc.debugView == 10u) {
+        dbg = fogDebugRadiance(fogDebugDirectSample(uv, 0.5).rgb);
+    } else if (pc.debugView == 11u) {
+        dbg = fogDebugRadiance(fogDebugLocalSample(uv, 0.5).rgb);
+    } else if (pc.debugView == 12u) {
+        dbg = fogDebugRadiance(fogDebugGiSample(uv, 0.5).rgb);
+    } else if (pc.debugView == 13u) {
+        dbg = fogDebugRadiance(fogDebugCacheSample(uv, 0.5).rgb);
+    } else if (pc.debugView == 14u) {
+        float4 guide = fogDebugAuxSample(uv, 0.5);
+        dbg = float3(guide.y, clamp(guide.z / 32.0, 0.0, 1.0), guide.w);
+    } else if (pc.debugView == 15u) {
+        float4 guide = fogDebugAuxSample(uv, 0.5);
+        float4 directGuide = fogDebugDirectSample(uv, 0.5);
+        // Red = normalized hit distance, green = surface occupancy, blue = reversed-Z primary depth.
+        dbg = float3(clamp(guide.x * 2.0, 0.0, 1.0), guide.y, directGuide.a);
     } else {
         dbg = float3(clamp(0.5 + gMotion[guidePix] * motionToDisplay * 0.05, 0.0, 1.0), 0.5);
     }

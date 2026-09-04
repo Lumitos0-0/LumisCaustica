@@ -47,6 +47,11 @@ public final class RtVideoOptions {
             spp(),
             maxBounces(),
             fogEnabled(),
+            fogDirectEnabled(),
+            fogGiEnabled(),
+            fogHistoryEnabled(),
+            fogLocalDiagnostic(),
+            fogCacheReuse(),
             fogQuality(),
             fogDistance(),
             fogDirectSamples(),
@@ -133,6 +138,26 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> fogEnabled() {
         return bool("caustica.options.rt.fog", CausticaConfig.Rt.Fog.ENABLED);
+    }
+
+    private static OptionInstance<Boolean> fogDirectEnabled() {
+        return bool("caustica.options.rt.fogDirectEnabled", CausticaConfig.Rt.Fog.DIRECT_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> fogGiEnabled() {
+        return bool("caustica.options.rt.fogGiEnabled", CausticaConfig.Rt.Fog.GI_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> fogHistoryEnabled() {
+        return bool("caustica.options.rt.fogHistoryEnabled", CausticaConfig.Rt.Fog.HISTORY_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> fogLocalDiagnostic() {
+        return bool("caustica.options.rt.fogLocalDiagnostic", CausticaConfig.Rt.Fog.LOCAL_LIGHTING_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> fogCacheReuse() {
+        return bool("caustica.options.rt.fogCacheReuse", CausticaConfig.Rt.Fog.CACHE_REUSE_ENABLED);
     }
 
     private static OptionInstance<Integer> fogQuality() {
@@ -300,8 +325,8 @@ public final class RtVideoOptions {
             // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("caustica.options.rt.debugView." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), Codec.INT),
-            Math.clamp(setting.value(), 0, 9),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), Codec.INT),
+            Math.clamp(setting.value(), 0, 15),
             setting::set);
     }
 

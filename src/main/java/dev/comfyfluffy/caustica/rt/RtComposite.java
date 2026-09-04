@@ -251,6 +251,11 @@ public final class RtComposite {
     // Camera-view hybrid fog owns its direct/GI froxel atlases and integrates into output before RR.
     // It is kept outside RtPipeline so the world SBT and surface payload ABI remain unchanged.
     private final RtFroxelFog froxelFog = new RtFroxelFog();
+    private long lastFogSceneGeneration = Long.MIN_VALUE;
+    private long lastFogLightGeneration = Long.MIN_VALUE;
+    private float lastFogSunAngle = Float.NaN;
+    private float lastFogMoonAngle = Float.NaN;
+    private float lastFogMoonPhase = Float.NaN;
     private final RtExposure exposure = new RtExposure();
 
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
@@ -489,8 +494,10 @@ public final class RtComposite {
      * failure just latches again on the next frame (bounded log spam: one error line per invalidation).
      */
     public void resetFailureLatch() {
-        if (failed) {
-            failed = false;
+        boolean wasFailed = failed;
+        failed = false;
+        froxelFog.resetFailureLatch();
+        if (wasFailed) {
             CausticaMod.LOGGER.info("RT failure latch cleared by render-state invalidation; retrying RT");
         }
     }
@@ -649,7 +656,19 @@ public final class RtComposite {
             }
             ensureOutput(ctx, width, height);
             // Fog has its own atlas shape controls, so check it every frame even when the main render
-            // images did not resize. A live tile/Z change waits only on the rare reallocation path.
+            // images did not resize. If a fog-only setting triggers an atlas replacement, first remove the
+            // debug descriptor references to the old views; RtFroxelFog then waits idle, destroys its
+            // descriptor owner, and only afterward destroys those views.
+            if (!froxelFog.matchesShape(ctx, renderW, renderH)) {
+                // setImages updates one descriptor set (not a ring), so wait before replacing descriptors
+                // that a prior debug dispatch may still be using. The subsequent fog allocation also waits
+                // before destroying the old image views.
+                if (froxelFog.ready()) ctx.waitIdle();
+                debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
+                        gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                        rrOutput.view, rrOutput.view, rrOutput.view, rrOutput.view, rrOutput.view,
+                        exposure.stateBuffer());
+            }
             froxelFog.ensureResources(ctx, renderW, renderH);
             // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
@@ -660,8 +679,15 @@ public final class RtComposite {
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
+            boolean fogDebugReady = froxelFog.enabled() && froxelFog.ready();
+            RtImage fogDebugFallback = fogDebugReady ? froxelFog.directVolume() : rrOutput;
+            RtImage fogLocalDebug = fogDebugReady ? froxelFog.localVolume() : rrOutput;
+            RtImage fogGiDebug = fogDebugReady ? froxelFog.giVolume() : rrOutput;
+            RtImage fogCacheDebug = fogDebugReady ? froxelFog.cacheVolume() : rrOutput;
+            RtImage fogAuxDebug = fogDebugReady ? froxelFog.giAuxVolume() : rrOutput;
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                    fogDebugFallback.view, fogLocalDebug.view, fogGiDebug.view, fogCacheDebug.view, fogAuxDebug.view,
                     exposure.stateBuffer());
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
@@ -674,10 +700,14 @@ public final class RtComposite {
                 return false;
             }
             refreshMaterialBindingsIfNeeded(ctx);
+            boolean hadMotionHistory = mvHasPrev;
             updateMotion();
-            // A large teleport invalidates camera-frustum history; ordinary translation/rotation is
-            // handled by the froxel reprojection in fog_lighting.comp.
-            if (Math.abs(mvCamDeltaX) + Math.abs(mvCamDeltaY) + Math.abs(mvCamDeltaZ) > 32.0f) {
+            // A first frame, camera cut, or large teleport has no valid correspondence. Ordinary
+            // translation/rotation is handled by the froxel reprojection in fog_lighting.comp; a large
+            // view-matrix jump is treated as a cut even when the camera position barely moved.
+            if (!hadMotionHistory
+                    || Math.abs(mvCamDeltaX) + Math.abs(mvCamDeltaY) + Math.abs(mvCamDeltaZ) > 32.0f
+                    || (hadMotionHistory && cameraViewMatrixDelta() > 0.35f)) {
                 froxelFog.invalidateHistory();
             }
             recordFrame(ctx, active, nativeColor);
@@ -846,6 +876,7 @@ public final class RtComposite {
     public void onResourceReloadStart() {
         reloadRebindRequested = true;
         materialBindingsReady = false;
+        froxelFog.resetFailureLatch();
         froxelFog.invalidateHistory();
         setCelestialUvAtlas(0L);
         RtEntities.INSTANCE.onResourceReload();
@@ -979,7 +1010,7 @@ public final class RtComposite {
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
-        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide linear depth " + renderW + "x" + renderH);
+        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide reversed-Z depth " + renderW + "x" + renderH);
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
@@ -1001,6 +1032,7 @@ public final class RtComposite {
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                rrOutput.view, rrOutput.view, rrOutput.view, rrOutput.view, rrOutput.view,
                 exposure.stateBuffer());
     }
 
@@ -1036,6 +1068,31 @@ public final class RtComposite {
         mvPrevCamY = camY;
         mvPrevCamZ = camZ;
         mvHasPrev = true;
+    }
+
+    private static float angularDelta(float a, float b) {
+        float delta = Math.abs(a - b) % (float) (Math.PI * 2.0);
+        return Math.min(delta, (float) (Math.PI * 2.0) - delta);
+    }
+
+    private float cameraViewMatrixDelta() {
+        float delta = 0.0f;
+        delta = Math.max(delta, Math.abs(mvCurProjView.m00() - mvPushMatrix.m00()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m01() - mvPushMatrix.m01()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m02() - mvPushMatrix.m02()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m03() - mvPushMatrix.m03()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m10() - mvPushMatrix.m10()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m11() - mvPushMatrix.m11()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m12() - mvPushMatrix.m12()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m13() - mvPushMatrix.m13()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m20() - mvPushMatrix.m20()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m21() - mvPushMatrix.m21()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m22() - mvPushMatrix.m22()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m23() - mvPushMatrix.m23()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m30() - mvPushMatrix.m30()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m31() - mvPushMatrix.m31()));
+        delta = Math.max(delta, Math.abs(mvCurProjView.m32() - mvPushMatrix.m32()));
+        return Math.max(delta, Math.abs(mvCurProjView.m33() - mvPushMatrix.m33()));
     }
 
     private void recordFrame(RtContext ctx, RtPipeline active, GpuTexture nativeColor) {
@@ -1137,6 +1194,20 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            float sunAngle = sky.celestial().x();
+            float moonAngle = sky.celestial().y();
+            float moonPhase = sky.look2().w();
+            if (!Float.isFinite(lastFogSunAngle) || !Float.isFinite(lastFogMoonAngle)
+                    || angularDelta(sunAngle, lastFogSunAngle) > 0.02f
+                    || angularDelta(moonAngle, lastFogMoonAngle) > 0.02f
+                    || Math.abs(moonPhase - lastFogMoonPhase) > 0.01f) {
+                // Directional source changes are not represented in a froxel's RGB history; drop that history
+                // before a large celestial movement can smear a shaft across the old sun or moon direction.
+                froxelFog.invalidateHistory();
+            }
+            lastFogSunAngle = sunAngle;
+            lastFogMoonAngle = moonAngle;
+            lastFogMoonPhase = moonPhase;
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1235,10 +1306,21 @@ public final class RtComposite {
                 int seaLevel = Minecraft.getInstance().level != null
                         ? Minecraft.getInstance().level.getSeaLevel() : 63;
                 float fogBaseHeight = seaLevel - terrain.blockY;
+                long sceneGeneration = terrain.sceneGeneration();
+                long lightGeneration = terrain.lightHierarchyGeneration();
+                if (sceneGeneration != lastFogSceneGeneration || lightGeneration != lastFogLightGeneration) {
+                    // Ordinary block edits and asynchronous light-grid publication are both scene changes;
+                    // the camera volume must not blend a sample across either generation boundary.
+                    froxelFog.invalidateHistory();
+                    lastFogSceneGeneration = sceneGeneration;
+                    lastFogLightGeneration = lightGeneration;
+                }
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.fog")) {
                     froxelFog.record(cmd, currentTlasHandle, output, gDepth, pushBuf.deviceAddress,
-                            terrain.lightBufferAddress(), terrain.lightCount(), skyLut, fogBaseHeight,
-                            frameCounter, graphicsUse, graphicsUseWaiter);
+                            terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
+                            terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
+                            terrain.lightGridSpanBufferAddress(), skyLut, fogBaseHeight,
+                            graphicsUse, graphicsUseWaiter);
                 }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog integration visible to DLSS reads
@@ -1307,7 +1389,9 @@ public final class RtComposite {
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.debugPresent")) {
                     debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView,
                             CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
-                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value());
+                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
+                            froxelFog.gridX(), froxelFog.gridY(), froxelFog.gridZ(),
+                            froxelFog.gridY() * froxelFog.gridZ());
                 }
                 hdrWrittenThisFrame = false;
             }
@@ -1493,7 +1577,13 @@ public final class RtComposite {
 
     public void destroy() {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
-        // longer in flight and can be freed immediately.
+        // longer in flight and can be freed immediately. Descriptor owners must go before the images they
+        // reference; this is especially important for fog's replaceable froxel atlases.
+        if (debugPresentPipeline != null) {
+            debugPresentPipeline.destroy();
+            debugPresentPipeline = null;
+        }
+        froxelFog.destroy();
         tlasRing.destroy();
         if (RtDlssRr.enabled()) {
             RtDlssRr.INSTANCE.destroy();
@@ -1525,7 +1615,11 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
-        froxelFog.destroy();
+        lastFogSceneGeneration = Long.MIN_VALUE;
+        lastFogLightGeneration = Long.MIN_VALUE;
+        lastFogSunAngle = Float.NaN;
+        lastFogMoonAngle = Float.NaN;
+        lastFogMoonPhase = Float.NaN;
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();
@@ -1538,10 +1632,6 @@ public final class RtComposite {
         if (skyLut != null) {
             skyLut.destroy();
             skyLut = null;
-        }
-        if (debugPresentPipeline != null) {
-            debugPresentPipeline.destroy();
-            debugPresentPipeline = null;
         }
         if (sdrToneLut != null) {
             sdrToneLut.destroy();

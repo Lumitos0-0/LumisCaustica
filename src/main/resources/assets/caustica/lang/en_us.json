@@ -19,7 +19,17 @@
 	"caustica.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
 
 	"caustica.options.rt.fog": "Volumetric Fog",
-	"caustica.options.rt.fog.tooltip": "Primary-view hybrid fog with sharp, TLAS-shadowed sun and moon shafts plus soft temporally accumulated GI haze.",
+	"caustica.options.rt.fog.tooltip": "Primary-view hybrid fog with independently reconstructed sun and moon shafts, GI, and diagnostic emitter channels.",
+	"caustica.options.rt.fogDirectEnabled": "Fog Direct Shafts",
+	"caustica.options.rt.fogDirectEnabled.tooltip": "Enable the independently reconstructed direct sun and moon shaft field.",
+	"caustica.options.rt.fogGiEnabled": "Fog Surface GI",
+	"caustica.options.rt.fogGiEnabled.tooltip": "Enable the primary-view surface and sky radiance field with volume-specific temporal reconstruction.",
+	"caustica.options.rt.fogHistoryEnabled": "Fog History",
+	"caustica.options.rt.fogHistoryEnabled.tooltip": "Enable all fog temporal histories. Disable this for a current-frame reconstruction reference.",
+	"caustica.options.rt.fogLocalDiagnostic": "Fog Local Diagnostic",
+	"caustica.options.rt.fogLocalDiagnostic.tooltip": "Enable the separate local-emitter visibility field for diagnostics; it is disabled by default.",
+	"caustica.options.rt.fogCacheReuse": "Fog Emitter Reuse",
+	"caustica.options.rt.fogCacheReuse.tooltip": "Enable world-cell keyed emitter proposals and temporal reuse for off-screen resident emitters.",
 	"caustica.options.rt.fogQuality": "Fog Froxel Quality",
 	"caustica.options.rt.fogQuality.tooltip": "Controls the camera-froxel grid. Finer settings reduce direct-light stair-stepping and improve shaft detail at higher GPU cost.",
 	"caustica.options.rt.fogQuality.16": "Performance",
@@ -79,5 +89,11 @@
 	"caustica.options.rt.debugView.6": "Specular",
 	"caustica.options.rt.debugView.7": "Specular Motion",
 	"caustica.options.rt.debugView.8": "Exposure False Color",
-	"caustica.options.rt.debugView.9": "Metering Weight"
+	"caustica.options.rt.debugView.9": "Metering Weight",
+	"caustica.options.rt.debugView.10": "Fog Direct Shafts",
+	"caustica.options.rt.debugView.11": "Fog Local Diagnostic",
+	"caustica.options.rt.debugView.12": "Fog GI",
+	"caustica.options.rt.debugView.13": "Fog Emitter Reuse",
+	"caustica.options.rt.debugView.14": "Fog GI Age and Confidence",
+	"caustica.options.rt.debugView.15": "Fog GI Hit and Depth Guides"
 }

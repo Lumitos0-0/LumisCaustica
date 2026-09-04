@@ -37,15 +37,21 @@ abstract class GenerateRtBindings extends DefaultTask {
             [prefix: "DISPLAY", source: "pipelines/display/main.comp.slang", resources: [
                     OUTPUT: "outputImage", RT_IMAGE: "rtImage", EXPOSURE: "exposureImage", HDR_OUTPUT: "hdrImage",
                     SDR_TONE_LUT: "toneLut", HDR_TONE_LUT: "hdrToneLut", LOOK_LUT: "lookLut", BLOOM: "bloomImage"]],
-            [prefix: "FOG_LIGHTING", source: "pipelines/fog/fog_lighting.comp.slang", resources: [
-                    TLAS: "topLevelAS", DIRECT: "directVolume", GI: "giVolume", HISTORY: "giHistory",
-                    SCENE: "sceneImage", DEPTH: "depthImage", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut"]],
-            [prefix: "FOG_INTEGRATE", source: "pipelines/fog/fog_integrate.comp.slang", resources: [
-                    OUTPUT: "outputImage", DEPTH: "depthImage", DIRECT: "directVolume", GI: "giVolume"]],
             [prefix: "DEBUG_PRESENT", source: "pipelines/debug_present/main.comp.slang", resources: [
                     OUTPUT: "outputImage", G_NORMAL: "gNormal", G_ALBEDO: "gAlbedo", G_DEPTH: "gDepth",
                     G_MOTION: "gMotion", G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
-                    SCENE: "sceneImage", EXPOSURE: "exposureImage", EXPOSURE_STATE: "exposureState"]],
+                    SCENE: "sceneImage", EXPOSURE: "exposureImage", FOG_DIRECT: "fogDirect",
+                    FOG_LOCAL: "fogLocal", FOG_GI: "fogGi", FOG_CACHE: "fogCache",
+                    FOG_AUX: "fogAux", EXPOSURE_STATE: "exposureState"]],
+            [prefix: "FOG_LIGHTING", source: "pipelines/fog/fog_lighting.comp.slang", resources: [
+                    TLAS: "topLevelAS", DIRECT: "directVolume", LOCAL: "localVolume", GI: "giVolume",
+                    CACHE: "cacheVolume", GI_AUX: "giAuxVolume", DIRECT_HISTORY: "directHistory",
+                    LOCAL_HISTORY: "localHistory", GI_HISTORY: "giHistory", GI_AUX_HISTORY: "giAuxHistory",
+                    CACHE_HISTORY: "cacheHistory", SCENE: "sceneImage", DEPTH: "depthImage", SKY_VIEW: "skyViewLut",
+                    TRANSMITTANCE: "transmittanceLut"]],
+            [prefix: "FOG_INTEGRATE", source: "pipelines/fog/fog_integrate.comp.slang", resources: [
+                    OUTPUT: "outputImage", DEPTH: "depthImage", DIRECT: "directVolume", LOCAL: "localVolume",
+                    GI: "giVolume", CACHE: "cacheVolume"]],
             [prefix: "EXPOSURE_HIST", source: "pipelines/exposure_hist/main.comp.slang", resources: [
                     COLOR: "colorImage", BINS: "histBins", DEPTH: "depthImage", ALBEDO: "albedoImage"]],
             [prefix: "EXPOSURE_RESOLVE", source: "pipelines/exposure_resolve/main.comp.slang", resources: [

@@ -19,6 +19,7 @@ import org.lwjgl.vulkan.VkDescriptorSetLayoutBinding;
 import org.lwjgl.vulkan.VkDescriptorSetLayoutCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkImageCopy;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
@@ -38,12 +39,9 @@ import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCEL
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 
 /**
- * Owns the standalone compute pipelines for the primary-view hybrid fog volume.
- *
- * <p>Lighting and integration use six descriptor slots just like the world RT pipeline. A slot is only
- * rewritten after its exact prior graphics use completes; this matters because the TLAS changes every
- * frame while the fog descriptors are consumed later in the same graphics submission. The fog pipeline
- * never modifies the world RT SBT or its descriptor ABI.
+ * Compute pipelines and descriptor-ring owner for the primary-view fog volume. A descriptor slot is not
+ * rewritten until the graphics completion token that consumed it has signalled; this covers the TLAS,
+ * current fields, histories, and the sky LUT views as one coherent frame manifest.
  */
 public final class RtFroxelFogPipeline {
     private static final String LIGHTING_SHADER = "/caustica/shaders/pipelines/fog/fog_lighting.comp.spv";
@@ -86,9 +84,7 @@ public final class RtFroxelFogPipeline {
         this.integratePipelineLayout = integratePipelineLayout;
         this.integratePipeline = integratePipeline;
         this.descriptorSetUses = new RtGpuExecutor.TrackedGraphicsUse[RING];
-        for (int i = 0; i < RING; i++) {
-            descriptorSetUses[i] = new RtGpuExecutor.TrackedGraphicsUse();
-        }
+        for (int i = 0; i < RING; i++) descriptorSetUses[i] = new RtGpuExecutor.TrackedGraphicsUse();
         this.linearSampler = linearSampler;
         this.pointSampler = pointSampler;
     }
@@ -105,13 +101,12 @@ public final class RtFroxelFogPipeline {
             lightingBindings.get(FOG_LIGHTING_TLAS).binding(FOG_LIGHTING_TLAS)
                     .descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(1)
                     .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            lightingBindings.get(FOG_LIGHTING_DIRECT).binding(FOG_LIGHTING_DIRECT)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
-                    .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            lightingBindings.get(FOG_LIGHTING_GI).binding(FOG_LIGHTING_GI)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
-                    .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            for (int binding = FOG_LIGHTING_HISTORY; binding <= FOG_LIGHTING_TRANSMITTANCE; binding++) {
+            for (int binding = FOG_LIGHTING_DIRECT; binding <= FOG_LIGHTING_GI_AUX; binding++) {
+                lightingBindings.get(binding).binding(binding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
+                        .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            }
+            for (int binding = FOG_LIGHTING_DIRECT_HISTORY; binding <= FOG_LIGHTING_TRANSMITTANCE; binding++) {
                 lightingBindings.get(binding).binding(binding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
@@ -123,8 +118,7 @@ public final class RtFroxelFogPipeline {
             long lightingLayout = handle.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, lightingLayout,
                     "fog lighting descriptor set layout");
-
-            long lightingPool = createPool(vk, stack, RING, RING * 2, RING * 5, "fog lighting");
+            long lightingPool = createPool(vk, stack, RING, RING * 5, RING * 9, "fog lighting");
             long[] lightingSets = allocateSets(vk, stack, lightingPool, lightingLayout, "fog lighting");
 
             VkPushConstantRange.Buffer lightingPushRange = VkPushConstantRange.calloc(1, stack);
@@ -144,15 +138,11 @@ public final class RtFroxelFogPipeline {
             integrateBindings.get(FOG_INTEGRATE_OUTPUT).binding(FOG_INTEGRATE_OUTPUT)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1)
                     .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            integrateBindings.get(FOG_INTEGRATE_DEPTH).binding(FOG_INTEGRATE_DEPTH)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
-                    .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            integrateBindings.get(FOG_INTEGRATE_DIRECT).binding(FOG_INTEGRATE_DIRECT)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
-                    .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            integrateBindings.get(FOG_INTEGRATE_GI).binding(FOG_INTEGRATE_GI)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
-                    .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            for (int binding = FOG_INTEGRATE_DEPTH; binding <= FOG_INTEGRATE_CACHE; binding++) {
+                integrateBindings.get(binding).binding(binding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            }
             VkDescriptorSetLayoutCreateInfo integrateLayoutInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(integrateBindings);
             check(VK10.vkCreateDescriptorSetLayout(vk, integrateLayoutInfo, null, handle),
@@ -160,8 +150,7 @@ public final class RtFroxelFogPipeline {
             long integrateLayout = handle.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, integrateLayout,
                     "fog integration descriptor set layout");
-
-            long integratePool = createPool(vk, stack, RING, RING, RING * 3, "fog integrate");
+            long integratePool = createPool(vk, stack, RING, RING, RING * 5, "fog integrate");
             long[] integrateSets = allocateSets(vk, stack, integratePool, integrateLayout, "fog integrate");
 
             VkPushConstantRange.Buffer integratePushRange = VkPushConstantRange.calloc(1, stack);
@@ -182,22 +171,20 @@ public final class RtFroxelFogPipeline {
         }
     }
 
-    /**
-     * Select and bind one descriptor slot for this frame. The slot contains both passes, so the TLAS and
-     * all sampled/storage images describe one coherent frame when lighting and integration are recorded.
-     */
-    public void bindFrame(long tlas, RtImage output, RtImage depth, RtImage direct, RtImage gi,
-                          RtImage history, long skyView, long transmittance, long skySampler,
+    public void bindFrame(long tlas, RtImage output, RtImage depth,
+                          RtImage direct, RtImage local, RtImage gi, RtImage cache, RtImage giAux,
+                          RtImage directHistory, RtImage localHistory, RtImage giHistory,
+                          RtImage giAuxHistory, RtImage cacheHistory,
+                          long skyView, long transmittance, long skySampler,
                           RtGpuExecutor.GraphicsUse graphicsUse,
                           RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter) {
-        if (destroyed) {
-            throw new IllegalStateException("fog pipeline is destroyed");
-        }
+        if (destroyed) throw new IllegalStateException("fog pipeline is destroyed");
         currentSet = (currentSet + 1) % RING;
         graphicsUseWaiter.await(descriptorSetUses[currentSet]);
-        writeLightingDescriptors(currentSet, tlas, output, depth, direct, gi, history,
+        writeLightingDescriptors(currentSet, tlas, output, depth, direct, local, gi, cache, giAux,
+                directHistory, localHistory, giHistory, giAuxHistory, cacheHistory,
                 skyView, transmittance, skySampler);
-        writeIntegrateDescriptors(currentSet, output, depth, direct, gi);
+        writeIntegrateDescriptors(currentSet, output, depth, direct, local, gi, cache);
         descriptorSetUses[currentSet].mark(graphicsUse);
     }
 
@@ -231,9 +218,57 @@ public final class RtFroxelFogPipeline {
         }
     }
 
+    /** Make lighting's storage writes visible to integration's sampled reads without changing GENERAL layout. */
+    public void barrierLightingToIntegration(VkCommandBuffer cmd, RtImage... images) {
+        imageBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK10.VK_ACCESS_SHADER_WRITE_BIT,
+                VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT, images);
+    }
+
+    /** Make both the sampled lighting fields and read histories available to the transfer copy. */
+    public void barrierForHistoryCopy(VkCommandBuffer cmd, RtImage[] current, RtImage[] histories) {
+        imageBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT,
+                VK10.VK_ACCESS_TRANSFER_READ_BIT, current);
+        imageBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK10.VK_ACCESS_SHADER_READ_BIT,
+                VK10.VK_ACCESS_TRANSFER_WRITE_BIT, histories);
+    }
+
+    /** Make copied history and current fields visible after the transfer copy; all fog images stay GENERAL. */
+    public void barrierAfterHistoryCopy(VkCommandBuffer cmd, RtImage[] current, RtImage[] histories) {
+        imageBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK10.VK_ACCESS_TRANSFER_READ_BIT,
+                VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT, current);
+        imageBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK10.VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK10.VK_ACCESS_SHADER_READ_BIT, histories);
+    }
+
+    private static void imageBarrier(VkCommandBuffer cmd, int srcStage, int dstStage,
+                                     int srcAccess, int dstAccess, RtImage... images) {
+        if (images.length == 0) return;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkImageMemoryBarrier.Buffer barriers = VkImageMemoryBarrier.calloc(images.length, stack);
+            for (int i = 0; i < images.length; i++) {
+                barriers.get(i).sType$Default()
+                        .srcAccessMask(srcAccess).dstAccessMask(dstAccess)
+                        .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL).newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                        .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                        .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                        .image(images[i].image);
+                barriers.get(i).subresourceRange()
+                        .aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+            }
+            VK10.vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0,
+                    null, null, barriers);
+        }
+    }
+
     public void copyHistory(VkCommandBuffer cmd, RtImage current, RtImage history) {
         try (MemoryStack stack = MemoryStack.stackPush();
-             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog GI history")) {
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog history copy")) {
             VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
             region.get(0).srcSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                     .mipLevel(0).baseArrayLayer(0).layerCount(1);
@@ -246,9 +281,7 @@ public final class RtFroxelFogPipeline {
     }
 
     public void destroy() {
-        if (destroyed) {
-            return;
-        }
+        if (destroyed) return;
         VkDevice vk = ctx.vk();
         VK10.vkDestroyPipeline(vk, integratePipeline, null);
         VK10.vkDestroyPipelineLayout(vk, integratePipelineLayout, null);
@@ -264,20 +297,28 @@ public final class RtFroxelFogPipeline {
     }
 
     private void writeLightingDescriptors(int setIndex, long tlas, RtImage output, RtImage depth,
-                                          RtImage direct, RtImage gi, RtImage history,
+                                          RtImage direct, RtImage local, RtImage gi, RtImage cache, RtImage giAux,
+                                          RtImage directHistory, RtImage localHistory, RtImage giHistory,
+                                          RtImage giAuxHistory, RtImage cacheHistory,
                                           long skyView, long transmittance, long skySampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkWriteDescriptorSetAccelerationStructureKHR asWrite =
                     VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
                             .sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR)
                             .pAccelerationStructures(stack.longs(tlas));
-            VkDescriptorImageInfo.Buffer directInfo = VkDescriptorImageInfo.calloc(1, stack);
-            directInfo.get(0).imageView(direct.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkDescriptorImageInfo.Buffer giInfo = VkDescriptorImageInfo.calloc(1, stack);
-            giInfo.get(0).imageView(gi.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkDescriptorImageInfo.Buffer historyInfo = VkDescriptorImageInfo.calloc(1, stack);
-            historyInfo.get(0).sampler(linearSampler).imageView(history.view)
-                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            RtImage[] storageImages = {direct, local, gi, cache, giAux};
+            RtImage[] historyImages = {directHistory, localHistory, giHistory, giAuxHistory, cacheHistory};
+            VkDescriptorImageInfo.Buffer[] infos = new VkDescriptorImageInfo.Buffer[5];
+            for (int i = 0; i < storageImages.length; i++) {
+                infos[i] = VkDescriptorImageInfo.calloc(1, stack);
+                infos[i].get(0).imageView(storageImages[i].view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            }
+            VkDescriptorImageInfo.Buffer[] historyInfos = new VkDescriptorImageInfo.Buffer[5];
+            for (int i = 0; i < historyImages.length; i++) {
+                historyInfos[i] = VkDescriptorImageInfo.calloc(1, stack);
+                historyInfos[i].get(0).sampler(linearSampler).imageView(historyImages[i].view)
+                        .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            }
             VkDescriptorImageInfo.Buffer sceneInfo = VkDescriptorImageInfo.calloc(1, stack);
             sceneInfo.get(0).sampler(linearSampler).imageView(output.view)
                     .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
@@ -295,58 +336,55 @@ public final class RtFroxelFogPipeline {
             writes.get(FOG_LIGHTING_TLAS).sType$Default().pNext(asWrite.address())
                     .dstSet(lightingDescriptorSets[setIndex]).dstBinding(FOG_LIGHTING_TLAS)
                     .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
-            writes.get(FOG_LIGHTING_DIRECT).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_DIRECT).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(directInfo);
-            writes.get(FOG_LIGHTING_GI).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_GI).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(giInfo);
-            writes.get(FOG_LIGHTING_HISTORY).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_HISTORY).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(historyInfo);
-            writes.get(FOG_LIGHTING_SCENE).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_SCENE).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(sceneInfo);
-            writes.get(FOG_LIGHTING_DEPTH).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_DEPTH).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
-            writes.get(FOG_LIGHTING_SKY_VIEW).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_SKY_VIEW).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(skyInfo);
-            writes.get(FOG_LIGHTING_TRANSMITTANCE).sType$Default().dstSet(lightingDescriptorSets[setIndex])
-                    .dstBinding(FOG_LIGHTING_TRANSMITTANCE).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(transInfo);
+            for (int i = 0; i < storageImages.length; i++) {
+                int binding = FOG_LIGHTING_DIRECT + i;
+                writes.get(binding).sType$Default().dstSet(lightingDescriptorSets[setIndex]).dstBinding(binding)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(infos[i]);
+            }
+            for (int i = 0; i < historyImages.length; i++) {
+                int binding = FOG_LIGHTING_DIRECT_HISTORY + i;
+                writes.get(binding).sType$Default().dstSet(lightingDescriptorSets[setIndex]).dstBinding(binding)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .pImageInfo(historyInfos[i]);
+            }
+            VkDescriptorImageInfo.Buffer[] sampled = {sceneInfo, depthInfo, skyInfo, transInfo};
+            for (int i = 0; i < sampled.length; i++) {
+                int binding = FOG_LIGHTING_SCENE + i;
+                writes.get(binding).sType$Default().dstSet(lightingDescriptorSets[setIndex]).dstBinding(binding)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .pImageInfo(sampled[i]);
+            }
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
     }
 
     private void writeIntegrateDescriptors(int setIndex, RtImage output, RtImage depth,
-                                           RtImage direct, RtImage gi) {
+                                           RtImage direct, RtImage local, RtImage gi, RtImage cache) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer outputInfo = VkDescriptorImageInfo.calloc(1, stack);
             outputInfo.get(0).imageView(output.view).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            RtImage[] volumes = {direct, local, gi, cache};
             VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
             depthInfo.get(0).sampler(pointSampler).imageView(depth.view)
                     .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkDescriptorImageInfo.Buffer directInfo = VkDescriptorImageInfo.calloc(1, stack);
-            directInfo.get(0).sampler(linearSampler).imageView(direct.view)
-                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkDescriptorImageInfo.Buffer giInfo = VkDescriptorImageInfo.calloc(1, stack);
-            giInfo.get(0).sampler(linearSampler).imageView(gi.view)
-                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer[] sampled = new VkDescriptorImageInfo.Buffer[5];
+            sampled[0] = depthInfo;
+            for (int i = 0; i < volumes.length; i++) {
+                sampled[i + 1] = VkDescriptorImageInfo.calloc(1, stack);
+                sampled[i + 1].get(0).sampler(linearSampler).imageView(volumes[i].view)
+                        .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            }
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(FOG_INTEGRATE_BINDING_COUNT, stack);
             writes.get(FOG_INTEGRATE_OUTPUT).sType$Default().dstSet(integrateDescriptorSets[setIndex])
                     .dstBinding(FOG_INTEGRATE_OUTPUT).descriptorCount(1)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
-            writes.get(FOG_INTEGRATE_DEPTH).sType$Default().dstSet(integrateDescriptorSets[setIndex])
-                    .dstBinding(FOG_INTEGRATE_DEPTH).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
-            writes.get(FOG_INTEGRATE_DIRECT).sType$Default().dstSet(integrateDescriptorSets[setIndex])
-                    .dstBinding(FOG_INTEGRATE_DIRECT).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(directInfo);
-            writes.get(FOG_INTEGRATE_GI).sType$Default().dstSet(integrateDescriptorSets[setIndex])
-                    .dstBinding(FOG_INTEGRATE_GI).descriptorCount(1)
-                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(giInfo);
+            for (int i = 0; i < sampled.length; i++) {
+                int binding = FOG_INTEGRATE_DEPTH + i;
+                writes.get(binding).sType$Default().dstSet(integrateDescriptorSets[setIndex]).dstBinding(binding)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .pImageInfo(sampled[i]);
+            }
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
     }
@@ -393,18 +431,14 @@ public final class RtFroxelFogPipeline {
 
     private static long[] allocateSets(VkDevice vk, MemoryStack stack, long pool, long layout, String label) {
         LongBuffer layouts = stack.mallocLong(RING);
-        for (int i = 0; i < RING; i++) {
-            layouts.put(i, layout);
-        }
+        for (int i = 0; i < RING; i++) layouts.put(i, layout);
         VkDescriptorSetAllocateInfo allocateInfo = VkDescriptorSetAllocateInfo.calloc(stack)
                 .sType$Default().descriptorPool(pool).pSetLayouts(layouts);
         LongBuffer handles = stack.mallocLong(RING);
         check(VK10.vkAllocateDescriptorSets(vk, allocateInfo, handles),
                 "vkAllocateDescriptorSets(" + label + ")");
         long[] result = new long[RING];
-        for (int i = 0; i < RING; i++) {
-            result[i] = handles.get(i);
-        }
+        for (int i = 0; i < RING; i++) result[i] = handles.get(i);
         return result;
     }
 
@@ -434,9 +468,7 @@ public final class RtFroxelFogPipeline {
     private static long loadModule(VkDevice vk, MemoryStack stack, String resource) {
         byte[] bytes;
         try (InputStream input = RtFroxelFogPipeline.class.getResourceAsStream(resource)) {
-            if (input == null) {
-                throw new IllegalStateException("missing SPIR-V resource: " + resource);
-            }
+            if (input == null) throw new IllegalStateException("missing SPIR-V resource: " + resource);
             bytes = input.readAllBytes();
         } catch (IOException e) {
             throw new IllegalStateException("failed to read SPIR-V resource: " + resource, e);
