@@ -315,12 +315,12 @@ float3 fogCacheRadiance(WorldPush push, float3 position, float3 viewDirection) {
     uint cellHash = fogPcg(uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u
             ^ uint(cell.z) * 83492791u);
     // A small world-cell reservoir is shared by every froxel that lands in this cell. Four candidates are
-    // rotated over a four-frame low-discrepancy cycle, then one survivor is selected by its contribution
-    // weight. The W = sum(w)/(M*w_survivor) factor is the usual one-step reservoir estimator; it is not a
-    // second medium ray and it remains supported by the published global/grid proposal PDFs. Because the
-    // key is world-space rather than screen-space, a resident emitter can influence off-screen-to-on-screen
-    // transitions without needing a projected history pixel. The camera atlas history below only filters
-    // this low-frequency world reservoir, and cache reuse is opt-in by default.
+    // generated from the stable cell key and the advancing frame sequence, then one survivor is selected by
+    // its contribution weight. The W = sum(w)/(M*w_survivor) factor is the usual one-step reservoir
+    // estimator; it is not a second medium ray and it remains supported by the published global/grid
+    // proposal PDFs. Because the key is world-space rather than screen-space, a resident emitter can
+    // influence off-screen-to-on-screen transitions without needing a projected history pixel. The camera
+    // atlas history below only filters this low-frequency world reservoir, and cache reuse is opt-in by default.
     const uint candidateCount = 4u;
     float3 selected = float3(0.0);
     float selectedWeight = 0.0;
