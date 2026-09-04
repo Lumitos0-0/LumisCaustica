@@ -24,9 +24,10 @@ float3 fogVolumeSample(Sampler2D volume, float2 uv, float z, float3 dimensions) 
     uint z1 = min(z0 + 1u, uint(gz - 1.0));
     float zBlend = zf - float(z0);
     float2 atlasSize = float2(gx, gy * gz);
-    // uv is normalized screen position. Multiplying by the froxel dimensions lands at the same center
-    // convention used by the lighting pass; adding a second half-texel would shift every sample.
-    float2 localTexel = float2(uv.x * gx, uv.y * gy);
+    // uv is normalized screen position. Clamp to the current froxel row before sampling: the atlas
+    // packs depth slices vertically, so a linear lookup at the outer row edge would bleed the next
+    // slice into this one and turn a depth boundary into apparent temporal noise.
+    float2 localTexel = clamp(uv * float2(gx, gy), 0.5, float2(gx, gy) - 0.5);
     float2 uv0 = (localTexel + float2(0.0, float(z0) * gy)) / atlasSize;
     float2 uv1 = (localTexel + float2(0.0, float(z1) * gy)) / atlasSize;
     return lerp(volume.SampleLevel(uv0, 0.0).rgb,

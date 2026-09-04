@@ -325,9 +325,12 @@ float3 fogCacheRadiance(WorldPush push, float3 position, float3 viewDirection) {
     float3 selected = float3(0.0);
     float selectedWeight = 0.0;
     float weightSum = 0.0;
-    uint reservoirSeed = fogPcg(cellHash ^ ((push.frameIndex >> 2u) + 1u) * 2246822519u);
+    // Advance the candidate stream every frame. Repeating the same four candidates for four frames makes
+    // the cache look like a small periodic animation instead of a temporally reused reservoir.
+    uint frameSeed = push.frameIndex + 1u;
+    uint reservoirSeed = fogPcg(cellHash ^ frameSeed * 2246822519u);
     for (uint candidate = 0u; candidate < candidateCount; candidate++) {
-        uint seed = fogPcg(cellHash ^ ((push.frameIndex & 3u) + 1u) * 2654435761u
+        uint seed = fogPcg(cellHash ^ frameSeed * 2654435761u
                 ^ (candidate + 1u) * 3266489917u);
         float3 proposal = max(fogEmitterSample(push, position, viewDirection, seed, true), float3(0.0));
         float proposalWeight = max(dot(proposal, FOG_LUMA), 0.0);
@@ -398,13 +401,23 @@ float4 fogHistorySpatialSample4(Sampler2D history, float2 uv, float z, float3 di
 }
 
 float fogGuideWeight(float2 currentGuide, float4 historyGuide) {
-    float occupancy = abs(currentGuide.y - historyGuide.y);
-    if (occupancy > 0.45) return 0.0;
-    if (currentGuide.y > 0.25 && historyGuide.y > 0.25) {
-        float tolerance = 0.035 + 0.16 * max(currentGuide.x, historyGuide.x);
-        if (abs(currentGuide.x - historyGuide.x) > tolerance) return 0.0;
+    // Hit coverage is a Monte Carlo estimate, not a material ID. With two GI rays it can move between
+    // 0, 0.5, and 1 even when the camera and scene are static; treating those bins as a hard rejection
+    // prevents the volume from ever accumulating in exactly the noisy regions we want to reconstruct.
+    float currentCoverage = saturate(currentGuide.y);
+    float historyCoverage = saturate(historyGuide.y);
+    float coverageDelta = abs(currentCoverage - historyCoverage);
+    float coverageWeight = exp(-0.75 * coverageDelta);
+
+    // Hit distance is useful when both estimates actually contain a surface hit, but a sky estimate has no
+    // meaningful distance. Use it as a soft confidence term with a tolerance proportional to the hit
+    // coverage. Primary reversed-Z depth below remains the hard foreground/sky discontinuity test.
+    if (currentCoverage > 0.05 && historyCoverage > 0.05) {
+        float tolerance = 0.10 + 0.42 * max(currentCoverage, historyCoverage);
+        float hitWeight = exp(-abs(currentGuide.x - historyGuide.x) / max(tolerance, 0.08));
+        return coverageWeight * max(hitWeight, 0.15);
     }
-    return saturate(1.0 - occupancy * 1.5);
+    return coverageWeight;
 }
 
 // gDepth is reversed-Z projected depth: sky is near zero and a nearer surface has a larger value. The
@@ -424,7 +437,8 @@ float fogPrimaryDepthWeight(float currentDepth, float historyDepth) {
 float4 fogGiHistorySpatialSample4(Sampler2D history, Sampler2D auxHistory,
                                   float2 uv, float z, float3 dimensions,
                                   float2 currentGuide, float currentFroxelZ,
-                                  float radius, out float guideWeight) {
+                                  float radius, out float guideWeight,
+                                  out float neighborhoodMinLuma, out float neighborhoodMaxLuma) {
     float4 center = fogHistorySample4(history, uv, z, dimensions);
     float4 centerGuide = fogHistorySample4(auxHistory, uv, z, dimensions);
     // The reprojected logarithmic slice is a cheap froxel-depth guide. A color-only reprojection can
@@ -433,6 +447,9 @@ float4 fogGiHistorySpatialSample4(Sampler2D history, Sampler2D auxHistory,
     float depthDelta = abs(currentFroxelZ - z);
     float depthWeight = depthDelta > 0.22 ? 0.0 : saturate(1.0 - depthDelta * 3.0);
     guideWeight = fogGuideWeight(currentGuide, centerGuide) * depthWeight;
+    float centerLuma = dot(max(center.rgb, float3(0.0)), FOG_LUMA);
+    neighborhoodMinLuma = centerLuma;
+    neighborhoodMaxLuma = centerLuma;
     if (radius <= 0.001) return center;
     float2 texel = radius / max(dimensions.xy, float2(1.0));
     float4 taps[4];
@@ -451,17 +468,29 @@ float4 fogGiHistorySpatialSample4(Sampler2D history, Sampler2D auxHistory,
         float tapWeight = fogGuideWeight(currentGuide, tapGuide) * depthWeight;
         result += taps[i] * tapWeight;
         weight += tapWeight;
+        if (tapWeight > 0.0) {
+            float tapLuma = dot(max(taps[i].rgb, float3(0.0)), FOG_LUMA);
+            neighborhoodMinLuma = min(neighborhoodMinLuma, tapLuma);
+            neighborhoodMaxLuma = max(neighborhoodMaxLuma, tapLuma);
+        }
     }
     guideWeight = weight / 8.0;
     return weight > 1.0e-4 ? result / weight : center;
 }
 
-float3 fogClampHistoryLuminance(float3 history, float currentLuma, float variance) {
+float3 fogClampHistoryLuminance(float3 history, float currentLuma, float variance,
+                                 float neighborhoodMinLuma, float neighborhoodMaxLuma) {
     float historyLuma = max(dot(history, FOG_LUMA), 0.0);
-    float sigma = sqrt(max(variance, 0.0) + 0.0025 + currentLuma * currentLuma * 0.10);
-    float low = max(0.0, currentLuma - 3.0 * sigma);
-    float high = currentLuma + 3.0 * sigma;
     if (historyLuma <= 1.0e-5) return float3(0.0);
+
+    // Clamp against the reprojected neighborhood, not just this frame's single stochastic estimate. The
+    // latter collapses a bright history to almost zero whenever the two GI rays miss on one frame, which
+    // looks like grain instead of temporal reconstruction. The variance term keeps a high-energy but
+    // genuinely plausible history inside a bounded range when a neighboring ray is currently dark.
+    float sigma = sqrt(max(variance, 0.0) + 0.0025
+            + max(currentLuma, neighborhoodMaxLuma) * max(currentLuma, neighborhoodMaxLuma) * 0.10);
+    float low = max(0.0, min(currentLuma, neighborhoodMinLuma) - 2.5 * sigma);
+    float high = max(currentLuma, neighborhoodMaxLuma) + 2.5 * sigma;
     return history * (clamp(historyLuma, low, high) / historyLuma);
 }
 
@@ -610,16 +639,19 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // depending on whether their projected pixels were visible this frame.
     float3 cache = fogCacheRadiance(push, position, viewDirection);
 
-    uint giCellX = froxel.x >> 1u;
-    uint giCellY = froxel.y >> 1u;
-    uint giCellZ = froxel.z >> 1u;
-    uint giHash = fogPcg((giCellX + giCellY * ((gridX + 1u) >> 1u)
-            + giCellZ * ((gridX + 1u) >> 1u) * ((gridY + 1u) >> 1u))
-            ^ 0x9e3779b9u);
+    // Keep the low-discrepancy phase shift unique per froxel. Sharing one 2x2x2 hash makes eight
+    // neighboring cells trace the same angular samples and turns a low sample count into visible blocks;
+    // spatial filtering can provide correlation without making the sampling pattern itself blocky.
+    uint giLinear = froxel.x + froxel.y * gridX + froxel.z * gridX * gridY;
+    uint giHash = fogPcg(giLinear ^ 0x9e3779b9u);
     float giHitDistance;
     float giCoverage;
     float3 indirect = fogIndirectRadiance(push, sky, position, viewDirection,
             giHash, giHitDistance, giCoverage);
+    // Keep the second moment from the unfiltered current estimate. Storing the square of the already
+    // blended mean makes the variance collapse toward zero and turns the moment lane into decoration.
+    float rawGiLuma = dot(max(indirect, float3(0.0)) / FOG_RADIANCE_SCALE, FOG_LUMA);
+    float rawGiMoment2 = rawGiLuma * rawGiLuma;
     float2 currentUv = centerUv;
     float2 previousUv;
     float previousZ;
@@ -673,6 +705,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float2 currentGuide = float2(giHitDistance, giCoverage);
     float giHistoryGuideWeight = 0.0;
     float giHistoryBlendWeight = 0.0;
+    float giNeighborhoodMinLuma = 0.0;
+    float giNeighborhoodMaxLuma = 0.0;
     float4 giHistorySample = float4(0.0);
     float4 previousGiGuide = float4(0.0);
     if (hasHistoryCoordinates && pc.temporalSettings.x > 0.0 && pc.giSettings.x > 0.0) {
@@ -680,13 +714,16 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         giHistorySample = fogGiHistorySpatialSample4(giHistory, giAuxHistory,
                 previousUv, previousZ, pc.grid.xyz, currentGuide,
                 float(froxel.z) / max(float(gridZ - 1u), 1.0),
-                max(pc.spatialSettings.x, 0.0), giHistoryGuideWeight);
+                max(pc.spatialSettings.x, 0.0), giHistoryGuideWeight,
+                giNeighborhoodMinLuma, giNeighborhoodMaxLuma);
         float3 historyRadiance = giHistorySample.rgb * FOG_RADIANCE_SCALE;
-        float currentStoredLuma = dot(indirect / FOG_RADIANCE_SCALE, FOG_LUMA);
         float historyStoredLuma = dot(max(giHistorySample.rgb, float3(0.0)), FOG_LUMA);
         float historyVariance = max(giHistorySample.a - historyStoredLuma * historyStoredLuma, 0.0);
         historyRadiance = fogClampHistoryLuminance(historyRadiance,
-                currentStoredLuma * FOG_RADIANCE_SCALE, historyVariance * FOG_RADIANCE_SCALE * FOG_RADIANCE_SCALE);
+                rawGiLuma * FOG_RADIANCE_SCALE,
+                historyVariance * FOG_RADIANCE_SCALE * FOG_RADIANCE_SCALE,
+                giNeighborhoodMinLuma * FOG_RADIANCE_SCALE,
+                giNeighborhoodMaxLuma * FOG_RADIANCE_SCALE);
         float historyConfidence = saturate(previousGiGuide.w);
         float historyAgeWeight = exp(-max(previousGiGuide.z - 1.0, 0.0) * 0.02);
         float weight = clamp(pc.temporalSettings.x * giHistoryGuideWeight
@@ -700,20 +737,29 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 storedLocal = min(max(local, float3(0.0)) / FOG_RADIANCE_SCALE, float3(HALF_MAX));
     float3 storedCache = min(max(cache, float3(0.0)) / FOG_RADIANCE_SCALE, float3(HALF_MAX));
     float3 storedGi = min(max(indirect, float3(0.0)) / FOG_RADIANCE_SCALE, float3(HALF_MAX));
-    float giLuma = dot(storedGi, FOG_LUMA);
-    float currentMoment2 = giLuma * giLuma;
-    float historyMoment2 = max(giHistorySample.a, currentMoment2);
-    float resolvedMoment2 = lerp(currentMoment2, historyMoment2, giHistoryBlendWeight);
+    float historyMeanLuma = dot(max(giHistorySample.rgb, float3(0.0)), FOG_LUMA);
+    float historyMoment2 = max(giHistorySample.a, historyMeanLuma * historyMeanLuma);
+    // Mix M2 with the raw current sample, not the square of the resolved mean. The latter loses the
+    // between-sample term and makes variance-guided clamping ineffective after the first blend.
+    float resolvedMoment2 = min(max(lerp(rawGiMoment2, historyMoment2, giHistoryBlendWeight), 0.0), HALF_MAX);
+    float resolvedGuideHitDistance = giHitDistance;
+    float resolvedGuideCoverage = giCoverage;
     float historyAge = 1.0;
     float historyConfidenceOut = giCoverage > 0.0 ? 0.75 : 0.5;
-    if (giHistoryGuideWeight > 0.0 && previousGiGuide.w > 0.0) {
-        // Age is carried in the auxiliary history's z channel. A separate lookup avoids putting age in the
-        // radiance/moment image and keeps the moments numerically meaningful.
+    if (giHistoryBlendWeight > 0.001 && previousGiGuide.w > 0.0) {
+        // Keep the stochastic hit guide itself low frequency. Reusing it with the same confidence as the
+        // radiance prevents the next frame from rejecting a valid history solely because two rays changed
+        // their sky/surface classification bins.
+        float guideReuse = min(giHistoryBlendWeight * 0.75, 0.75);
+        resolvedGuideHitDistance = lerp(giHitDistance, previousGiGuide.x, guideReuse);
+        resolvedGuideCoverage = lerp(giCoverage, previousGiGuide.y, guideReuse);
         historyAge = min(previousGiGuide.z + 1.0, 64.0);
-        historyConfidenceOut = saturate(giHistoryGuideWeight * max(0.25, previousGiGuide.w));
+        historyConfidenceOut = saturate(lerp(giCoverage > 0.0 ? 0.75 : 0.5,
+                previousGiGuide.w, guideReuse));
     }
     giVolume[dispatchId.xy] = float4(storedGi, resolvedMoment2);
-    giAuxVolume[dispatchId.xy] = float4(giHitDistance, giCoverage, historyAge, historyConfidenceOut);
+    giAuxVolume[dispatchId.xy] = float4(resolvedGuideHitDistance, resolvedGuideCoverage,
+            historyAge, historyConfidenceOut);
     // Keep the primary reversed-Z depth in the direct history's spare alpha lane. The same guide is
     // consumed by direct, local, cache, and GI reprojection tests; no linear-depth assumption is made.
     directVolume[dispatchId.xy] = float4(storedDirect, currentPrimaryDepth);
