@@ -56,7 +56,10 @@ public final class CausticaConfig {
     public static void ensureRegistered() {
         @SuppressWarnings("unused")
         Object[] touch = {
-            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
+            Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Fog.ENABLED, Rt.Fog.DENSITY,
+            Rt.Fog.DIRECT_ENABLED, Rt.Fog.GI_ENABLED, Rt.Fog.LOCAL_LIGHTING_ENABLED,
+            Rt.Fog.CACHE_REUSE_ENABLED, Rt.Fog.HISTORY_ENABLED, Rt.Fog.GI_HISTORY_ENABLED,
+            Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
@@ -95,6 +98,9 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("fog",
+                " Primary-view hybrid volumetric fog. Direct sun/moon shafts, local emitters, GI, and world-space emitter reuse are independent.\n"
+                        + " Local lighting and cache reuse are disabled by default; enable them for diagnostics. The volume is integrated before DLSS Ray Reconstruction.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -545,6 +551,88 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        /**
+         * Primary-view hybrid volumetric fog. Direct shafts, local emitter lighting, GI, and the
+         * world-space emitter-reuse field are separate signals so each can be inspected or disabled without
+         * changing the others.
+         */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.fog", "fog.enabled", true);
+            public static final BooleanSetting DIRECT_ENABLED =
+                    bool("caustica.rt.fog.directEnabled", "fog.direct-enabled", true);
+            public static final BooleanSetting GI_ENABLED =
+                    bool("caustica.rt.fog.giEnabled", "fog.gi-enabled", true);
+            /** Separate local-emitter visibility field for diagnostic comparisons. */
+            public static final BooleanSetting LOCAL_LIGHTING_ENABLED =
+                    bool("caustica.rt.fog.localLightingEnabled", "fog.local-lighting-enabled", false);
+            /** World-space emitter proposals and temporal reuse field. */
+            public static final BooleanSetting CACHE_REUSE_ENABLED =
+                    bool("caustica.rt.fog.cacheReuseEnabled", "fog.cache-reuse-enabled", false);
+            public static final BooleanSetting HISTORY_ENABLED =
+                    bool("caustica.rt.fog.historyEnabled", "fog.history-enabled", true);
+            public static final BooleanSetting GI_HISTORY_ENABLED =
+                    bool("caustica.rt.fog.giHistoryEnabled", "fog.gi-history-enabled", true);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.fog.density", "fog.density", 0.0018f, 0.0f, 0.05f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fog.heightFalloff", "fog.height-falloff", 0.025f, 0.0f, 0.25f);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.fog.maxDistance", "fog.max-distance", 192.0f, 16.0f, 512.0f);
+            public static final IntSetting FROXEL_TILE_SIZE =
+                    clampedInt("caustica.rt.fog.froxelTileSize", "fog.froxel-tile-size", 8, 4, 32);
+            // Bound the logarithmic depth budget so atlas storage and per-froxel work remain predictable.
+            public static final IntSetting Z_SLICES =
+                    clampedInt("caustica.rt.fog.zSlices", "fog.z-slices", 32, 16, 96);
+            public static final FloatSetting DIRECT_STRENGTH =
+                    clampedFloat("caustica.rt.fog.directStrength", "fog.direct-strength", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting GI_STRENGTH =
+                    clampedFloat("caustica.rt.fog.giStrength", "fog.gi-strength", 0.35f, 0.0f, 4.0f);
+            public static final FloatSetting LOCAL_STRENGTH =
+                    clampedFloat("caustica.rt.fog.localStrength", "fog.local-strength", 0.8f, 0.0f, 4.0f);
+            public static final FloatSetting CACHE_STRENGTH =
+                    clampedFloat("caustica.rt.fog.cacheStrength", "fog.cache-strength", 0.15f, 0.0f, 4.0f);
+            public static final FloatSetting DIRECT_ANISOTROPY =
+                    clampedFloat("caustica.rt.fog.directAnisotropy", "fog.direct-anisotropy", 0.78f, -0.95f, 0.95f);
+            public static final FloatSetting GI_TEMPORAL_BLEND =
+                    clampedFloat("caustica.rt.fog.giTemporalBlend", "fog.gi-temporal-blend", 0.78f, 0.0f, 0.95f);
+            public static final FloatSetting DIRECT_TEMPORAL_BLEND =
+                    clampedFloat("caustica.rt.fog.directTemporalBlend", "fog.direct-temporal-blend", 0.72f, 0.0f, 0.95f);
+            public static final FloatSetting LOCAL_TEMPORAL_BLEND =
+                    clampedFloat("caustica.rt.fog.localTemporalBlend", "fog.local-temporal-blend", 0.55f, 0.0f, 0.95f);
+            public static final FloatSetting CACHE_TEMPORAL_BLEND =
+                    clampedFloat("caustica.rt.fog.cacheTemporalBlend", "fog.cache-temporal-blend", 0.88f, 0.0f, 0.98f);
+            public static final IntSetting GI_SAMPLES =
+                    clampedInt("caustica.rt.fog.giSamples", "fog.gi-samples", 2, 1, 4);
+            public static final IntSetting DIRECT_SAMPLES =
+                    clampedInt("caustica.rt.fog.directSamples", "fog.direct-samples", 2, 1, 4);
+            public static final FloatSetting GI_SPATIAL_RADIUS =
+                    clampedFloat("caustica.rt.fog.giSpatialRadius", "fog.gi-spatial-radius", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting DIRECT_SPATIAL_RADIUS =
+                    clampedFloat("caustica.rt.fog.directSpatialRadius", "fog.direct-spatial-radius", 0.5f, 0.0f, 2.0f);
+            public static final FloatSetting LOCAL_SPATIAL_RADIUS =
+                    clampedFloat("caustica.rt.fog.localSpatialRadius", "fog.local-spatial-radius", 0.5f, 0.0f, 2.0f);
+            public static final FloatSetting CACHE_SPATIAL_RADIUS =
+                    clampedFloat("caustica.rt.fog.cacheSpatialRadius", "fog.cache-spatial-radius", 1.0f, 0.0f, 2.0f);
+            public static final IntSetting LOCAL_SAMPLES =
+                    clampedInt("caustica.rt.fog.localSamples", "fog.local-samples", 4, 1, 8);
+            public static final FloatSetting CACHE_CELL_SIZE =
+                    clampedFloat("caustica.rt.fog.cacheCellSize", "fog.cache-cell-size", 8.0f, 1.0f, 32.0f);
+            public static final FloatSetting SCATTERING_STRENGTH =
+                    clampedFloat("caustica.rt.fog.scatteringStrength", "fog.scattering-strength", 1.0f, 0.0f, 2.0f);
+            // Linear ACEScg scattering albedo. Keep this distinct from the source radiance fields so the
+            // same medium can be tuned without changing the sun/moon or emissive estimators.
+            public static final FloatSetting SCATTER_R =
+                    clampedFloat("caustica.rt.fog.scatterR", "fog.scatter-r", 0.82f, 0.0f, 2.0f);
+            public static final FloatSetting SCATTER_G =
+                    clampedFloat("caustica.rt.fog.scatterG", "fog.scatter-g", 0.90f, 0.0f, 2.0f);
+            public static final FloatSetting SCATTER_B =
+                    clampedFloat("caustica.rt.fog.scatterB", "fog.scatter-b", 1.0f, 0.0f, 2.0f);
+
+            private Fog() {
             }
         }
 

@@ -87,7 +87,9 @@ public struct BloomPush {
 };
 
 public struct DebugPresentPush {
-    public uint debugView;     // 1..9; this pass is only dispatched for debugView != 0
+    public uint debugView;     // 1..15; this pass is only dispatched for debugView != 0
     public float centerWeightSigma;
     public float centerWeightFloor;
+    // xyz = fog froxel dimensions; w = atlas height. Zero dimensions select the valid scene fallback.
+    public float4 fogGrid;
 };

@@ -58,6 +58,11 @@ public final class RtDebugPresentPipeline {
     private long boundSpecMotionView;
     private long boundSceneView;
     private long boundExposureView;
+    private long boundFogDirectView;
+    private long boundFogLocalView;
+    private long boundFogGiView;
+    private long boundFogCacheView;
+    private long boundFogAuxView;
     private long boundExposureStateBuffer;
     private boolean destroyed;
 
@@ -73,8 +78,9 @@ public final class RtDebugPresentPipeline {
     public static RtDebugPresentPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            // 0: output (SDR display target). 1..6: guide buffers. 7: post-RR scene image.
-            // 8: same-frame display exposure. 9: exposure state, including the sky metering scale.
+            // 0: output, 1..6: surface guides, 7: post-RR scene, 8: display exposure, 9..13: fog
+            // diagnostic fields, and 14: exposure state. All image bindings are storage images because the
+            // debug pass is a final inspection pass, not part of the filtered render path.
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(DEBUG_PRESENT_BINDING_COUNT, stack);
             for (int i = DEBUG_PRESENT_OUTPUT; i < DEBUG_PRESENT_EXPOSURE_STATE; i++) {
                 binds.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -91,7 +97,8 @@ public final class RtDebugPresentPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "debug present descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(9);
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(DEBUG_PRESENT_EXPOSURE_STATE);
             poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt debug present)");
@@ -131,19 +138,24 @@ public final class RtDebugPresentPipeline {
 
     public void setImages(long outputImageView, long normalView, long albedoView, long depthView,
                            long motionView, long specAlbedoView, long specMotionView,
-                           long sceneView, long exposureView, RtBuffer exposureState) {
+                           long sceneView, long exposureView,
+                           long fogDirectView, long fogLocalView, long fogGiView,
+                           long fogCacheView, long fogAuxView, RtBuffer exposureState) {
         if (boundOutputView == outputImageView && boundNormalView == normalView && boundAlbedoView == albedoView
                 && boundDepthView == depthView && boundMotionView == motionView
                 && boundSpecAlbedoView == specAlbedoView && boundSpecMotionView == specMotionView
                 && boundSceneView == sceneView && boundExposureView == exposureView
-                && boundExposureStateBuffer == exposureState.handle) {
+                && boundFogDirectView == fogDirectView && boundFogLocalView == fogLocalView
+                && boundFogGiView == fogGiView && boundFogCacheView == fogCacheView
+                && boundFogAuxView == fogAuxView && boundExposureStateBuffer == exposureState.handle) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
             long[] views = {outputImageView, normalView, albedoView, depthView, motionView,
-                    specAlbedoView, specMotionView, sceneView, exposureView};
+                    specAlbedoView, specMotionView, sceneView, exposureView, fogDirectView,
+                    fogLocalView, fogGiView, fogCacheView, fogAuxView};
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(DEBUG_PRESENT_BINDING_COUNT, stack);
-            for (int i = 0; i < 9; i++) {
+            for (int i = 0; i < DEBUG_PRESENT_EXPOSURE_STATE; i++) {
                 VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
                 info.get(0).imageView(views[i]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(i).sType$Default().dstSet(descriptorSet).dstBinding(i)
@@ -165,16 +177,23 @@ public final class RtDebugPresentPipeline {
         boundSpecMotionView = specMotionView;
         boundSceneView = sceneView;
         boundExposureView = exposureView;
+        boundFogDirectView = fogDirectView;
+        boundFogLocalView = fogLocalView;
+        boundFogGiView = fogGiView;
+        boundFogCacheView = fogCacheView;
+        boundFogAuxView = fogAuxView;
         boundExposureStateBuffer = exposureState.handle;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, int debugView,
-                         float centerWeightSigma, float centerWeightFloor) {
+                         float centerWeightSigma, float centerWeightFloor,
+                         int fogX, int fogY, int fogZ, int fogAtlasHeight) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(DebugPresentPushData.BYTE_SIZE);
-            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor).write(push);
+            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor,
+                    new DebugPresentPushData.Float4(fogX, fogY, fogZ, fogAtlasHeight)).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

@@ -3,6 +3,7 @@
 // complete Std430DataLayout: field types, byte offsets, total size, matrix mode, and array counts.
 import world_common;
 import display_common;
+import fog_common;
 
 struct WorldPushLayoutProbe {
     WorldPush values[2]; // array stride is the complete, tail-padded WorldPush byte size
@@ -72,7 +73,8 @@ void probeDisplayPush(uint3 id : SV_DispatchThreadID) {
 [numthreads(1, 1, 1)]
 void probeDebugPresentPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
-        float sink = float(debugPresentPushProbe.debugView) + debugPresentPushProbe.centerWeightFloor;
+        float sink = float(debugPresentPushProbe.debugView) + debugPresentPushProbe.centerWeightFloor
+                + debugPresentPushProbe.fogGrid.x;
     }
 }
 
@@ -92,5 +94,26 @@ void probePushAddr(uint3 id : SV_DispatchThreadID) {
 void probeBloomPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
+    }
+}
+
+[[vk::push_constant]] FogLightingPush fogLightingPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogLightingPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = fogLightingPushProbe.grid.x + fogLightingPushProbe.settings.x
+                + fogLightingPushProbe.giSettings.x + fogLightingPushProbe.temporalSettings.x
+                + fogLightingPushProbe.spatialSettings.x;
+    }
+}
+
+[[vk::push_constant]] FogIntegratePush fogIntegratePushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogIntegratePush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = fogIntegratePushProbe.grid.x + fogIntegratePushProbe.medium.x
+                + fogIntegratePushProbe.scatteringColor.x;
     }
 }
