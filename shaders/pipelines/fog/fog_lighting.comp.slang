@@ -28,6 +28,15 @@ import fog_common;
 static const float FOG_PI = 3.14159265359;
 static const float FOG_NEAR_DISTANCE = 0.5;
 static const float FOG_LOCAL_MAX_DISTANCE = 192.0;
+// Albedo applied to the sky term when an indirect ray hits geometry whose screen radiance is
+// unavailable. It stands in for one diffuse bounce off the unseen occluder.
+static const float FOG_OFFSCREEN_BOUNCE_ALBEDO = 0.18;
+// Ceiling on the progressive indirect history weight. The indirect field is view independent, so it is
+// accumulated as a running mean whose weight approaches this bound as the sample count grows.
+static const float FOG_GI_MAX_BLEND = 0.995;
+// Upper bound on the accumulated indirect sample count. It caps the running mean's response time so a
+// converged froxel still tracks lighting changes.
+static const float FOG_GI_MAX_AGE = 256.0;
 static const uint FOG_SECONDARY_MASK = 0x01u;
 static const float FOG_RAY_TMIN = 0.01;
 static const float3 FOG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
@@ -81,28 +90,15 @@ float fogHg(float cosTheta, float g) {
     return (1.0 - gg * gg) / (4.0 * FOG_PI * pow(denom, 1.5));
 }
 
-float3 fogPhaseDirection(float3 viewDirection, float g, float2 xi, out float pdf) {
-    float gg = clamp(g, -0.95, 0.95);
-    float cosTheta;
-    if (abs(gg) < 1.0e-3) {
-        cosTheta = 1.0 - 2.0 * xi.x;
-    } else {
-        float k = (1.0 - gg * gg) / max(1.0 - gg + 2.0 * gg * xi.x, 1.0e-5);
-        cosTheta = (1.0 + gg * gg - k * k) / (2.0 * gg);
-        cosTheta = clamp(cosTheta, -1.0, 1.0);
-    }
+// Multiply scattered light in the medium is treated as isotropic, so the indirect field samples a
+// world-aligned uniform sphere. The direction set does not depend on the camera basis: a froxel keeps
+// the same value under pure rotation, which is what allows the indirect history to accumulate across
+// large view changes instead of being invalidated by them.
+float3 fogUniformSphereDirection(float2 xi) {
+    float cosTheta = 1.0 - 2.0 * xi.x;
     float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
     float phi = 2.0 * FOG_PI * xi.y;
-    float3 axis = normalize(-viewDirection);
-    float3 tangent = abs(axis.y) < 0.9
-            ? normalize(cross(axis, float3(0.0, 1.0, 0.0)))
-            : normalize(cross(axis, float3(1.0, 0.0, 0.0)));
-    float3 bitangent = cross(axis, tangent);
-    float3 direction = normalize(axis * cosTheta
-            + tangent * (sinTheta * cos(phi))
-            + bitangent * (sinTheta * sin(phi)));
-    pdf = fogHg(cosTheta, gg);
-    return direction;
+    return float3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
 }
 
 float fogUnpackUnsignedFloat(uint bits, uint mantissaBits) {
@@ -524,7 +520,7 @@ bool fogPreviousCoordinates(WorldPush push, float3 position, out float2 uv, out 
     return all(uv >= float2(0.0)) && all(uv <= float2(1.0)) && z >= 0.0 && z <= 1.0;
 }
 
-float3 fogIndirectRadiance(WorldPush push, SkyState sky, float3 position, float3 viewDirection,
+float3 fogIndirectRadiance(WorldPush push, SkyState sky, float3 position,
                            uint cellHash, out float guideHitDistance, out float guideCoverage) {
     guideHitDistance = 0.0;
     guideCoverage = 0.0;
@@ -534,12 +530,9 @@ float3 fogIndirectRadiance(WorldPush push, SkyState sky, float3 position, float3
     float maxRayDistance = max(FOG_RAY_TMIN + 0.001, min(pc.grid.w, FOG_LOCAL_MAX_DISTANCE));
     for (uint sample = 0u; sample < samples; sample++) {
         uint sequence = push.frameIndex * samples + sample + (cellHash & 7u);
-        float phasePdf;
-        float3 direction = fogPhaseDirection(viewDirection, pc.settings.x, fogSequence2(sequence, cellHash), phasePdf);
-        // The secondary direction is sampled from the HG phase itself. Keep the explicit phase/PDF ratio
-        // in the estimator rather than silently assuming a uniform direction distribution.
-        float phaseWeight = fogHg(dot(direction, -viewDirection), pc.settings.x)
-                / max(phasePdf, 1.0e-6);
+        // Uniform sphere sampling against an isotropic phase makes the phase/PDF ratio exactly one, so
+        // the estimator is the plain mean of incident radiance over the sphere.
+        float3 direction = fogUniformSphereDirection(fogSequence2(sequence, cellHash));
         float3 origin = position + direction * FOG_RAY_TMIN;
         RayDesc ray;
         ray.Origin = origin;
@@ -552,19 +545,23 @@ float3 fogIndirectRadiance(WorldPush push, SkyState sky, float3 position, float3
         while (query.Proceed()) {
         }
         if (query.CommittedStatus() == COMMITTED_NOTHING) {
-            radiance += fogSkyRadiance(sky, direction) * phaseWeight;
+            radiance += fogSkyRadiance(sky, direction);
         } else {
             float hitDistance = query.CommittedRayT();
             float3 hitPosition = origin + direction * hitDistance;
             float3 surface;
+            guideHitDistance += saturate(hitDistance / maxRayDistance);
+            guideCoverage += 1.0;
             if (fogSceneRadiance(push, hitPosition, surface)) {
-                radiance += surface * phaseWeight;
-                guideHitDistance += saturate(hitDistance / maxRayDistance);
-                guideCoverage += 1.0;
+                radiance += surface;
             } else {
-                // A surface outside the primary view has no stable screen radiance; classify it as a sky-like
-                // miss rather than allowing a stale surface history to cross the frustum boundary.
-                radiance += fogSkyRadiance(sky, direction) * phaseWeight;
+                // A surface outside the primary view has no screen radiance to read, but it is still an
+                // occluder: substituting the unattenuated sky would report the brightest possible answer
+                // for the one direction known to be blocked, and the resulting two-mode estimator is what
+                // turns a low sample count into speckle. Approximate a single diffuse bounce off the
+                // unknown surface instead, which stays on the correct side of the true value and keeps
+                // neighbouring froxels within the same order of magnitude.
+                radiance += fogSkyRadiance(sky, direction) * FOG_OFFSCREEN_BOUNCE_ALBEDO;
             }
         }
     }
@@ -588,6 +585,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     uint froxelHash = fogPcg((froxel.x + froxel.y * gridX + froxel.z * gridX * gridY)
             ^ push.frameIndex * 2654435761u);
     float2 centerUv = (float2(froxel.xy) + 0.5) / float2(gridX, gridY);
+    float currentFroxelZ = float(froxel.z) / max(float(gridZ - 1u), 1.0);
     float currentPrimaryDepth = saturate(depthImage.SampleLevel(centerUv, 0.0).r);
     float3 viewRay;
     float3 position = fogFroxelPositionAt(push, centerUv,
@@ -646,7 +644,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     uint giHash = fogPcg(giLinear ^ 0x9e3779b9u);
     float giHitDistance;
     float giCoverage;
-    float3 indirect = fogIndirectRadiance(push, sky, position, viewDirection,
+    float3 indirect = fogIndirectRadiance(push, sky, position,
             giHash, giHitDistance, giCoverage);
     // Keep the second moment from the unfiltered current estimate. Storing the square of the already
     // blended mean makes the variance collapse toward zero and turns the moment lane into decoration.
@@ -673,7 +671,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         // keeps a bright shaft from being dragged into a newly revealed occluder.
         float3 directLimit = direct * 2.0 + max(direct * 0.10, float3(0.01));
         historyRadiance = min(historyRadiance, directLimit);
-        float currentFroxelZ = float(froxel.z) / max(float(gridZ - 1u), 1.0);
         float depthValidation = abs(previousZ - currentFroxelZ) > 0.18 ? 0.0
                 : saturate(1.0 - abs(previousZ - currentFroxelZ) * 3.0);
         float directConfidence = dot(max(direct, float3(0.0)), FOG_LUMA) > 1.0e-5 ? 1.0 : 0.0;
@@ -712,8 +709,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (hasHistoryCoordinates && pc.temporalSettings.x > 0.0 && pc.giSettings.x > 0.0) {
         previousGiGuide = fogHistorySample4(giAuxHistory, previousUv, previousZ, pc.grid.xyz);
         giHistorySample = fogGiHistorySpatialSample4(giHistory, giAuxHistory,
-                previousUv, previousZ, pc.grid.xyz, currentGuide,
-                float(froxel.z) / max(float(gridZ - 1u), 1.0),
+                previousUv, previousZ, pc.grid.xyz, currentGuide, currentFroxelZ,
                 max(pc.spatialSettings.x, 0.0), giHistoryGuideWeight,
                 giNeighborhoodMinLuma, giNeighborhoodMaxLuma);
         float3 historyRadiance = giHistorySample.rgb * FOG_RADIANCE_SCALE;
@@ -725,10 +721,22 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                 giNeighborhoodMinLuma * FOG_RADIANCE_SCALE,
                 giNeighborhoodMaxLuma * FOG_RADIANCE_SCALE);
         float historyConfidence = saturate(previousGiGuide.w);
-        float historyAgeWeight = exp(-max(previousGiGuide.z - 1.0, 0.0) * 0.02);
-        float weight = clamp(pc.temporalSettings.x * giHistoryGuideWeight
-                * exp(-0.55 * motionInFroxels) * translationPenalty * primaryDepthWeight
-                * max(0.25, historyConfidence) * historyAgeWeight, 0.0, 0.92);
+        // The indirect field is view independent, so reprojection alone resolves camera rotation and
+        // screen-space froxel motion carries no information about whether the history is still valid.
+        // Only translation moves the froxel through the medium, and the running mean is what sets the
+        // steady-state weight; the guides attenuate rather than reject so a two-ray change in the
+        // sky/surface split cannot restart the accumulation.
+        float accumulatedSamples = clamp(previousGiGuide.z, 0.0, FOG_GI_MAX_AGE);
+        float progressiveWeight = accumulatedSamples / (accumulatedSamples + 1.0);
+        float giTranslationPenalty = exp(-0.12 * length(push.camDelta));
+        float guideAttenuation = lerp(0.55, 1.0, saturate(giHistoryGuideWeight));
+        float depthAttenuation = lerp(0.60, 1.0, saturate(primaryDepthWeight));
+        // A jump across froxel depth cells is a genuine disocclusion rather than a noisy guide, so it
+        // still rejects outright instead of being attenuated.
+        float froxelDepthGate = abs(previousZ - currentFroxelZ) > 0.22 ? 0.0 : 1.0;
+        float weight = clamp(min(progressiveWeight, pc.temporalSettings.x)
+                * guideAttenuation * depthAttenuation * giTranslationPenalty * froxelDepthGate
+                * max(0.5, historyConfidence), 0.0, FOG_GI_MAX_BLEND);
         giHistoryBlendWeight = weight;
         indirect = lerp(indirect, historyRadiance, weight);
     }
@@ -747,13 +755,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float historyAge = 1.0;
     float historyConfidenceOut = giCoverage > 0.0 ? 0.75 : 0.5;
     if (giHistoryBlendWeight > 0.001 && previousGiGuide.w > 0.0) {
-        // Keep the stochastic hit guide itself low frequency. Reusing it with the same confidence as the
-        // radiance prevents the next frame from rejecting a valid history solely because two rays changed
-        // their sky/surface classification bins.
-        float guideReuse = min(giHistoryBlendWeight * 0.75, 0.75);
+        // Keep the stochastic hit guide itself low frequency. Accumulating it on the same schedule as the
+        // radiance prevents the next frame from attenuating a valid history solely because two rays
+        // changed their sky/surface classification bins.
+        float guideReuse = min(giHistoryBlendWeight, 0.95);
         resolvedGuideHitDistance = lerp(giHitDistance, previousGiGuide.x, guideReuse);
         resolvedGuideCoverage = lerp(giCoverage, previousGiGuide.y, guideReuse);
-        historyAge = min(previousGiGuide.z + 1.0, 64.0);
+        historyAge = min(previousGiGuide.z + 1.0, FOG_GI_MAX_AGE);
         historyConfidenceOut = saturate(lerp(giCoverage > 0.0 ? 0.75 : 0.5,
                 previousGiGuide.w, guideReuse));
     }

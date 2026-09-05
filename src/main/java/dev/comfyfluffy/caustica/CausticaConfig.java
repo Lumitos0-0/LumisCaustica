@@ -598,7 +598,7 @@ public final class CausticaConfig {
             public static final FloatSetting DIRECT_ANISOTROPY =
                     clampedFloat("caustica.rt.fog.directAnisotropy", "fog.direct-anisotropy", 0.78f, -0.95f, 0.95f);
             public static final FloatSetting GI_TEMPORAL_BLEND =
-                    clampedFloat("caustica.rt.fog.giTemporalBlend", "fog.gi-temporal-blend", 0.78f, 0.0f, 0.95f);
+                    clampedFloat("caustica.rt.fog.giTemporalBlend", "fog.gi-temporal-blend", 0.97f, 0.0f, 0.995f);
             public static final FloatSetting DIRECT_TEMPORAL_BLEND =
                     clampedFloat("caustica.rt.fog.directTemporalBlend", "fog.direct-temporal-blend", 0.72f, 0.0f, 0.95f);
             public static final FloatSetting LOCAL_TEMPORAL_BLEND =
