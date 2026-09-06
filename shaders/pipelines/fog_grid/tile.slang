@@ -110,7 +110,12 @@ public float3 fogTileTransmittance(float3 p, float3 waterTint,
     return float3(1.0, 1.0, 1.0);
 }
 
-/** Sky openness factor (1 = clear, 0 = blocked) for one sample: the sky-ambient term's occlusion. */
+/** Sky openness factor (1 = clear, 0 = blocked) for ONE BLOCK of the sky-ambient occlusion walk: the
+ *  sky-ambient term's per-block transmittance. The openness bake samples every block along each lobe, so
+ *  any ≥1-block occluder is guaranteed to land on a sample (an 8-block-spaced walk could fall between a
+ *  thin wall and skip it entirely — the "fog ignores blocks" leak). These per-block factors are the old
+ *  per-8-block-step values raised to 1/8, so the depth response is unchanged: a 8-block run of cutout
+ *  still opens 0.7, of glass 0.92, of water 0.6. */
 public float fogTileOpenness(float3 p, inout uint64_t cachedTileAddr, inout int cachedSx,
                              inout int cachedSy, inout int cachedSz) {
     uint tile = 0u;
@@ -124,13 +129,13 @@ public float fogTileOpenness(float3 p, inout uint64_t cachedTileAddr, inout int 
         return 0.0;
     }
     if (cls == 2u) {
-        return 0.7;
+        return 0.956396; // 0.7^(1/8): one block of cutout foliage
     }
     if (cls == 3u) {
-        return 0.92;
+        return 0.989633; // 0.92^(1/8): one block of translucent glass/ice
     }
     if (cls == 4u) {
-        return 0.6;
+        return 0.938139; // 0.6^(1/8): one block of water
     }
     return 1.0;
 }

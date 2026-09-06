@@ -156,9 +156,12 @@ float3 decodeFogPacked(uint packed) {
 // solid geometry and made distant edges soft/displaced. Nearest keeps shadow edges binary and cell-exact
 // at every distance; the deterministic world-pinned lattice makes the resulting jaggies static, so
 // DLSS-RR temporally smooths them instead of smearing a stochastic edge. Ring boundaries (64/128/256
-// blocks) are crossfaded per level so the cascade switch never pops. `tinted` reports whether the fetched
-// column was baked with a tinted cutout/translucent material (stained glass, leaves, water): for those
-// samples the march reads the per-cell tint probe cache instead of the grey approximation.
+// blocks) are crossfaded per level so the cascade switch never pops. The bake stores a CONSERVATIVE
+// per-channel min over sub-columns (see build.comp.slang), so the coarse levels are never brighter than
+// the fine levels at a shared boundary — the crossfade therefore blends agreement, not a leak. `tinted`
+// reports whether the fetched column was baked with a tinted cutout/translucent material (stained glass,
+// leaves, water): for those samples the march reads the per-cell tint probe cache instead of the grey
+// approximation.
 public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, float3 up,
                                       float3 anchor, out bool tinted) {
     // rel is against the same world-pinned lattice anchor the bake used (sky.fogVolumeAnchor), so a world
@@ -277,16 +280,18 @@ uint fogProbeCell(float uw, float vw, float zw) {
     return ConstPtr<uint32_t>(pc.fogProbeAddr)[uint((z * FOG_PROBE_CELLS + v) * FOG_PROBE_CELLS + u)];
 }
 
-// Sky openness for the four lobes at this cell (8-block cells, ±128 blocks). Out of range = fully open.
+// Sky openness for the four lobes at this cell (8-block cells, ±128 blocks). Out of range CLAMPS to the
+// nearest boundary cell instead of assuming fully open: the bake already walks 512 blocks outward from a
+// boundary cell, so the boundary value is the best far-field occlusion estimate, and "open" past the grid
+// was exactly how distant fog glowed through terrain just outside the cache window.
 float4 fogOpenness(float uw, float vw, float zw) {
     float4 open = float4(1.0, 1.0, 1.0, 1.0);
     if (pc.fogOpennessAddr == 0u) {
         return open;
     }
     float halfBlocks = float(FOG_OPENNESS_HALF * FOG_OPENNESS_SIZE);
-    if (abs(uw) >= halfBlocks || abs(vw) >= halfBlocks || abs(zw) >= halfBlocks) {
-        return open;
-    }
+    // floor before clamp: adding halfBlocks first keeps the division non-negative, and clamp handles the
+    // truly out-of-range side, so the same expression serves both in-range and boundary cases.
     int u = clamp(int(floor((uw + halfBlocks) / float(FOG_OPENNESS_SIZE))), 0, FOG_OPENNESS_CELLS - 1);
     int v = clamp(int(floor((vw + halfBlocks) / float(FOG_OPENNESS_SIZE))), 0, FOG_OPENNESS_CELLS - 1);
     int z = clamp(int(floor((zw + halfBlocks) / float(FOG_OPENNESS_SIZE))), 0, FOG_OPENNESS_CELLS - 1);

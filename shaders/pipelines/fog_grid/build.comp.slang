@@ -13,6 +13,11 @@
 // (u,v,z) stores transmittance from that cell to the cube's +z face (z = light direction), so a fog
 // sample's terrain transmittance is one fetch per level chained at the shared boundaries — the same
 // telescoping ratio the atmosphere LUTs use, but in a cache that costs a few fetches instead of a ray.
+// The value is the per-channel MIN over a small grid of sub-columns (2x2 at levels 0-1, 4x4 at level 2,
+// 3x3 at level 3), sampled at block centers so the global lattice has no gaps: an occluder anywhere inside
+// the cell footprint darkens the whole cell, so light can never tunnel past a thin wall that fell between
+// cell centers. Conservative by design; the only cost is a shadow up to one sub-column spacing fatter at
+// coarse distances, where the fog is fading anyway.
 //
 // The section grid is indexed by 16-block-aligned world coordinates: the grid's origin is the player's
 // section at the last recenter, and gridShift = terrain rebase base − grid origin (blocks) maps the
@@ -95,14 +100,48 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float vw = (float(cy) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
         float3 base = anchor + light.dir * zw + right * uw + up * vw;
 
+        // Conservative coverage: the cell answer is the per-channel MIN over a small grid of sub-columns,
+        // so an occluder anywhere inside the cell footprint darkens the cell. The old single center column
+        // meant a thin wall inside the cell but off the center line was invisible to the whole cell — the
+        // fog sample at the wall's actual column then read "clear" from the neighboring cell and leaked.
+        // The offsets are BLOCK CENTERS (half-integers in the cell lattice), not integers: integer-aligned
+        // offsets leave periodic holes in the global sample lattice (a 1-block wall straddling a hole is
+        // missed), while centered offsets tile the whole light-space line with spacing 1 — every width-≥1
+        // interval contains a sample, so an axis-aligned wall can never fall between samples, and any wall
+        // a few blocks tall is caught through the other axis regardless of its angle.
+        //  Level 0/1 (1/2-block cells): 2x2, spacing 1 (0.5 at level 0) — exact.
+        //  Level 2   (4-block cells):   4x4, spacing 1 — exact (covers 256 blocks out).
+        //  Level 3   (8-block cells):   3x3, spacing 2 — covers the cell; a feature is only missable if it
+        //  is shorter than ~2 blocks in BOTH light-space axes at 256+ blocks, where fog is fading.
+        // The per-channel min also makes the coarse chains agree with the fine ones at ring boundaries, so
+        // the crossfade can no longer produce a half-lit band.
+        int cols = level == 2 ? 4 : (level <= 1 ? 2 : 3);
+        float subGridStep = level == 0 ? 0.5 : (level <= 2 ? 1.0 : 2.0);
         float3 cellT = float3(1.0, 1.0, 1.0);
         bool cellColored = false;
-        for (int s = 0; s < substeps; s++) {
-            float zoff = ((float(s) + 0.5) / float(substeps) - 0.5) * size;
-            bool colored;
-            cellT *= fogTileTransmittance(base + light.dir * zoff, waterTint,
-                    cachedTileAddr, cachedSx, cachedSy, cachedSz, colored);
-            cellColored = cellColored || colored;
+        for (int j = 0; j < cols; j++) {
+            float voff = (float(j) - float(cols - 1) * 0.5) * subGridStep;
+            for (int i = 0; i < cols; i++) {
+                float uoff = (float(i) - float(cols - 1) * 0.5) * subGridStep;
+                float3 colBase = base + right * uoff + up * voff;
+                float3 colT = float3(1.0, 1.0, 1.0);
+                bool colColored = false;
+                for (int s = 0; s < substeps; s++) {
+                    float zoff = ((float(s) + 0.5) / float(substeps) - 0.5) * size;
+                    bool colored;
+                    colT *= fogTileTransmittance(colBase + light.dir * zoff, waterTint,
+                            cachedTileAddr, cachedSx, cachedSy, cachedSz, colored);
+                    colColored = colColored || colored;
+                }
+                cellT = float3(min(cellT.x, colT.x), min(cellT.y, colT.y), min(cellT.z, colT.z));
+                cellColored = cellColored || colColored;
+                if (cellT.x == 0.0 && cellT.y == 0.0 && cellT.z == 0.0) {
+                    break; // an opaque sub-column; the min cannot get darker
+                }
+            }
+            if (cellT.x == 0.0 && cellT.y == 0.0 && cellT.z == 0.0) {
+                break;
+            }
         }
         columnColored = columnColored || cellColored;
         backT *= cellT;

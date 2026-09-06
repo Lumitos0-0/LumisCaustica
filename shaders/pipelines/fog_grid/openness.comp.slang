@@ -5,9 +5,11 @@
 // Layout: 32^3 RGBA8 cells of 8 blocks in the SAME world-pinned light-space lattice as the transmittance
 // volume (sky.fogVolumeAnchor), covering ±128 blocks. Each channel is one sky lobe: the four directions
 // ±lightRight/±lightUp each biased 0.5 toward the world zenith (every lobe is ~90° from the dominant body,
-// so the sun/moon DISC never lands on a lobe). The value is the terrain only: solid→0, cutout→0.7,
-// translucent→0.92, water→0.6, empty→1.0, multiplied over 32 × 8-block steps outward (256-block reach;
-// beyond that the path is assumed open).
+// so the sun/moon DISC never lands on a lobe). The value is the terrain only: each block of the walk
+// contributes its per-block openness factor (solid→0, cutout→0.9564, translucent→0.9896, water→0.9381,
+// empty→1.0 — see tile.slang), multiplied over 512 ONE-BLOCK steps outward (512-block reach, bounded by
+// the section grid ±512 blocks). Sampling every block means a wall thinner than a cell can never fall
+// between samples and be "ignored": any ≥1-block occluder along a lobe is hit.
 //
 // The lobe directions MUST stay in lock-step with fog.slang's fogSkyLobes(): the march evaluates the same
 // four directions, so the openness the bake stored matches the lobes the march weights.
@@ -23,7 +25,7 @@ import tile;
 
 public static const int FOG_OPENNESS_CELLS = 32;
 public static const int FOG_OPENNESS_SIZE  = 8;    // blocks per cell
-public static const int FOG_OPENNESS_STEPS = 32;   // 8-block steps = 256-block reach
+public static const int FOG_OPENNESS_STEPS = 512;  // one-block steps = 512-block reach
 
 void fogSkyLobeDirs(float3 right, float3 up, out float3 d0, out float3 d1,
                     out float3 d2, out float3 d3) {
@@ -62,22 +64,28 @@ void main(uint3 tid : SV_DispatchThreadID) {
     float vw = (float(tid.y) + 0.5 - float(FOG_OPENNESS_CELLS / 2)) * FOG_OPENNESS_SIZE;
     float3 center = anchor + light.dir * zw + right * uw + up * vw;
 
-    uint64_t cachedTileAddr = 0u;
-    int cachedSx = 0x7fffffff;
-    int cachedSy = 0x7fffffff;
-    int cachedSz = 0x7fffffff;
+    // One tile cache per lobe: consecutive one-block steps of a lobe stay inside a 16-block tile, so each
+    // lobe keeps its own cache instead of the four lobes evicting each other's tile every step.
+    uint64_t tile0 = 0u;
+    uint64_t tile1 = 0u;
+    uint64_t tile2 = 0u;
+    uint64_t tile3 = 0u;
+    int s0x = 0x7fffffff, s0y = 0x7fffffff, s0z = 0x7fffffff;
+    int s1x = 0x7fffffff, s1y = 0x7fffffff, s1z = 0x7fffffff;
+    int s2x = 0x7fffffff, s2y = 0x7fffffff, s2z = 0x7fffffff;
+    int s3x = 0x7fffffff, s3y = 0x7fffffff, s3z = 0x7fffffff;
 
     float o0 = 1.0;
     float o1 = 1.0;
     float o2 = 1.0;
     float o3 = 1.0;
     for (int s = 0; s < FOG_OPENNESS_STEPS; s++) {
-        float t = float(s) * FOG_OPENNESS_SIZE + FOG_OPENNESS_SIZE * 0.5;
+        float t = float(s) + 0.5; // one sample per block, centered in the block
         float3 p = center;
-        o0 *= fogTileOpenness(p + d0 * t, cachedTileAddr, cachedSx, cachedSy, cachedSz);
-        o1 *= fogTileOpenness(p + d1 * t, cachedTileAddr, cachedSx, cachedSy, cachedSz);
-        o2 *= fogTileOpenness(p + d2 * t, cachedTileAddr, cachedSx, cachedSy, cachedSz);
-        o3 *= fogTileOpenness(p + d3 * t, cachedTileAddr, cachedSx, cachedSy, cachedSz);
+        o0 *= fogTileOpenness(p + d0 * t, tile0, s0x, s0y, s0z);
+        o1 *= fogTileOpenness(p + d1 * t, tile1, s1x, s1y, s1z);
+        o2 *= fogTileOpenness(p + d2 * t, tile2, s2x, s2y, s2z);
+        o3 *= fogTileOpenness(p + d3 * t, tile3, s3x, s3y, s3z);
         if (o0 + o1 + o2 + o3 <= 1.0e-4) {
             break;
         }
