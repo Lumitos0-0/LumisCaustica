@@ -1064,11 +1064,16 @@ public final class RtComposite {
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
             // submerged, fixing the air→water first-segment orientation), volumetric air fog (bit 1,
-            // gated by the look package so a disabled effect costs one flag test in the shaders) and
-            // animated water normals.
+            // gated by the look package so a disabled effect costs one flag test in the shaders), the
+            // fog ambient term (bit 2, debug toggle isolating the sky-multiscatter in-scatter) and
+            // animated water normals. The two fog debug toggles are read here per frame, so flipping
+            // them in Video Settings applies on the next frame with no pipeline rebuild.
             int flags = 0;
-            if (LOOK.fog().enabled()) {
+            if (LOOK.fog().enabled() && CausticaConfig.Rt.Composite.FOG.value()) {
                 flags |= 0b10;
+                if (CausticaConfig.Rt.Composite.FOG_AMBIENT.value()) {
+                    flags |= 0b100;
+                }
             }
             var level = Minecraft.getInstance().level;
             if (level != null) {

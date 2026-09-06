@@ -45,7 +45,8 @@ public static const int   FOG_STEPS = 12;
 public static const float FOG_MIN_DENSITY = 1.0e-4; // per block; below this a sample fires no visibility ray
 
 public struct FogState {
-    public bool   enabled;
+    public bool   enabled;         // bit 1 of flags — whole effect
+    public bool   ambient;         // bit 2 of flags — sky-multiscatter ambient in-scatter
     public float  density;         // per-block scattering at the fog base
     public float  mieFraction;     // 0 = Rayleigh phase, 1 = Cornette-Shanks
     public float  mieG;            // forward-scatter anisotropy of the Mie part
@@ -59,6 +60,7 @@ public struct FogState {
 public FogState fogState(WorldPush push) {
     FogState f;
     f.enabled = (push.flags & 2u) != 0u;
+    f.ambient = (push.flags & 4u) != 0u;
     f.density = max(push.fogLook0.x, 0.0);
     f.mieFraction = clamp(push.fogLook0.y, 0.0, 1.0);
     f.scaleHeight = max(push.fogLook0.z, 1.0);
@@ -149,11 +151,16 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
     float jitter = rndf(marchSeed);
     // One sky-occlusion probe per march feeds the ambient term: the multiscatter LUT is light already
     // in the sky, so it must not light fog behind a roof. Single ray, shared by every step — coherent,
-    // and it stays a rough heuristic rather than a second per-sample cost.
-    float3 mid = ro + rd * (tEnd * 0.5);
-    VisibilityResult skyVis = visibility(mid, float3(0.0, 1.0, 0.0), 10000.0);
-    float skyVisible = max(skyVis.transmittance.x,
-            max(skyVis.transmittance.y, skyVis.transmittance.z));
+    // and it stays a rough heuristic rather than a second per-sample cost. Debug toggle: with the
+    // ambient term off (flags bit 2) the probe is not fired at all, so the direct-beam-only test costs
+    // the same as a plain fog-off frame minus the march.
+    float skyVisible = 0.0;
+    if (fog.ambient) {
+        float3 mid = ro + rd * (tEnd * 0.5);
+        VisibilityResult skyVis = visibility(mid, float3(0.0, 1.0, 0.0), 10000.0);
+        skyVisible = max(skyVis.transmittance.x,
+                max(skyVis.transmittance.y, skyVis.transmittance.z));
+    }
 
     for (int i = 0; i < FOG_STEPS; i++) {
         float u0 = (float(i) + jitter) / float(FOG_STEPS);
@@ -202,11 +209,16 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         float3 direct = sigmaS * (phase * (light.illuminance * bt709ToAcesCg(sampleRelT) * vis.transmittance));
 
         // Ambient: second-and-higher order atmosphere light per unit illuminance, both bodies, with one
-        // coarse terrain-sky occlusion probe so enclosed fog does not glow.
-        float3 ambient709 = sampleMultiScatter(multiScatterLut, radiusKm, sky.sunDir.y) * sky.sunIlluminance
-                + sampleMultiScatter(multiScatterLut, radiusKm, sky.moonDir.y) * sky.moonIlluminance;
-        float3 ambient = sigmaS * bt709ToAcesCg(ambient709)
-                * float3(skyVisible, skyVisible, skyVisible);
+        // coarse terrain-sky occlusion probe so enclosed fog does not glow. Skipped when the debug
+        // toggle disables it, leaving the direct beam term as the only fog light.
+        float3 ambient = float3(0.0, 0.0, 0.0);
+        if (fog.ambient) {
+            float3 ambient709 = sampleMultiScatter(multiScatterLut, radiusKm, sky.sunDir.y)
+                    * sky.sunIlluminance
+                    + sampleMultiScatter(multiScatterLut, radiusKm, sky.moonDir.y) * sky.moonIlluminance;
+            ambient = sigmaS * bt709ToAcesCg(ambient709)
+                    * float3(skyVisible, skyVisible, skyVisible);
+        }
 
         // Analytic constant-medium segment integral, same form the sky's raymarch uses.
         float3 scattered = direct + ambient;

@@ -30,6 +30,12 @@
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 
+	"caustica.options.rt.fog": "Volumetric Fog",
+	"caustica.options.rt.fog.tooltip": "Ray-traced air fog with direct sun/moon beams (per-sample RT visibility) and sky-ambient glow. Only disables: it cannot override a look package whose fog is off.",
+
+	"caustica.options.rt.fogAmbient": "Fog Ambient (GI)",
+	"caustica.options.rt.fogAmbient.tooltip": "The sky multiple-scattering light that fog scatters toward the eye — the ambient glow, not the sun beams. Toggle off to isolate the direct beam term and test the sky-occlusion probe.",
+
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",
 

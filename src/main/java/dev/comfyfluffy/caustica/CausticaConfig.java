@@ -535,6 +535,15 @@ public final class CausticaConfig {
                     clampedInt("caustica.rt.maxBounces", "composite.max-bounces", 4, 2, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("caustica.rt.waterWaves", "composite.water-waves", true);
+            // Debug/QA toggles for the volumetric air fog, read per frame by RtComposite so they apply
+            // immediately. FOG gates the whole effect (anded with the look package's fog.enabled, so it
+            // can only disable, never re-enable a look that opted out); FOG_AMBIENT isolates the
+            // sky-multiscatter ambient in-scatter from the direct beam, which also skips the ambient
+            // term's one-ray sky-occlusion probe.
+            public static final BooleanSetting FOG =
+                    bool("caustica.rt.fog", "composite.fog", true);
+            public static final BooleanSetting FOG_AMBIENT =
+                    bool("caustica.rt.fogAmbient", "composite.fog-ambient", true);
             // Sun/moon angular radii and the noon south tilt moved into the versioned look package
             // (look.json "sky"): they shape the sky alongside the exposure curve, the LMT and the
             // photometric anchors that were already authored there, and splitting them across two

@@ -53,7 +53,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit1 volumetric air fog, bit4 waves
+    public uint     flags;            // bit0 submerged, bit1 volumetric air fog, bit2 fog ambient (sky multiscatter), bit4 waves
     public uint     maxBounces;
     // ---- Sky state. Only what the CPU alone can know: Minecraft's four eased celestial angles (the
     // 26.2 timeline drives them through a cubic-bezier ease and a datapack may replace the track, so
