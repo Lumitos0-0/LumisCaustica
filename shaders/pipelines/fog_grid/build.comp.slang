@@ -35,6 +35,11 @@ public static const int FOG_GRID_CELLS_PER_AXIS = 64; // section grid: 1024-bloc
 public static const int FOG_GRID_HALF          = 32;
 public static const int FOG_VOLUME_CELLS       = 128; // cells per axis per level
 public static const int FOG_VOLUME_LEVELS      = 4;
+// Bit 24 of the packed transmittance uint (bits 0..23 are RGB8): set when the column this cell's
+// transmittance accumulated across crosses a tinted cutout/translucent material. The cache stores only a
+// grey approximation for those (cutout 0.5, translucent 0.9), so fog.slang fires one terrain-only RT ray
+// through the real any-hit path for flagged samples to restore per-channel tint + texture alpha dapple.
+public static const uint FOG_PACK_EXACT_COLOR = 1u << 24u;
 
 // Per-1-block-sample transmittance from the section grid + occupancy tile. p is rebased world blocks.
 // The section-grid entry changes only when the sample crosses a 16-block tile boundary, so a marching
@@ -42,7 +47,9 @@ public static const int FOG_VOLUME_LEVELS      = 4;
 // dependent grid loads (the dominant bake cost). The cache is per-column and reset before each march.
 float3 fogTileTransmittance(float3 p, float3 waterTint,
                             inout uint64_t cachedTileAddr, inout int cachedSx,
-                            inout int cachedSy, inout int cachedSz) {
+                            inout int cachedSy, inout int cachedSz,
+                            out bool colored) {
+    colored = false;
     if (pcFog.fogGridAddr == 0u) {
         return float3(1.0, 1.0, 1.0); // no terrain published yet: clear, exactly like an escaping ray
     }
@@ -95,13 +102,16 @@ float3 fogTileTransmittance(float3 p, float3 waterTint,
         return float3(0.0, 0.0, 0.0);
     }
     if (cls == 2u) {
-        return float3(0.5, 0.5, 0.5); // foliage: fixed alpha, dappled by the volume's lateral jitter
+        colored = true; // foliage: grey approximation only; fog fires the exact ray for per-leaf dapple
+        return float3(0.5, 0.5, 0.5);
     }
     if (cls == 3u) {
-        return float3(0.9, 0.9, 0.9); // glass/ice: mostly transmissive
+        colored = true; // glass/ice: grey approximation only; exact ray restores per-channel tint
+        return float3(0.9, 0.9, 0.9);
     }
     if (cls == 4u) {
-        return waterTint; // one block of water, same tint the visibility any-hit uses
+        return waterTint; // one block of water; camera-biome tint is the same approximation the any-hit
+                          // would average per body, and bodies are everywhere near water (not flagged)
     }
     return float3(1.0, 1.0, 1.0);
 }
@@ -157,6 +167,10 @@ void main(uint3 tid : SV_DispatchThreadID) {
     int cachedSx = 0x7fffffff;
     int cachedSy = 0x7fffffff;
     int cachedSz = 0x7fffffff;
+    // Sticky per-column "crosses tinted cutout/translucent" flag: the march runs z from the sun side
+    // toward the camera, so once a coloured material is crossed every nearer cell (which accumulates the
+    // same transmittance) is flagged for the exact-colour ray too.
+    bool columnColored = false;
     for (int z = FOG_VOLUME_CELLS - 1; z >= 0; z--) {
         float zw = (float(z) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
         float uw = (float(cx) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
@@ -164,13 +178,18 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float3 base = anchor + light.dir * zw + right * uw + up * vw;
 
         float3 cellT = float3(1.0, 1.0, 1.0);
+        bool cellColored = false;
         for (int s = 0; s < substeps; s++) {
             float zoff = ((float(s) + 0.5) / float(substeps) - 0.5) * size;
+            bool colored;
             cellT *= fogTileTransmittance(base + light.dir * zoff, waterTint,
-                    cachedTileAddr, cachedSx, cachedSy, cachedSz);
+                    cachedTileAddr, cachedSx, cachedSy, cachedSz, colored);
+            cellColored = cellColored || colored;
         }
+        columnColored = columnColored || cellColored;
         backT *= cellT;
         uint outIndex = levelOffset + (uint(z) * FOG_VOLUME_CELLS + uint(cy)) * FOG_VOLUME_CELLS + uint(cx);
-        DevicePtr<uint32_t>(pcFog.fogVolumeAddr)[outIndex] = packTransmittance(backT);
+        DevicePtr<uint32_t>(pcFog.fogVolumeAddr)[outIndex] = packTransmittance(backT)
+                | (columnColored ? FOG_PACK_EXACT_COLOR : 0u);
     }
 }

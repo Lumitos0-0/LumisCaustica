@@ -190,8 +190,10 @@ final class RtSectionTable {
     RtAccel.Instance instanceFor(SectionGeom geom, int rbx, int rby, int rbz) {
         float[] xform = {1, 0, 0, geom.sx - rbx, 0, 1, 0, geom.sy - rby,
                 0, 0, 1, geom.sz - rbz};
-        // All bits except the fog-march entity-occlusion bit: the fog volume cache already carries
-        // terrain transmittance, so a fog visibility ray that hit terrain would darken shafts twice.
+        // All bits except the fog-march entity-occlusion bit. The fog volume cache already carries terrain
+        // transmittance, so the entity-only fog ray must not hit terrain (that would darken shafts twice).
+        // Bit 3 (MASK_FOG_TERRAIN) stays set: the bake flags tinted cutout/translucent columns and the
+        // fog march fires a terrain-only exact-colour ray through this bit for those samples.
         return new RtAccel.Instance(xform, geom.blas.deviceAddress, geom.slot,
                 RtAccel.MASK_ALL & ~RtAccel.MASK_FOG_ENTITY);
     }
