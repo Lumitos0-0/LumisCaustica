@@ -34,19 +34,23 @@ final class RtMaterialLayoutTest {
 
     @Test
     void reflectedWorldPushConstantsIncludeLightBuffersAndFrameIndex() {
-        // 12 uint64_t addresses (world/table/material, 5 light buffers, path queue, fog volume + fog grid)
-        // + frameIndex plus four bytes of reflected trailing struct padding.
-        assertEquals(104, WorldPushConstantsData.BYTE_SIZE);
+        // 15 uint64_t addresses (world/table/material, 5 light buffers, path queue, fog volume + grid +
+        // openness + probe + state) + frameIndex plus four bytes of reflected trailing struct padding.
+        assertEquals(128, WorldPushConstantsData.BYTE_SIZE);
         ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
-        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13).write(data);
+        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16)
+                .write(data);
         assertEquals(4L, data.getLong(24));  // materialTableAddr
         assertEquals(5L, data.getLong(32));  // lightBufAddr
         assertEquals(9L, data.getLong(64));  // lightGridSpanAddr (last of the light-buffer addresses)
         assertEquals(10L, data.getLong(72)); // pathQueueAddr
         assertEquals(11L, data.getLong(80)); // fogVolumeAddr
         assertEquals(12L, data.getLong(88)); // fogGridAddr
-        assertEquals(13, data.getInt(96));   // frameIndex
-        assertEquals(0, data.getInt(100));   // reflected trailing padding is deterministically zeroed
+        assertEquals(13L, data.getLong(96)); // fogOpennessAddr
+        assertEquals(14L, data.getLong(104)); // fogProbeAddr
+        assertEquals(15L, data.getLong(112)); // fogStateAddr
+        assertEquals(16, data.getInt(120));  // frameIndex
+        assertEquals(0, data.getInt(124));   // reflected trailing padding is deterministically zeroed
     }
 }
