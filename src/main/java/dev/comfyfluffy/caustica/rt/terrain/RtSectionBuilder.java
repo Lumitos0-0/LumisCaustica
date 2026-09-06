@@ -17,6 +17,7 @@ import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_ACCELERAT
 import static org.lwjgl.vulkan.KHRSynchronization2.vkCmdPipelineBarrier2KHR;
 import static org.lwjgl.vulkan.VK13.VK_ACCESS_2_SHADER_READ_BIT;
 import static org.lwjgl.vulkan.VK13.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+import static org.lwjgl.vulkan.VK13.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 import static org.lwjgl.vulkan.VK13.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
 
 /** Worker-owned terrain buffer allocation/fill and BLAS preparation. */
@@ -109,14 +110,22 @@ final class RtSectionBuilder {
             copy(cmd, prepared.upload, prepared.uvs, srcOffset, region);
             srcOffset += prepared.uvs.size;
             copy(cmd, prepared.upload, prepared.material, srcOffset, region);
+            srcOffset += prepared.material.size;
+            // The fog-grid occupancy tile is part of the same packed upload (prepare() wrote it after the
+            // material records); copy it into its resident buffer or the light-space bake reads
+            // uninitialized device memory every frame.
+            copy(cmd, prepared.upload, prepared.fogTiles, srcOffset, region);
+            srcOffset += prepared.fogTiles.size;
 
             VkMemoryBarrier2.Buffer barrier = VkMemoryBarrier2.calloc(1, stack);
             barrier.get(0).sType$Default()
                     .srcStageMask(VK_PIPELINE_STAGE_2_TRANSFER_BIT)
                     .srcAccessMask(VK_ACCESS_2_TRANSFER_WRITE_BIT)
-                    .dstStageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR)
-                    // Vertex/index build inputs are shader reads at the AS-build stage. The
-                    // ACCELERATION_STRUCTURE_READ access class is for reading AS objects themselves.
+                    // Vertex/index build inputs are shader reads at the AS-build stage; the fog tiles are
+                    // shader reads by the per-frame fog-grid compute bake. The ACCELERATION_STRUCTURE_READ
+                    // access class is for reading AS objects themselves.
+                    .dstStageMask(VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
+                            | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                     .dstAccessMask(VK_ACCESS_2_SHADER_READ_BIT);
             VkDependencyInfo dependency = VkDependencyInfo.calloc(stack).sType$Default().pMemoryBarriers(barrier);
             vkCmdPipelineBarrier2KHR(cmd, dependency);

@@ -32,6 +32,7 @@ import java.util.function.Consumer;
 import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
 import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
 import static org.lwjgl.vulkan.KHRSynchronization2.VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+import static org.lwjgl.vulkan.VK13.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 
 /**
  * Single-owner asynchronous GPU submission lane on a queue reserved by Caustica at device creation.
@@ -44,7 +45,11 @@ public final class RtGpuExecutor {
     private static final Job WAKE = new Job(null, null, null, null, null);
     private static final long TERRAIN_READ_STAGES =
             VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
-                    | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+                    | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
+                    // The per-frame fog-grid bake is a compute dispatch on the graphics queue that reads the
+                    // freshly transfer-copied occupancy tiles (and the section grid); gate it on the build
+                    // timeline like the ray tracing stages or it can race the async section upload.
+                    | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 
     private final RtContext ctx;
     private final VulkanQueue computeQueue;
