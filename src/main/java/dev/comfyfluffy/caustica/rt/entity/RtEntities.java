@@ -696,12 +696,13 @@ public final class RtEntities {
                 continue;
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
-            // Ordinary entities use MASK_ALL: the fog march's entity-only ray AND its exact-colour probe
-            // (MASK_FOG_EXACT) both see them. The first-person self stays visible to secondary rays
-            // (shadows/GI/reflections) and adds the fog-entity bit, but deliberately does NOT carry
-            // MASK_FOG_EXACT — the probe is fired close to the camera and a hit on the player's own mesh
-            // would blank it.
-            int mask = firstPersonSelf ? (MASK_SECONDARY | RtAccel.MASK_FOG_ENTITY) : MASK_ALL;
+            // Ordinary entities see every ray except the terrain-only fog tint probe
+            // (MASK_FOG_PROBE): the probe measures terrain tint, and entities have their own one-per-march
+            // fog-occlusion ray (MASK_FOG_ENTITY, still carried). The first-person self adds the
+            // fog-entity bit (the entity ray must see it, exactly like the old full-TLAS ray) but never
+            // carries the probe bit — a hit on the player's own mesh must never blank a probe.
+            int mask = firstPersonSelf ? (MASK_SECONDARY | RtAccel.MASK_FOG_ENTITY)
+                    : (MASK_ALL & ~RtAccel.MASK_FOG_PROBE);
             float ix;
             float iy;
             float iz;
@@ -1273,8 +1274,10 @@ public final class RtEntities {
         writeTableEntry(build, e.primAddr, e.indexAddr, e.uvAddr, dispAddr, 0f, 0f, 0f, e.bucketTris);
         // Block-local mesh placed by a translate-only instance transform (blockPos − rebase), like terrain.
         float[] xform = {1, 0, 0, e.bx - rbx, 0, 1, 0, e.by - rby, 0, 0, 1, e.bz - rbz};
+        // Same mask rule as captured entities: never carry the terrain-only fog tint-probe bit.
         build.instances.add(new RtAccel.Instance(xform, e.accel.deviceAddress,
-                ENTITY_BIT | (build.count & 0x7FFFFF), MASK_ALL, RtAccel.SBT_ENTITY_OFFSET));
+                ENTITY_BIT | (build.count & 0x7FFFFF), MASK_ALL & ~RtAccel.MASK_FOG_PROBE,
+                RtAccel.SBT_ENTITY_OFFSET));
         build.count++;
         build.lists.usedBlockEntities.add(e);
         build.logicalCount++;

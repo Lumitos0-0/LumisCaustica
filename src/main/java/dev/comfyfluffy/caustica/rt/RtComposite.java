@@ -727,7 +727,8 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            RtDeviceBringup.worldFogProbeRaygenShader()},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -1219,6 +1220,7 @@ public final class RtComposite {
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
                     fogGrid.volumeAddress(), terrain.fogGridAddress(),
+                    fogGrid.opennessAddress(), fogGrid.probeAddress(), fogGrid.stateAddress(),
                     (int) frameCounter).write(pushConstants);
             // Sky LUTs, from the same WorldPush slot the trace is about to read: the sky the LUT holds and
             // the sky the frame shades are built from one set of angles, not two. Recorded here (after the
@@ -1237,6 +1239,17 @@ public final class RtComposite {
                             terrain.fogGridShiftX(), terrain.fogGridShiftY(), terrain.fogGridShiftZ(),
                             terrain.fogGridVersion());
                 }
+                // Tint probe raygen (raygen index 2): one real terrain-only visibility ray per FLAGGED
+                // cell of the 64^3 near-field cache, so the march's per-channel glass tint/leaf dapple
+                // comes from a per-cell measurement instead of a per-march ray. Self-gated by the same
+                // change-check decision as the bake (skips entirely when nothing changed). Must run
+                // between the bake and the primary trace — the fog march reads the probe cache.
+                // Dispatched at exactly 64^3 lanes = 512x512 so the stride loop is one cell per lane and
+                // no render-sized lanes sit idle.
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.fogProbe")) {
+                    active.trace(cmd, 512, 512, pushConstants, 2);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // probe cache writes visible to the fog march
             }
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");

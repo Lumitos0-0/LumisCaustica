@@ -4,20 +4,30 @@
 // the same transmittance LUT for light reaching a sample — but at block scale around the camera rather
 // than planet scale.
 //
-// The single term is the direct beam:
+// Two light terms, both physically required:
 //
 //   * Direct — sun/moon light scattered toward the viewer: sigmaS * phase(cos) * E_sample * T_terrain.
 //     E_sample is the dominant body's viewer-space illuminance corrected by the transmittance-LUT ratio
-//     between the sample's column and the viewer's (the ratio, not the raw LUT — the atmosphere must
-//     never be applied twice). T_terrain comes from the per-frame light-space fog volume (see
-//     fog_grid.build.comp): a camera-centered transmittance cache built by marching light columns through
-//     the terrain mesher's occupancy tiles, so a march sample costs a handful of constant-time fetches
-//     instead of a TLAS visibility ray. The volume is rebuilt from the real section geometry every frame
-//     and reads at the same block-subcell resolution, so shafts keep their crisp canopy-sliced edges with
-//     real penumbra — but without the ray cost. The cache excludes dynamic entities and is monochrome by
-//     construction, so the march keeps AT MOST ONE RT visibility ray per segment: an entity-only occluder
-//     ray when any entity exists (flags bit 3), or one exact-colour probe at a tinted cutout/translucent
-//     column — used only for its own sample so per-sample shadowing (the cache) is never overwritten.
+//     between the sample's column and the viewer's. T_terrain comes from the per-frame light-space fog
+//     volume (fog_grid.build.comp): a world-pinned transmittance cache built by marching light columns
+//     through the terrain mesher's occupancy tiles. The fetch is the NEAREST cell on every cascade level
+//     (no bilinear tap — shadow edges stay binary and cell-exact instead of leaking a penumbra across
+//     geometry), with a crossfade across each ring boundary so the cascade switch never pops.
+//   * Sky ambient — fog scatters skylight too; without a sky term it goes black inside sun-shadow no
+//     matter how the direct ray is managed. Four sky lobes (90° from the dominant body, so the sun/moon
+//     disc never lands on one) sample this frame's sky-view LUT once per march; each step weights them by
+//     the phase + a per-cell sky-openness factor baked into a coarse 32^3 RGBA8 volume
+//     (fog_grid/openness.comp.slang) so enclosed/indoor fog does not glow.
+//
+// Colour: the volume is monochrome (solid 0, cutout 0.5, translucent 0.9 grey). A per-frame tint probe
+// (world/fog_probe.rgen.slang) fires ONE real terrain-only ray per FLAGGED cell of a 64^3 cache (1-block
+// cells, ±32 blocks) through the real any-hit path — per-channel stained-glass tint + leaf texture-alpha
+// dapple — and the march replaces its cache value with the probed colour for samples inside the window.
+// The probe is per CELL (amortized over every pixel that sees it), not per march.
+//
+// Entities are the one dynamic occluder the cache excludes: one entity-only RT ray per march from the
+// segment midpoint (stable — never derived from a tint/edge sample), so the march's RT cost is at most
+// ONE ray regardless of how much tinted geometry is visible.
 //
 // The march integrates each constant-density step analytically (Hillaire's
 // (L - L*stepT)/sigmaT form, identical to the sky module), so the count needed to avoid banding is
@@ -43,17 +53,27 @@ import bindings;
 
 public static const int   FOG_STEPS = 12;
 public static const float FOG_MIN_DENSITY = 1.0e-4; // per block; below this a sample fires no entity ray
-// A tinted column whose cache transmittance is below this is shadowed/occluded: the exact probe would
-// only measure the occluder (and in shadowed areas must never fire — that was the recent "fog disappears"
-// regression). Below this the cache's dark value is already the right answer.
-public static const float FOG_PROBE_MIN_TRANSMITTANCE = 0.05;
+// Tint probe cache (world/fog_probe.rgen.slang): 64^3 RGBA8 cells of 1 block, ±32 blocks around the
+// light-space anchor. 0 = unprobed cell (use the cache's grey value); alpha 255 = probed.
+public static const int   FOG_PROBE_CELLS = 64;
+public static const int   FOG_PROBE_HALF  = 32;
+// Sky openness volume (fog_grid/openness.comp.slang): 32^3 RGBA8 cells of 8 blocks, ±128 blocks. Each
+// channel is one sky lobe; out of range = 1.0 (assumed open).
+public static const int   FOG_OPENNESS_CELLS = 32;
+public static const int   FOG_OPENNESS_HALF  = 16;
+public static const int   FOG_OPENNESS_SIZE  = 8;
+// Four lobes approximate the hemisphere integral: Σ ΔΩ·phase_i ≈ (π/2)·Σ phase_i (each lobe covers a
+// quarter of the visible hemisphere), so a uniform sky of radiance U lights fog as U/2 — exactly the
+// isotropic hemisphere in-scatter, per unit illuminance of the sky.
+public static const float FOG_AMBIENT_WEIGHT = SKY_PI * 0.5;
 // Light-space fog volume (see fog_grid.build.comp): 4 levels, 128^3 cells each, cellSize 2^k blocks and
 // extent 64*2^k blocks around the camera. Kept in lock-step with that pass.
 public static const int   FOG_VOLUME_LEVELS = 4;
 public static const int   FOG_VOLUME_CELLS = 128;
 // Bit 24 of the packed transmittance uint (bits 0..23 are RGB8), kept in lock-step with
 // fog_grid/build.comp.slang: set by the bake for cells whose column crosses tinted cutout/translucent
-// materials, signalling the march to replace the grey approximation with one exact terrain ray.
+// materials, signalling the march to look up the per-cell tint probe cache (fog_probe.rgen) for the real
+// per-channel transmittance instead of the grey approximation.
 public static const uint  FOG_PACK_EXACT_COLOR = 1u << 24u;
 
 public struct FogState {
@@ -131,14 +151,14 @@ float3 decodeFogPacked(uint packed) {
 // sample would remap every fetch to different cells. right/up are the same frame, computed once per
 // march segment rather than re-derived per step.
 //
-// Every level uses the same deterministic 2x2 tap, but with a HALF-cell blend zone (a quarter cell each
-// side of the boundary) instead of the full cell. The old full-cell tap averaged an opaque and a clear
-// cell across the whole cell width, letting light "leak" half a cell past solid geometry; the old coarse
-// levels were nearest-fetched, so edges snapped and jumped as the camera moved through the 64/128/256-block
-// ring boundaries. The narrow tap keeps a designed penumbra that is spatially stable. `tinted` reports
-// whether the tapped cells belong to a column the bake flagged as crossing tinted cutout/translucent
-// materials (stained glass, leaves, water): the march fires one exact-colour probe for those columns,
-// because the cache's monochrome approximation cannot carry per-channel tint or texture-alpha dapple.
+// Every level is fetched at the NEAREST cell — no bilinear tap. A tap averages an opaque and a clear cell
+// across a blend zone (1 block near, up to 8 blocks at the far cascade), which is what leaked light past
+// solid geometry and made distant edges soft/displaced. Nearest keeps shadow edges binary and cell-exact
+// at every distance; the deterministic world-pinned lattice makes the resulting jaggies static, so
+// DLSS-RR temporally smooths them instead of smearing a stochastic edge. Ring boundaries (64/128/256
+// blocks) are crossfaded per level so the cascade switch never pops. `tinted` reports whether the fetched
+// column was baked with a tinted cutout/translucent material (stained glass, leaves, water): for those
+// samples the march reads the per-cell tint probe cache instead of the grey approximation.
 public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, float3 up,
                                       float3 anchor, out bool tinted) {
     // rel is against the same world-pinned lattice anchor the bake used (sky.fogVolumeAnchor), so a world
@@ -196,35 +216,12 @@ float3 fogChain(float uw, float vw, float zw, int first, out bool tinted) {
         uint levelBase = uint(k) * uint(FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * FOG_VOLUME_CELLS);
         uint zBase = uint(cz) * uint(FOG_VOLUME_CELLS * FOG_VOLUME_CELLS);
 
-        // 2x2 tap in cell-centre coordinates (cell centre of index c is at u = c, so the sample position
-        // is u + 64 - 0.5). The blend is compressed to a quarter cell around the boundary so a shadow
-        // edge stays nearly binary while remaining stable frame-to-frame.
-        float uf = u + 64.0 - 0.5;
-        float vf = v + 64.0 - 0.5;
-        int u0 = clamp(int(floor(uf)), 0, FOG_VOLUME_CELLS - 1);
-        int v0 = clamp(int(floor(vf)), 0, FOG_VOLUME_CELLS - 1);
-        int u1 = min(u0 + 1, FOG_VOLUME_CELLS - 1);
-        int v1 = min(v0 + 1, FOG_VOLUME_CELLS - 1);
-        float wu = smoothstep(0.25, 0.75, uf - floor(uf));
-        float wv = smoothstep(0.25, 0.75, vf - floor(vf));
-
-        uint p00 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                + uint(v0) * uint(FOG_VOLUME_CELLS) + uint(u0)];
-        uint p01 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                + uint(v0) * uint(FOG_VOLUME_CELLS) + uint(u1)];
-        uint p10 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u0)];
-        uint p11 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u1)];
-
-        tinted = tinted || ((p00 | p01 | p10 | p11) & FOG_PACK_EXACT_COLOR) != 0u;
-
-        float3 t00 = decodeFogPacked(p00);
-        float3 t01 = decodeFogPacked(p01);
-        float3 t10 = decodeFogPacked(p10);
-        float3 t11 = decodeFogPacked(p11);
-        float3 levelT = lerp(lerp(t00, t01, wu), lerp(t10, t11, wu), wv);
-        transmittance *= levelT;
+        int cu = clamp(int(floor(u + 64.0)), 0, FOG_VOLUME_CELLS - 1);
+        int cv = clamp(int(floor(v + 64.0)), 0, FOG_VOLUME_CELLS - 1);
+        uint packed = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
+                + uint(cv) * uint(FOG_VOLUME_CELLS) + uint(cu)];
+        tinted = tinted || (packed & FOG_PACK_EXACT_COLOR) != 0u;
+        transmittance *= decodeFogPacked(packed);
     }
     return transmittance;
 }
@@ -236,16 +233,80 @@ public FogIntegral fogNoScatter() {
     return result;
 }
 
+// Sky-ambient lobe directions. Lock-step with fog_grid/openness.comp.slang's fogSkyLobeDirs() — the
+// openness volume stores per-channel openness for EXACTLY these directions, so a change here requires the
+// same change there (and vice versa).
+void fogSkyLobeDirs(float3 lightRight, float3 lightUp, out float3 d0, out float3 d1,
+                    out float3 d2, out float3 d3) {
+    float3 upW = float3(0.0, 1.0, 0.0);
+    d0 = normalize(lightRight + upW * 0.5);
+    d1 = normalize(-lightRight + upW * 0.5);
+    d2 = normalize(lightUp + upW * 0.5);
+    d3 = normalize(-lightUp + upW * 0.5);
+}
+
+// Sky radiance from the frame's sky-view LUT (the same source world.rmiss uses, so fog ambient and
+// surface GI agree). The lobe set is ~90° from the dominant body, so the sun/moon DISC never lands on
+// a lobe — the ambient is the sky gradient, not a false extra disc.
+float3 fogSkyLobeRadiance(Sampler2D lut, SkyState sky, float3 dir) {
+    float2 sunUv = skyViewLutUv(sky.viewerRadiusKm, dir.y, lightViewCosine(dir, sky.sunDir),
+            SKY_VIEW_BODY_SUN);
+    float2 moonUv = skyViewLutUv(sky.viewerRadiusKm, dir.y, lightViewCosine(dir, sky.moonDir),
+            SKY_VIEW_BODY_MOON);
+    return lut.SampleLevel(sunUv, 0.0).rgb + lut.SampleLevel(moonUv, 0.0).rgb;
+}
+
+float fogLobePhase(float3 viewDir, float3 lobeDir, FogState fog) {
+    float cosTheta = dot(viewDir, lobeDir);
+    return lerp(rayleighPhase(cosTheta), fogMiePhase(cosTheta, fog.mieG), fog.mieFraction);
+}
+
+// Tint probe cache lookup at light-space coordinates (blocks). Returns the raw word: 0 = unprobed or out
+// of window (the caller keeps the cache's grey value), anything else is a probed cell whose RGBA8 words
+// decode to the REAL terrain transmittance at the cell centre — per-channel tint + texture-alpha dapple,
+// measured once per flagged cell by fog_probe.rgen. The alpha byte distinguishes a probed BLACK glass
+// cell (RGB 0, alpha 255) from the all-zero sentinel.
+uint fogProbeCell(float uw, float vw, float zw) {
+    if (pc.fogProbeAddr == 0u
+            || abs(uw) >= FOG_PROBE_HALF || abs(vw) >= FOG_PROBE_HALF || abs(zw) >= FOG_PROBE_HALF) {
+        return 0u;
+    }
+    int u = clamp(int(floor(uw + FOG_PROBE_HALF)), 0, FOG_PROBE_CELLS - 1);
+    int v = clamp(int(floor(vw + FOG_PROBE_HALF)), 0, FOG_PROBE_CELLS - 1);
+    int z = clamp(int(floor(zw + FOG_PROBE_HALF)), 0, FOG_PROBE_CELLS - 1);
+    return ConstPtr<uint32_t>(pc.fogProbeAddr)[uint((z * FOG_PROBE_CELLS + v) * FOG_PROBE_CELLS + u)];
+}
+
+// Sky openness for the four lobes at this cell (8-block cells, ±128 blocks). Out of range = fully open.
+float4 fogOpenness(float uw, float vw, float zw) {
+    float4 open = float4(1.0, 1.0, 1.0, 1.0);
+    if (pc.fogOpennessAddr == 0u) {
+        return open;
+    }
+    float halfBlocks = float(FOG_OPENNESS_HALF * FOG_OPENNESS_SIZE);
+    if (abs(uw) >= halfBlocks || abs(vw) >= halfBlocks || abs(zw) >= halfBlocks) {
+        return open;
+    }
+    int u = clamp(int(floor((uw + halfBlocks) / float(FOG_OPENNESS_SIZE))), 0, FOG_OPENNESS_CELLS - 1);
+    int v = clamp(int(floor((vw + halfBlocks) / float(FOG_OPENNESS_SIZE))), 0, FOG_OPENNESS_CELLS - 1);
+    int z = clamp(int(floor((zw + halfBlocks) / float(FOG_OPENNESS_SIZE))), 0, FOG_OPENNESS_CELLS - 1);
+    uint packed = ConstPtr<uint32_t>(pc.fogOpennessAddr)[uint((z * FOG_OPENNESS_CELLS + v)
+            * FOG_OPENNESS_CELLS + u)];
+    return float4(float(packed & 0xFFu), float((packed >> 8u) & 0xFFu),
+            float((packed >> 16u) & 0xFFu), float((packed >> 24u) & 0xFFu)) * (1.0 / 255.0);
+}
+
 /**
  * March the fog along one segment and return its view-integrated in-scatter plus transmittance.
  *
  * {@code ro}/{@code rd} are the segment as the path tracer holds it; {@code light} is the dominant
  * celestial light in ACEScg illuminance and {@code sky} the per-frame sky state (its viewer radius and
- * body directions are what the atmosphere ratio needs). {@code tMax} is the geometry distance (miss case
+ * body directions are what the atmosphere ratio needs). {@code skyViewLut} is the same sky-view LUT the
+ * miss shader samples, used for the sky-ambient lobes. {@code tMax} is the geometry distance (miss case
  * uses 10000; the march caps itself at {@code fog.farEnd}).
  */
 public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, uint seed,
-                                CelestialLight light, SkyState sky) {
+                                CelestialLight light, SkyState sky, Sampler2D skyViewLut) {
     FogIntegral result = fogNoScatter();
     if (!fog.enabled || fog.intensity <= 0.0 || tMax <= 0.0) {
         return result;
@@ -272,70 +333,29 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
     uint marchSeed = seed;
     marchSeed = pcg(marchSeed);
     float jitter = rndf(marchSeed);
-    // Fetch frame + anchor of the baked volume: fixed for the whole segment (the bake used the dominant
+    // Fetch frame + anchor of the baked volumes: fixed for the whole segment (the bake used the dominant
     // direction and the same world-pinned lattice), so derive them once rather than once per fog step.
     float3 lightRight;
     float3 lightUp;
     celestialSquareFrame(light.dir, lightRight, lightUp);
     float3 fogAnchor = fogVolumeAnchor(worldPush.camOffset, light.dir);
 
-    // Transmittance source for the whole march: either the exact-colour probe (below) or the entity-only
-    // ray. ONE RT ray per march segment at most in both modes — the old per-step cost was 12 full-TLAS
-    // rays per fog segment. Both are lazy, so fog entirely culled by the height/density checks or fully
-    // shadowed (cache < FOG_PROBE_MIN_TRANSMITTANCE) pays nothing.
-    //
-    // EXACT-PROBE MODE. The cache cannot carry per-channel tint (it is monochrome by construction) and its
-    // half-cell tap softens edges slightly, so for tinted cutout/translucent columns the march fires ONE
-    // ray at the first still-LIT tinted sample. Critically, the measured value is used ONLY for its own
-    // step: a probe fired inside a shadow measures ~0 at that sample, and reusing it for the rest of the
-    // march was what made fog disappear in occluded areas. Other tinted steps keep the cache MAGNITUDE
-    // (their own occlusion is correct per-cell) and take only the probe's hue; entity occlusion comes from
-    // a tint-robust ratio of the same ray, so it never darkens a march that is merely tinted.
-    bool exactProbe = false;
-    int exactStep = -1;
-    float3 exactT = float3(1.0, 1.0, 1.0);
-    float3 exactTint = float3(1.0, 1.0, 1.0);
-    float3 exactEntityT = float3(1.0, 1.0, 1.0);
-    // Probe pass: identical cheap sample evaluation as the integration loop below (no RT unless a tinted
-    // lit column is found) — keep the two in sync.
-    for (int i = 0; i < FOG_STEPS; i++) {
-        float u0 = (float(i) + jitter) / float(FOG_STEPS);
-        float u1 = (float(i + 1) + jitter) / float(FOG_STEPS);
-        float t0 = tEnd * u0 * u0;
-        float t1 = min(tEnd * u1 * u1, tEnd);
-        float dt = t1 - t0;
-        if (dt <= 0.0) {
-            continue;
-        }
-        float tMid = 0.5 * (t0 + t1);
-        float3 p = ro + rd * tMid;
-        float fade = 1.0 - smoothstep(fog.farEnd * 0.7, fog.farEnd, tMid);
-        float sigma = fogDensity(fog, p) * fade;
-        if (sigma <= FOG_MIN_DENSITY) {
-            continue;
-        }
-        uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
-        stepSeed = pcg(stepSeed);
-        float3 lightDir = light.halfAngle > 0.0
-                ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
-        bool tinted;
-        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, tinted);
-        if (tinted && any(terrainT > FOG_PROBE_MIN_TRANSMITTANCE)) {
-            exactT = visibilityFogExact(p, lightDir, 512.0).transmittance;
-            // Hue normalised by the brightest channel (stable for strongly tinted glass/leaves).
-            float tintMax = max(max(exactT.x, exactT.y), exactT.z);
-            exactTint = tintMax > 1.0e-4 ? exactT / float3(tintMax) : float3(1.0, 1.0, 1.0);
-            // Entity occlusion: entities attenuate every channel; tint attenuates channels unevenly, so
-            // the MAX per-channel ratio is the closest colour-independent estimate. Clamped to [0,1] so
-            // a tinted ray can never darken the march as if an occluder were there.
-            float3 ratio = exactT / max(terrainT, float3(1.0e-4));
-            exactEntityT = clamp(max(max(ratio.x, ratio.y), ratio.z), 0.0, 1.0);
-            exactStep = i;
-            exactProbe = true;
-            break;
-        }
-    }
+    // Sky-ambient lobes, once per march (they are view/sample independent): four directions ~90° from the
+    // dominant body so the sun/moon disc never lands on a lobe. Radiance from the SAME sky-view LUT the
+    // miss shader uses, so the fog's shadow-area colour and the surface GI agree.
+    float3 lobe0;
+    float3 lobe1;
+    float3 lobe2;
+    float3 lobe3;
+    fogSkyLobeDirs(lightRight, lightUp, lobe0, lobe1, lobe2, lobe3);
+    float3 sky0 = fogSkyLobeRadiance(skyViewLut, sky, lobe0);
+    float3 sky1 = fogSkyLobeRadiance(skyViewLut, sky, lobe1);
+    float3 sky2 = fogSkyLobeRadiance(skyViewLut, sky, lobe2);
+    float3 sky3 = fogSkyLobeRadiance(skyViewLut, sky, lobe3);
 
+    // Entity occlusion: ONE entity-only RT ray per march, from the midpoint, stable by construction
+    // (never derived from a tint/edge sample — that was the remaining "fog disappears" path). Lazy, so a
+    // march fully culled by the height/density checks pays nothing.
     bool entityRayReady = false;
     float3 entityTransmittance = float3(1.0, 1.0, 1.0);
 
@@ -368,29 +388,31 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         // DOMINANT, unjittered body direction (see fog_grid.build.comp: celestialSquareFrame(light.dir)),
         // so the fetch MUST use the same axis or the per-sample direction jitter — which rotates the
         // frame by up to the body's half-angle — makes the same world point land in different cells per
-        // sample and step, flashing through gaps. The penumbra is the volume's deterministic narrow 2x2
-        // tap; the jittered direction below is shared by the probe/entity fallback rays (same sample
-        // direction the surface NEE and the old per-ray visibility use).
+        // sample and step, flashing through gaps. The fetch is crisp-nearest, so edges stay binary and
+        // cell-exact; the jittered direction below is only for the entity ray (same sample direction the
+        // surface NEE and the old per-ray visibility use).
         uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
         stepSeed = pcg(stepSeed);
         float3 lightDir = light.halfAngle > 0.0
                 ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
         bool tinted;
         float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, tinted);
-        if (exactProbe) {
-            if (i == exactStep) {
-                // The measured ground truth for THIS sample only: per-channel tint, alpha dapple, crisp
-                // edge, and real entity occlusion in one ray.
-                terrainT = exactT;
-            } else {
-                // Cache per-sample magnitude (each step's own shadow/occlusion stays correct), the
-                // probe's hue for tinted columns, and the probe's entity estimate for every step.
-                if (tinted) {
-                    terrainT *= exactTint;
-                }
-                terrainT *= exactEntityT;
+        // Light-space cell of this sample in the volumes' shared world-pinned lattice.
+        float3 rel = p - fogAnchor;
+        float uw = dot(rel, lightRight);
+        float vw = dot(rel, lightUp);
+        float zw = dot(rel, light.dir);
+        // Near-field per-cell tint: the probe cache holds the REAL terrain transmittance (per-channel
+        // glass tint + leaf texture dapple) measured once per flagged cell by fog_probe.rgen — exact,
+        // per-sample-ish colour with NO per-march ray. Beyond the probe window (or unprobed cells) the
+        // cache's grey value is used, which is correct for tint-free columns anyway.
+        if (tinted) {
+            uint probe = fogProbeCell(uw, vw, zw);
+            if (probe != 0u) {
+                terrainT = decodeFogPacked(probe);
             }
-        } else if ((worldPush.flags & 8u) != 0u) {
+        }
+        if ((worldPush.flags & 8u) != 0u) {
             if (!entityRayReady) {
                 // One entity-occlusion ray per segment, from the midpoint. Terrain occlusion already comes
                 // from the cache (an entity-only ray never sees terrain, and re-testing it would apply it
@@ -407,6 +429,14 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
             }
             terrainT *= entityTransmittance;
         }
+        // Sky ambient: fog scatters skylight, so sun-shadow never turns it black. Per-cell openness from
+        // the baked coarse volume keeps it out of enclosed/indoor fog; lobes keep it directional.
+        float4 open = fogOpenness(uw, vw, zw);
+        float3 ambient = sigmaS * FOG_AMBIENT_WEIGHT * (
+                sky0 * fogLobePhase(rd, lobe0, fog) * open.x
+                + sky1 * fogLobePhase(rd, lobe1, fog) * open.y
+                + sky2 * fogLobePhase(rd, lobe2, fog) * open.z
+                + sky3 * fogLobePhase(rd, lobe3, fog) * open.w);
         float cosTheta = dot(rd, light.dir);
         float phase = lerp(rayleighPhase(cosTheta), fogMiePhase(cosTheta, fog.mieG), fog.mieFraction);
         float radiusKm = ATMOS_BOTTOM_KM + max(fogAltitudeKm(p), MIN_VIEWER_ALTITUDE_KM);
@@ -422,7 +452,7 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         float3 direct = sigmaS * (phase * (light.illuminance * bt709ToAcesCg(sampleRelT) * terrainT));
 
         // Analytic constant-medium segment integral, same form the sky's raymarch uses.
-        float3 scattered = direct;
+        float3 scattered = direct + ambient;
         float3 safeExtinction = max(sigmaT, float3(1.0e-6));
         result.inscatter += T * (scattered - scattered * stepT) / safeExtinction;
         T *= stepT;

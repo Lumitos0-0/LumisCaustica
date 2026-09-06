@@ -9,16 +9,15 @@ import bindings;
 
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
-// Fog-march rays (fog.slang). Instance mask bits used only by the fog march:
-//  * CULL_FOG_ENTITY (0x04): entity-only occluder ray used when no exact probe fires. Terrain must not
-//    carry it (terrain transmittance already comes from the per-frame fog grid cache and would be applied
-//    twice), while ordinary entities (0xFF) and the first-person self (0x05) do.
-//  * CULL_FOG_EXACT (0x08): the exact-colour probe — fired once per march at a tinted, still-lit column.
-//    Carried by terrain (0xFB) and ordinary/block entities (0xFF) so the ray measures per-channel tint
-//    AND entity occlusion; NOT carried by the first-person self (a camera-adjacent body hit would blank
-//    the probe) or particles (0x02).
+// Fog-march rays (fog.slang / fog_probe.rgen.slang). Instance mask bits used only by the fog family:
+//  * CULL_FOG_ENTITY (0x04): entity-only occluder ray, one per march from the segment midpoint. Terrain
+//    must not carry it (terrain transmittance already comes from the per-frame fog grid cache and would
+//    be applied twice), while ordinary entities (0xEF) and the first-person self (0x05) do.
+//  * CULL_FOG_PROBE (0x10): the terrain-only tint probe ray, fired once per flagged cell by the fog probe
+//    raygen. Carried by terrain (0xFB) only — entities get their own occlusion ray, and the first-person
+//    body (0x05) and particles (0x02) must never be able to blank the probe.
 public static const uint CULL_FOG_ENTITY = 0x04u;
-public static const uint CULL_FOG_EXACT = 0x08u;
+public static const uint CULL_FOG_PROBE = 0x10u;
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -121,14 +120,14 @@ public VisibilityResult visibilityEntities(float3 origin, float3 dir, float tmax
 }
 
 /**
- * Fog-march exact-colour probe. Fired once per march at a tinted cutout/translucent column (bake flag
- * FOG_PACK_EXACT_COLOR) that the cache still shows as lit: the real any-hit path restores per-channel
- * glass tint + texture-alpha dapple and measures entity occlusion in the same ray. Cull mask
- * CULL_FOG_EXACT is carried by terrain and ordinary/block entities but NOT by the first-person self
- * (body hits would blank the probe) or particles.
+ * Fog tint-probe ray (fog_probe.rgen.slang): one per flagged cache cell, terrain-only through the real
+ * any-hit path — cutout alpha-tests, translucent/water tint and pass through, so the result carries
+ * per-channel stained-glass tint plus leaf texture-alpha dapple. Cull mask CULL_FOG_PROBE is carried by
+ * terrain (0xFB) only: entities are handled by the fog march's entity-only ray, and the first-person
+ * body/particles must never blank the probe.
  */
-public VisibilityResult visibilityFogExact(float3 origin, float3 dir, float tmax) {
-    return visibilityMasked(origin, dir, tmax, CULL_FOG_EXACT);
+public VisibilityResult visibilityFogProbe(float3 origin, float3 dir, float tmax) {
+    return visibilityMasked(origin, dir, tmax, CULL_FOG_PROBE);
 }
 
 VisibilityResult visibilityMasked(float3 origin, float3 dir, float tmax, uint cullMask) {

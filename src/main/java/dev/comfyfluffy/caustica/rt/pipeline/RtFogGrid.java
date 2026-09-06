@@ -53,37 +53,50 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  */
 public final class RtFogGrid {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/fog_grid/";
-    // Keep in lock-step with the same-named constants in fog.slang / build.comp.slang.
+    // Keep in lock-step with the same-named constants in fog.slang / build.comp.slang / openness.comp.slang.
     public static final int VOLUME_CELLS = 128;
     public static final int VOLUME_LEVELS = 4;
     private static final int VOLUME_BYTES = VOLUME_LEVELS * VOLUME_CELLS * VOLUME_CELLS * VOLUME_CELLS * Integer.BYTES;
     private static final int GROUP_SIZE = 8;
+    // Sky-openness volume (fog_grid/openness.comp.slang): 32^3 RGBA8, 8-block cells, ±128 blocks.
+    private static final int OPENNESS_CELLS = 32;
+    private static final int OPENNESS_BYTES = OPENNESS_CELLS * OPENNESS_CELLS * OPENNESS_CELLS * Integer.BYTES;
+    // Tint probe cache (world/fog_probe.rgen.slang): 64^3 RGBA8, 1-block cells, ±32 blocks.
+    private static final int PROBE_CELLS = 64;
+    private static final int PROBE_BYTES = PROBE_CELLS * PROBE_CELLS * PROBE_CELLS * Integer.BYTES;
 
     /** Bake-state words; keep in lock-step with check.comp.slang / build.comp.slang. */
     private static final int STATE_BYTES = 3 * Integer.BYTES; // key0, key1, decision
 
     private final RtContext ctx;
     private final RtBuffer volume;
+    private final RtBuffer openness;
+    private final RtBuffer probe;
     private final RtBuffer stateBuffer;
     private final long descriptorSetLayout;
     private final long descriptorPool;
     private final long descriptorSet;
     private final long pipelineLayout;
     private final long pipeline;
+    private final long opennessPipeline;
     private final long checkPipeline;
     private boolean destroyed;
 
-    private RtFogGrid(RtContext ctx, RtBuffer volume, RtBuffer stateBuffer, long descriptorSetLayout,
-                      long descriptorPool, long descriptorSet, long pipelineLayout, long pipeline,
+    private RtFogGrid(RtContext ctx, RtBuffer volume, RtBuffer openness, RtBuffer probe,
+                      RtBuffer stateBuffer, long descriptorSetLayout, long descriptorPool,
+                      long descriptorSet, long pipelineLayout, long pipeline, long opennessPipeline,
                       long checkPipeline) {
         this.ctx = ctx;
         this.volume = volume;
+        this.openness = openness;
+        this.probe = probe;
         this.stateBuffer = stateBuffer;
         this.descriptorSetLayout = descriptorSetLayout;
         this.descriptorPool = descriptorPool;
         this.descriptorSet = descriptorSet;
         this.pipelineLayout = pipelineLayout;
         this.pipeline = pipeline;
+        this.opennessPipeline = opennessPipeline;
         this.checkPipeline = checkPipeline;
     }
 
@@ -91,6 +104,10 @@ public final class RtFogGrid {
         VkDevice vk = ctx.vk();
         RtBuffer volume = ctx.createBuffer(VOLUME_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                 "fog transmittance volume");
+        RtBuffer openness = ctx.createBuffer(OPENNESS_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+                "fog sky-openness volume");
+        RtBuffer probe = ctx.createBuffer(PROBE_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+                "fog tint probe cache");
         // Where the change-check writes the last-baked key + decision; read by the bake in the same
         // submission (barrier between). Host-visible only for the one-time sentinel below: a device-local
         // buffer's initial contents are undefined, and the sentinel must guarantee the very first check
@@ -103,6 +120,8 @@ public final class RtFogGrid {
             stateBuffer.flush();
         } catch (Throwable t) {
             stateBuffer.destroy();
+            probe.destroy();
+            openness.destroy();
             volume.destroy();
             throw t;
         }
@@ -163,12 +182,17 @@ public final class RtFogGrid {
 
             long pipeline = createComputePipeline(ctx, stack, pipelineLayout,
                     "build.comp.spv", "fog grid bake pipeline");
+            long opennessPipeline = createComputePipeline(ctx, stack, pipelineLayout,
+                    "openness.comp.spv", "fog sky-openness bake pipeline");
             long checkPipeline = createComputePipeline(ctx, stack, pipelineLayout,
                     "check.comp.spv", "fog grid change check pipeline");
-            return new RtFogGrid(ctx, volume, stateBuffer, descriptorSetLayout, descriptorPool,
-                    descriptorSet, pipelineLayout, pipeline, checkPipeline);
+            return new RtFogGrid(ctx, volume, openness, probe, stateBuffer, descriptorSetLayout,
+                    descriptorPool, descriptorSet, pipelineLayout, pipeline, opennessPipeline,
+                    checkPipeline);
         } catch (Throwable t) {
             stateBuffer.destroy();
+            probe.destroy();
+            openness.destroy();
             volume.destroy();
             throw t;
         }
@@ -177,6 +201,21 @@ public final class RtFogGrid {
     /** Device address of the packed volume the fog march samples (0 before creation). */
     public long volumeAddress() {
         return volume.deviceAddress;
+    }
+
+    /** Device address of the coarse sky-openness volume (0 before creation). */
+    public long opennessAddress() {
+        return openness.deviceAddress;
+    }
+
+    /** Device address of the per-cell tint probe cache (0 before creation). */
+    public long probeAddress() {
+        return probe.deviceAddress;
+    }
+
+    /** Device address of the bake-state words (key0, key1, decision). */
+    public long stateAddress() {
+        return stateBuffer.deviceAddress;
     }
 
     /**
@@ -194,8 +233,8 @@ public final class RtFogGrid {
                     pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(FogGridPushData.BYTE_SIZE);
             new FogGridPushData(worldPushAddress, fogGridAddress, volume.deviceAddress,
-                    stateBuffer.deviceAddress, gridShiftX, gridShiftY, gridShiftZ, fogGridVersion)
-                    .write(push);
+                    stateBuffer.deviceAddress, gridShiftX, gridShiftY, gridShiftZ, fogGridVersion,
+                    openness.deviceAddress, probe.deviceAddress).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             // Change check first: it writes a one-word decision the bake reads (barrier between), so an
             // unchanged world/sun/anchor skips the whole 8M-sample occupancy march for one tiny dispatch.
@@ -205,7 +244,13 @@ public final class RtFogGrid {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdDispatch(cmd, (VOLUME_CELLS + GROUP_SIZE - 1) / GROUP_SIZE,
                     (VOLUME_CELLS + GROUP_SIZE - 1) / GROUP_SIZE, VOLUME_LEVELS);
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // volume writes visible to raygen/miss
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // volume writes visible to the openness bake
+            // Sky-openness bake: coarse per-cell sky visibility for the fog's ambient term, same gate
+            // (early-outs inside when decision is 0). Uses the same push + descriptor set.
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, opennessPipeline);
+            VK10.vkCmdDispatch(cmd, (OPENNESS_CELLS + GROUP_SIZE - 1) / GROUP_SIZE,
+                    (OPENNESS_CELLS + GROUP_SIZE - 1) / GROUP_SIZE, OPENNESS_CELLS);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // volume/state/openness writes visible to raygen/miss
         }
     }
 
@@ -215,11 +260,14 @@ public final class RtFogGrid {
         }
         VkDevice vk = ctx.vk();
         VK10.vkDestroyPipeline(vk, checkPipeline, null);
+        VK10.vkDestroyPipeline(vk, opennessPipeline, null);
         VK10.vkDestroyPipeline(vk, pipeline, null);
         VK10.vkDestroyPipelineLayout(vk, pipelineLayout, null);
         VK10.vkDestroyDescriptorPool(vk, descriptorPool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, descriptorSetLayout, null);
         stateBuffer.destroy();
+        probe.destroy();
+        openness.destroy();
         volume.destroy();
         destroyed = true;
     }

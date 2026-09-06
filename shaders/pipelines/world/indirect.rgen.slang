@@ -102,7 +102,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, SkyState s
         if (fogIsEnabled(worldPush) && !any(medium.current.extinction > 0.0)) {
             float tMax = payload.hitT < 0.0 ? 10000.0 : payload.hitT;
             FogIntegral fog = integrateFog(fogState(worldPush), ro, rd, tMax, seed,
-                    celestialLight, sky);
+                    celestialLight, sky, skyViewLut);
             L += throughput * fog.inscatter;
             fogTrans = fog.transmittance;
         }

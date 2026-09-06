@@ -24,97 +24,15 @@
 
 import world_common;
 import sky;
+import tile;
 
-// The bake's state is one push block (world_common.FogGridPush) plus this one sampler: the dominant-light
-// choice must match world.rgen exactly, so it samples the raygen's own transmittance LUT.
-[[vk::push_constant]] FogGridPush pcFog;
-
+// The bake's state is one push block (declared by tile.slang, shared with the openness bake) plus this one
+// sampler: the dominant-light choice must match world.rgen exactly, so it samples the raygen's own
+// transmittance LUT.
 [[vk::binding(0, 0)]] Sampler2D transmittanceLut;
 
-public static const int FOG_GRID_CELLS_PER_AXIS = 64; // section grid: 1024-block radius / 16
-public static const int FOG_GRID_HALF          = 32;
 public static const int FOG_VOLUME_CELLS       = 128; // cells per axis per level
 public static const int FOG_VOLUME_LEVELS      = 4;
-// Bit 24 of the packed transmittance uint (bits 0..23 are RGB8): set when the column this cell's
-// transmittance accumulated across crosses a tinted cutout/translucent material. The cache stores only a
-// grey approximation for those (cutout 0.5, translucent 0.9), so fog.slang fires one terrain-only RT ray
-// through the real any-hit path for flagged samples to restore per-channel tint + texture alpha dapple.
-public static const uint FOG_PACK_EXACT_COLOR = 1u << 24u;
-
-// Per-1-block-sample transmittance from the section grid + occupancy tile. p is rebased world blocks.
-// The section-grid entry changes only when the sample crosses a 16-block tile boundary, so a marching
-// column re-fetches it once per crossed tile instead of once per step — same addresses, ~16x fewer
-// dependent grid loads (the dominant bake cost). The cache is per-column and reset before each march.
-float3 fogTileTransmittance(float3 p, float3 waterTint,
-                            inout uint64_t cachedTileAddr, inout int cachedSx,
-                            inout int cachedSy, inout int cachedSz,
-                            out bool colored) {
-    colored = false;
-    if (pcFog.fogGridAddr == 0u) {
-        return float3(1.0, 1.0, 1.0); // no terrain published yet: clear, exactly like an escaping ray
-    }
-    float3 q = p + float3(float(pcFog.gridShiftX), float(pcFog.gridShiftY), float(pcFog.gridShiftZ));
-    int sx = int(floor(q.x * (1.0 / 16.0)));
-    int sy = int(floor(q.y * (1.0 / 16.0)));
-    int sz = int(floor(q.z * (1.0 / 16.0)));
-    if (sx < -FOG_GRID_HALF || sx >= FOG_GRID_HALF
-            || sy < -FOG_GRID_HALF || sy >= FOG_GRID_HALF
-            || sz < -FOG_GRID_HALF || sz >= FOG_GRID_HALF) {
-        return float3(1.0, 1.0, 1.0);
-    }
-    if (sx != cachedSx || sy != cachedSy || sz != cachedSz) {
-        uint index = uint((sz + FOG_GRID_HALF) * FOG_GRID_CELLS_PER_AXIS * FOG_GRID_CELLS_PER_AXIS
-                + (sy + FOG_GRID_HALF) * FOG_GRID_CELLS_PER_AXIS + (sx + FOG_GRID_HALF));
-        cachedTileAddr = ConstPtr<uint64_t>(pcFog.fogGridAddr)[index];
-        cachedSx = sx;
-        cachedSy = sy;
-        cachedSz = sz;
-    }
-    if (cachedTileAddr == 0u) {
-        return float3(1.0, 1.0, 1.0); // unloaded/outside window: clear, exactly like an escaping ray
-    }
-    uint64_t tileAddr = cachedTileAddr;
-    float3 local = q - float3(float(sx * 16), float(sy * 16), float(sz * 16));
-    int bx = clamp(int(local.x), 0, 15);
-    int by = clamp(int(local.y), 0, 15);
-    int bz = clamp(int(local.z), 0, 15);
-    // Tile layout: one uint per block, x-major (by*16 + bz)*16 + bx — kept in lock-step with
-    // RtTerrainMesher's occupancy emission.
-    uint tile = ConstPtr<uint32_t>(tileAddr)[uint((by * 16 + bz) * 16 + bx)];
-    uint mask = tile & 0xFFu;
-    uint cls = (tile >> 8u) & 7u;
-    if (mask == 0u) {
-        return float3(1.0, 1.0, 1.0);
-    }
-    float3 lf = local - float3(float(bx), float(by), float(bz));
-    int sxx = min(int(lf.x * 2.0), 1);
-    int syy = min(int(lf.y * 2.0), 1);
-    int szz = min(int(lf.z * 2.0), 1);
-    uint bit = 1u << uint(sxx + syy * 2 + szz * 4);
-    if ((mask & bit) == 0u) {
-        return float3(1.0, 1.0, 1.0);
-    }
-    // Solid: any presence blocks the whole block — the ray cannot leave through a culled face without
-    // crossing one of the faces the mesher emitted (vanilla's face culling only hides faces against other
-    // solid geometry), so the interior is opaque by construction. Cutout/translucent/water keep the
-    // per-subcell behaviour: the ray passes through the open subcells exactly like the any-hit path does.
-    if (cls == 1u) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    if (cls == 2u) {
-        colored = true; // foliage: grey approximation only; fog fires the exact ray for per-leaf dapple
-        return float3(0.5, 0.5, 0.5);
-    }
-    if (cls == 3u) {
-        colored = true; // glass/ice: grey approximation only; exact ray restores per-channel tint
-        return float3(0.9, 0.9, 0.9);
-    }
-    if (cls == 4u) {
-        return waterTint; // one block of water; camera-biome tint is the same approximation the any-hit
-                          // would average per body, and bodies are everywhere near water (not flagged)
-    }
-    return float3(1.0, 1.0, 1.0);
-}
 
 uint packTransmittance(float3 t) {
     uint3 q = uint3(clamp(t, float3(0.0), float3(1.0)) * 255.0 + 0.5);
@@ -190,6 +108,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
         backT *= cellT;
         uint outIndex = levelOffset + (uint(z) * FOG_VOLUME_CELLS + uint(cy)) * FOG_VOLUME_CELLS + uint(cx);
         DevicePtr<uint32_t>(pcFog.fogVolumeAddr)[outIndex] = packTransmittance(backT)
-                | (columnColored ? FOG_PACK_EXACT_COLOR : 0u);
+                | (columnColored ? tile.FOG_PACK_EXACT_COLOR : 0u);
     }
 }

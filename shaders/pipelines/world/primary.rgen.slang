@@ -116,7 +116,7 @@ public PathSegment tracePrimary(PathSegment seg,
             CelestialLight light = dominantCelestialLight(state, transmittanceLut);
             light.illuminance = bt709ToAcesCg(light.illuminance);
             FogIntegral fog = integrateFog(fogState(worldPush), ro, rd, payload.hitT, seed,
-                    light, state);
+                    light, state, skyViewLut);
             throughput *= fog.transmittance;
             fogRadiance = fog.inscatter;
         }

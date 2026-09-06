@@ -912,11 +912,10 @@ public final class RtAccel {
      *  per-frame fog grid cache, and a terrain hit would apply it twice. */
     public static final int MASK_FOG_ENTITY = 0x04;
 
-    /** TLAS instance-mask bit 3: the fog march's exact-colour probe ({@code CULL_FOG_EXACT}), fired once
-     *  per march at a tinted cutout/translucent column. Carried by terrain AND ordinary/block entities so
-     *  the probe measures per-channel tint + entity occlusion, but NOT by the first-person self (a
-     *  camera-adjacent body hit would blank the probe) or particles. */
-    public static final int MASK_FOG_EXACT = 0x08;
+    /** TLAS instance-mask bit 4: the fog tint-probe ray ({@code CULL_FOG_PROBE}, fog_probe.rgen.slang),
+     *  one terrain-only ray per flagged cache cell. Carried by TERRAIN only — entities get their own
+     *  fog-occlusion ray, and the first-person self / particles must never be able to blank the probe. */
+    public static final int MASK_FOG_PROBE = 0x10;
 
     /**
      * A TLAS instance: a 3x4 row-major transform, the device address of its BLAS, the 24-bit

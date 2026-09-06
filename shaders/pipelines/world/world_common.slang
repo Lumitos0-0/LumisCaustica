@@ -29,6 +29,9 @@ public struct WorldPushConstants {
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
     public uint64_t fogVolumeAddr;       // per-frame light-space fog transmittance volume (0 = fog off/unbuilt)
     public uint64_t fogGridAddr;         // section-coordinate -> occupancy-tile-address table (0 = unbuilt)
+    public uint64_t fogOpennessAddr;     // 32^3 sky-openness volume for the fog ambient term
+    public uint64_t fogProbeAddr;        // per-cell tint probe cache read by the fog march (0 = fog off/unbuilt)
+    public uint64_t fogStateAddr;        // fog-grid bake state (key0, key1, decision) read by the probe raygen
     public uint frameIndex;
 };
 
@@ -55,6 +58,8 @@ public struct FogGridPush {
     public int32_t  gridShiftY;
     public int32_t  gridShiftZ;
     public int32_t  fogGridVersion;
+    public uint64_t fogOpennessAddr;  // 32^3 RGBA8 sky-openness volume, 8-block cells, ±128 blocks
+    public uint64_t fogProbeAddr;     // 64^3 RGBA8 per-cell tint probe cache, 1-block cells, ±32 blocks
 };
 
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),

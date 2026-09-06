@@ -239,6 +239,12 @@ public final class RtDeviceBringup {
         return serBackend.worldPrimaryRaygenShader;
     }
 
+    /** Third raygen of the world RT pipeline: fog tint-probe (fog_probe.rgen.spv), dispatched after the
+     *  fog grid bake. Uses the same SBT/hit shaders, only plain TraceRay — no SER variant needed. */
+    public static String worldFogProbeRaygenShader() {
+        return "fog_probe.rgen.spv";
+    }
+
     public static boolean serExtEnabled() {
         return serBackend == SerBackend.EXT;
     }
