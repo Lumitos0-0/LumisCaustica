@@ -126,29 +126,56 @@ float3 decodeFogPacked(uint packed) {
 // sample would remap every fetch to different cells. right/up are the same frame, computed once per
 // march segment rather than re-derived per step.
 //
-// The finest fetch is a deterministic 2x2 bilinear tap over the adjacent cells instead of the old ±1-cell
-// stochastic jitter. The jitter made a fixed world point pick a different cell per frame; DLSS-RR
-// temporally accumulated the dithering edge into a smear (the "incredibly blurry" shafts). The tap is a
-// designed one-cell penumbra that is spatially stable and RR-friendly. `exactColor` returns the bake's
-// flag for columns crossing tinted cutout/translucent materials, where the cache's grey approximation is
-// replaced by one exact RT ray in the caller.
+// Every level uses the same deterministic 2x2 tap, but with a HALF-cell blend zone (a quarter cell each
+// side of the boundary) instead of the full cell. The old full-cell tap averaged an opaque and a clear
+// cell across the whole cell width, letting light "leak" half a cell past solid geometry; the old coarse
+// levels were nearest-fetched, so edges snapped and jumped as the camera moved through the 64/128/256-block
+// ring boundaries. The narrow tap keeps a designed penumbra that is spatially stable; `needsExact` flags
+// samples on a significant transmittance discontinuity (or a tinted cutout/translucent column), where the
+// march replaces the interpolation with one full visibility ray.
 public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, float3 up,
-                                      float3 anchor, out bool exactColor) {
+                                      float3 anchor, out bool needsExact) {
     // rel is against the same world-pinned lattice anchor the bake used (sky.fogVolumeAnchor), so a world
     // point maps to the same cell regardless of camera position.
     float3 rel = p - anchor;
     float uw = dot(rel, right);
     float vw = dot(rel, up);
     float zw = dot(rel, lightDir);
+    float axisMax = max(abs(uw), max(abs(vw), abs(zw)));
 
     int first = 0;
     for (int k = 0; k < FOG_VOLUME_LEVELS - 1; k++) {
         float extent = 64.0 * exp2(float(k));
-        if (max(abs(uw), max(abs(vw), abs(zw))) > extent) {
+        if (axisMax > extent) {
             first = k + 1;
         }
     }
-    exactColor = false;
+
+    bool exactCoarse;
+    float3 transmittance = fogChain(uw, vw, zw, first, exactCoarse);
+    needsExact = exactCoarse;
+
+    // Crossfade with the finer level across each ring boundary (64, 128, 256 blocks): the two chains
+    // differ only by resolution, and blending over a +/-1-cell window removes the pop when `first`
+    // switches levels as the camera moves.
+    if (first > 0) {
+        float ring = 64.0 * exp2(float(first - 1));
+        float w = exp2(float(first - 1));
+        if (axisMax > ring - w) {
+            bool exactFine;
+            float3 fine = fogChain(uw, vw, zw, first - 1, exactFine);
+            float t = clamp((axisMax - (ring - w)) / (2.0 * w), 0.0, 1.0);
+            transmittance = lerp(fine, transmittance, t);
+            needsExact = needsExact || exactFine;
+        }
+    }
+    return transmittance;
+}
+
+// The telescoping chain for one starting level: level `first` at the sample's own z cell, then each
+// coarser level at the shared boundary cell (z = 32.0 cells), all with the same narrow 2x2 lateral tap.
+float3 fogChain(float uw, float vw, float zw, int first, out bool needsExact) {
+    needsExact = false;
     float3 transmittance = float3(1.0, 1.0, 1.0);
     for (int k = first; k < FOG_VOLUME_LEVELS; k++) {
         float size = exp2(float(k));
@@ -156,50 +183,74 @@ public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, f
         // fetch index is simply cellCoordinate + 64. For k == first this is the sample itself; for the
         // coarser levels it is the boundary the previous level ends at (64 * 2^(k-1) blocks = 32 cells
         // in level k), so the fetched cells tile the ray exactly once.
-        float boundary = (k == first) ? 0.0 : 32.0;
         float u = uw / size;
         float v = vw / size;
-        float z = (boundary > 0.0 ? boundary : zw / size);
-        uint levelBase = uint(k) * uint(FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * FOG_VOLUME_CELLS);
+        float z = (k == first) ? (zw / size) : 32.0;
         int cz = clamp(int(floor(z + 64.0)), 0, FOG_VOLUME_CELLS - 1);
+        uint levelBase = uint(k) * uint(FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * FOG_VOLUME_CELLS);
         uint zBase = uint(cz) * uint(FOG_VOLUME_CELLS * FOG_VOLUME_CELLS);
-        float3 levelT;
-        if (k == first) {
-            // Bilinear tap in cell-centre coordinates (cell centre of index c is at u = c, so the sample
-            // position is u + 64 - 0.5). At a cell boundary this is exactly 50/50 between the two cells —
-            // a one-cell-wide, stable penumbra instead of a stochastic smear.
-            float uf = u + 64.0 - 0.5;
-            float vf = v + 64.0 - 0.5;
-            int u0 = clamp(int(floor(uf)), 0, FOG_VOLUME_CELLS - 1);
-            int v0 = clamp(int(floor(vf)), 0, FOG_VOLUME_CELLS - 1);
-            int u1 = min(u0 + 1, FOG_VOLUME_CELLS - 1);
-            int v1 = min(v0 + 1, FOG_VOLUME_CELLS - 1);
-            float fu = clamp(uf - floor(uf), 0.0, 1.0);
-            float fv = clamp(vf - floor(vf), 0.0, 1.0);
-            uint p00 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                    + uint(v0) * uint(FOG_VOLUME_CELLS) + uint(u0)];
-            uint p01 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                    + uint(v0) * uint(FOG_VOLUME_CELLS) + uint(u1)];
-            uint p10 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                    + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u0)];
-            uint p11 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                    + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u1)];
-            exactColor = exactColor || ((p00 | p01 | p10 | p11) & FOG_PACK_EXACT_COLOR) != 0u;
-            levelT = decodeFogPacked(p00) * ((1.0 - fu) * (1.0 - fv))
-                    + decodeFogPacked(p01) * (fu * (1.0 - fv))
-                    + decodeFogPacked(p10) * ((1.0 - fu) * fv)
-                    + decodeFogPacked(p11) * (fu * fv);
-        } else {
-            int cu = clamp(int(floor(u + 64.0)), 0, FOG_VOLUME_CELLS - 1);
-            int cv = clamp(int(floor(v + 64.0)), 0, FOG_VOLUME_CELLS - 1);
-            uint packed = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
-                    + uint(cv) * uint(FOG_VOLUME_CELLS) + uint(cu)];
-            exactColor = exactColor || (packed & FOG_PACK_EXACT_COLOR) != 0u;
-            levelT = decodeFogPacked(packed);
-        }
+
+        // 2x2 tap in cell-centre coordinates (cell centre of index c is at u = c, so the sample position
+        // is u + 64 - 0.5). The blend is compressed to a quarter cell around the boundary so a shadow
+        // edge stays nearly binary while remaining stable frame-to-frame.
+        float uf = u + 64.0 - 0.5;
+        float vf = v + 64.0 - 0.5;
+        int u0 = clamp(int(floor(uf)), 0, FOG_VOLUME_CELLS - 1);
+        int v0 = clamp(int(floor(vf)), 0, FOG_VOLUME_CELLS - 1);
+        int u1 = min(u0 + 1, FOG_VOLUME_CELLS - 1);
+        int v1 = min(v0 + 1, FOG_VOLUME_CELLS - 1);
+        float wu = smoothstep(0.25, 0.75, uf - floor(uf));
+        float wv = smoothstep(0.25, 0.75, vf - floor(vf));
+
+        uint p00 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
+                + uint(v0) * uint(FOG_VOLUME_CELLS) + uint(u0)];
+        uint p01 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
+                + uint(v0) * uint(FOG_VOLUME_CELLS) + uint(u1)];
+        uint p10 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
+                + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u0)];
+        uint p11 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
+                + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u1)];
+
+        needsExact = needsExact
+                || ((p00 | p01 | p10 | p11) & FOG_PACK_EXACT_COLOR) != 0u
+                || fogTapIsEdge(p00, p01, p10, p11);
+
+        float3 t00 = decodeFogPacked(p00);
+        float3 t01 = decodeFogPacked(p01);
+        float3 t10 = decodeFogPacked(p10);
+        float3 t11 = decodeFogPacked(p11);
+        float3 levelT = lerp(lerp(t00, t01, wu), lerp(t10, t11, wu), wv);
         transmittance *= levelT;
     }
     return transmittance;
+}
+
+// True when the four tapped cells carry materially different transmittance (a real shadow edge or a
+// tinted material), i.e. the interpolation would leak and the march should fire one exact visibility ray.
+bool fogTapIsEdge(uint p00, uint p01, uint p10, uint p11) {
+    uint maxDiff = 0u;
+    maxDiff = max(maxDiff, fogByteDiff(p00, p01));
+    maxDiff = max(maxDiff, fogByteDiff(p00, p10));
+    maxDiff = max(maxDiff, fogByteDiff(p00, p11));
+    maxDiff = max(maxDiff, fogByteDiff(p01, p10));
+    maxDiff = max(maxDiff, fogByteDiff(p01, p11));
+    maxDiff = max(maxDiff, fogByteDiff(p10, p11));
+    // ~4/255 of transmittance: gradient cells (fog-density decay per cell <= ~2) stay cached, while a
+    // 1.0 -> 0.9 glass edge (~25) or a solid/clear edge (255) triggers the exact ray.
+    return maxDiff > 16u;
+}
+
+uint fogByteDiff(uint a, uint b) {
+    uint d0 = a & 0xFFu;
+    uint e0 = b & 0xFFu;
+    uint d1 = (a >> 8u) & 0xFFu;
+    uint e1 = (b >> 8u) & 0xFFu;
+    uint d2 = (a >> 16u) & 0xFFu;
+    uint e2 = (b >> 16u) & 0xFFu;
+    uint m0 = d0 > e0 ? d0 - e0 : e0 - d0;
+    uint m1 = d1 > e1 ? d1 - e1 : e1 - d1;
+    uint m2 = d2 > e2 ? d2 - e2 : e2 - d2;
+    return max(m0, max(m1, m2));
 }
 
 public FogIntegral fogNoScatter() {
@@ -252,12 +303,14 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
     celestialSquareFrame(light.dir, lightRight, lightUp);
     float3 fogAnchor = fogVolumeAnchor(worldPush.camOffset, light.dir);
 
-    // Dynamic-occluder transmittance, one entity-only visibility ray per march segment rather than one
-    // per step (the old cost was 12 full-TLAS rays per fog segment). The ray is traced lazily from the
-    // segment midpoint on the first step with density, so fog entirely culled by the height/density
-    // checks never pays it; its direction is one jittered sample of the body, shared by every step.
+    // Entity/edge transmittance, one ray per march segment at most (the old per-step cost was 12 full-TLAS
+    // rays per fog segment). Entity occlusion uses one entity-only ray from the segment midpoint on the
+    // first step with density; the exact-cache fallback below fires one full visibility ray instead and
+    // supersedes it. Both are lazy, so fog entirely culled by the height/density checks pays nothing.
     bool entityRayReady = false;
     float3 entityTransmittance = float3(1.0, 1.0, 1.0);
+    bool exactRayReady = false;
+    float3 exactTerrainT = float3(1.0, 1.0, 1.0);
 
     for (int i = 0; i < FOG_STEPS; i++) {
         float u0 = (float(i) + jitter) / float(FOG_STEPS);
@@ -288,23 +341,27 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         // DOMINANT, unjittered body direction (see fog_grid.build.comp: celestialSquareFrame(light.dir)),
         // so the fetch MUST use the same axis or the per-sample direction jitter — which rotates the
         // frame by up to the body's half-angle — makes the same world point land in different cells per
-        // sample and step, flashing through gaps. The penumbra is the volume's deterministic 2x2 bilinear
-        // tap; the jittered direction below is for the exact-colour terrain ray and the entity ray (same
-        // sample direction the surface NEE and the old per-ray visibility use).
+        // sample and step, flashing through gaps. The penumbra is the volume's deterministic narrow 2x2
+        // tap; the jittered direction below is shared by the exact/entity fallback rays (same sample
+        // direction the surface NEE and the old per-ray visibility use).
         uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
         stepSeed = pcg(stepSeed);
         float3 lightDir = light.halfAngle > 0.0
                 ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
-        bool exactColor;
-        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, exactColor);
-        // Column crosses tinted cutout/translucent material (bake flag bit 24): the cache only stores a
-        // grey approximation, so ONE terrain-only RT visibility ray per such sample restores per-channel
-        // tint + texture alpha dapple through the real any-hit path. Fully-blocked columns skip it (the
-        // direct term is zero either way), and entities are still handled below, so nothing double-counts.
-        if (exactColor && any(terrainT > 1.0e-4)) {
-            terrainT = visibilityTerrain(p, lightDir, 512.0).transmittance;
+        bool needsExact;
+        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, needsExact);
+        // Exact-cache fallback: a sample whose tap crosses a significant transmittance discontinuity (or
+        // a tinted cutout/translucent column) cannot be represented by the volume interpolation — it leaks
+        // and loses colour. One FULL secondary visibility ray (terrain + entities, exactly the old look)
+        // is fired lazily at the first such sample and reused for the remainder of the march; it already
+        // includes entities, so the entity-only ray below is skipped once it runs.
+        if (needsExact && !exactRayReady) {
+            exactTerrainT = visibility(p, lightDir, 512.0).transmittance;
+            exactRayReady = true;
         }
-        if ((worldPush.flags & 8u) != 0u) {
+        if (exactRayReady) {
+            terrainT = exactTerrainT;
+        } else if ((worldPush.flags & 8u) != 0u) {
             if (!entityRayReady) {
                 // One entity-occlusion ray per segment, from the midpoint. Terrain occlusion already comes
                 // from the cache (an entity-only ray never sees terrain, and re-testing it would apply it

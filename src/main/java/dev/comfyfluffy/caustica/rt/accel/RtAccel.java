@@ -912,11 +912,6 @@ public final class RtAccel {
      *  per-frame fog grid cache, and a terrain hit would apply it twice. */
     public static final int MASK_FOG_ENTITY = 0x04;
 
-    /** TLAS instance-mask bit 3: the fog march's terrain-only exact-colour visibility ray
-     *  ({@code CULL_FOG_TERRAIN}) for columns crossing tinted cutout/translucent materials. Entities and
-     *  the first-person body must NOT carry it — their occlusion is handled by the entity-only ray. */
-    public static final int MASK_FOG_TERRAIN = 0x08;
-
     /**
      * A TLAS instance: a 3x4 row-major transform, the device address of its BLAS, the 24-bit
      * {@code instanceCustomIndex} the hit shaders read, the 8-bit visibility {@code mask} (ANDed with the

@@ -9,15 +9,12 @@ import bindings;
 
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
-// Fog-march occlusion rays (fog.slang). Instance mask bits used only by these rays:
-//  * CULL_FOG_ENTITY (0x04): entity-only dynamic-occluder ray. Terrain must not carry it (terrain
-//    transmittance already comes from the per-frame fog grid cache and would be applied twice), while
-//    ordinary entities (0xFF) and the first-person self do.
-//  * CULL_FOG_TERRAIN (0x08): terrain-only exact-colour ray for columns the bake flagged as crossing
-//    tinted cutout/translucent materials (stained glass, leaves). Entities must not carry it — their
-//    occlusion is handled by the entity-only ray — and it must not see the first-person body.
+// Fog-march entity-occlusion ray (fog.slang): instance mask bit used ONLY by the entity-only dynamic-
+// occluder ray. Terrain must not carry it (terrain transmittance already comes from the per-frame fog
+// grid cache and would be applied twice), while ordinary entities (mask 0xFF) and the first-person self
+// do. The fog march's exact-colour/edge fallback uses the ordinary CULL_SECONDARY ray (terrain +
+// entities together, exactly the old look), so no separate terrain-only mask is needed.
 public static const uint CULL_FOG_ENTITY = 0x04u;
-public static const uint CULL_FOG_TERRAIN = 0x08u;
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -117,17 +114,6 @@ public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
  */
 public VisibilityResult visibilityEntities(float3 origin, float3 dir, float tmax) {
     return visibilityMasked(origin, dir, tmax, CULL_FOG_ENTITY);
-}
-
-/**
- * Terrain-only exact-colour fog ray. The bake flags volume columns that cross tinted cutout/translucent
- * materials (stained glass, leaves): for those samples the march replaces the cache's grey approximation
- * with one RT ray through the real terrain any-hit path, restoring per-channel tint and texture alpha
- * dapple. Cull mask CULL_FOG_TERRAIN is carried by terrain instances only, so entities and the
- * first-person body are still handled by the separate entity-only ray (no double-counting).
- */
-public VisibilityResult visibilityTerrain(float3 origin, float3 dir, float tmax) {
-    return visibilityMasked(origin, dir, tmax, CULL_FOG_TERRAIN);
 }
 
 VisibilityResult visibilityMasked(float3 origin, float3 dir, float tmax, uint cullMask) {
