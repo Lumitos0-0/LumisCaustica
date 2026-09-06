@@ -108,6 +108,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
         backT *= cellT;
         uint outIndex = levelOffset + (uint(z) * FOG_VOLUME_CELLS + uint(cy)) * FOG_VOLUME_CELLS + uint(cx);
         DevicePtr<uint32_t>(pcFog.fogVolumeAddr)[outIndex] = packTransmittance(backT)
-                | (columnColored ? tile.FOG_PACK_EXACT_COLOR : 0u);
+                | (columnColored ? FOG_PACK_EXACT_COLOR : 0u);
     }
 }

@@ -12,7 +12,7 @@
 // cutout/translucent material, signalling the march to use the per-cell tint probe cache.
 import world_common;
 
-[[vk::push_constant]] FogGridPush pcFog;
+[[vk::push_constant]] public FogGridPush pcFog;
 
 public static const int FOG_GRID_CELLS_PER_AXIS = 64; // section grid: 1024-block radius / 16
 public static const int FOG_GRID_HALF          = 32;
@@ -24,8 +24,8 @@ public static const uint FOG_PACK_EXACT_COLOR = 1u << 24u;
  * caller treats it as clear) and fills the per-march cache so a marching column re-fetches the grid entry
  * only once per crossed 16-block tile — same addresses, ~16x fewer dependent grid loads.
  */
-uint fogTileClass(float3 p, inout uint64_t cachedTileAddr, inout int cachedSx,
-                  inout int cachedSy, inout int cachedSz, inout uint tile) {
+public uint fogTileClass(float3 p, inout uint64_t cachedTileAddr, inout int cachedSx,
+                         inout int cachedSy, inout int cachedSz, inout uint tile) {
     if (pcFog.fogGridAddr == 0u) {
         return 0u;
     }
@@ -63,10 +63,10 @@ uint fogTileClass(float3 p, inout uint64_t cachedTileAddr, inout int cachedSx,
  * the any-hit path does) with the cache's grey approximation, water keeps the camera-biome tint.
  * `colored` reports a tinted cutout/translucent material (the march's exact probe territory).
  */
-float3 fogTileTransmittance(float3 p, float3 waterTint,
-                            inout uint64_t cachedTileAddr, inout int cachedSx,
-                            inout int cachedSy, inout int cachedSz,
-                            out bool colored) {
+public float3 fogTileTransmittance(float3 p, float3 waterTint,
+                                   inout uint64_t cachedTileAddr, inout int cachedSx,
+                                   inout int cachedSy, inout int cachedSz,
+                                   out bool colored) {
     colored = false;
     uint tile = 0u;
     uint cls = fogTileClass(p, cachedTileAddr, cachedSx, cachedSy, cachedSz, tile);
@@ -111,8 +111,8 @@ float3 fogTileTransmittance(float3 p, float3 waterTint,
 }
 
 /** Sky openness factor (1 = clear, 0 = blocked) for one sample: the sky-ambient term's occlusion. */
-float fogTileOpenness(float3 p, inout uint64_t cachedTileAddr, inout int cachedSx,
-                      inout int cachedSy, inout int cachedSz) {
+public float fogTileOpenness(float3 p, inout uint64_t cachedTileAddr, inout int cachedSx,
+                             inout int cachedSy, inout int cachedSz) {
     uint tile = 0u;
     uint cls = fogTileClass(p, cachedTileAddr, cachedSx, cachedSy, cachedSz, tile);
     if (cls == 0u || (tile & 0xFFu) == 0u) {

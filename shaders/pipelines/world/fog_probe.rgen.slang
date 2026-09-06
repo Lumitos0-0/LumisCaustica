@@ -64,7 +64,7 @@ void main() {
         uint half = uint(FOG_PROBE_CELLS / 2);
         uint volumeIndex = ((z + half) * 128u + (v + half)) * 128u + (u + half);
         uint packed = ConstPtr<uint32_t>(pc.fogVolumeAddr)[volumeIndex];
-        if ((packed & tile.FOG_PACK_EXACT_COLOR) == 0u) {
+        if ((packed & FOG_PACK_EXACT_COLOR) == 0u) {
             DevicePtr<uint32_t>(pc.fogProbeAddr)[flat] = FOG_PROBE_CLEAR;
             continue;
         }
