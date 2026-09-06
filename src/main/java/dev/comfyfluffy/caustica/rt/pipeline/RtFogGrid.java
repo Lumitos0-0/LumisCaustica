@@ -32,10 +32,15 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
 /**
  * The per-frame light-space fog transmittance volume (see {@code shaders/pipelines/fog_grid/build.comp.slang}).
- * One descriptor-free compute bake per frame marches sun columns through the terrain mesher's occupancy
- * tiles (one 16^3 uint tile per section, addressed through RtTerrain's CPU-maintained 64^3 section grid)
- * and writes a four-level 128^3 RGBA8 transmittance cache; the fog march in {@code world/fog.slang} then
- * reads it with a handful of constant-time fetches instead of firing a TLAS visibility ray per sample.
+ * A tiny change-check dispatch ({@code check.comp.slang}) precedes the bake and skips it when nothing that
+ * affects the volume changed — anchor cell, dominant light, water tint, or the section grid's publish
+ * version — so a static world/sun costs two near-empty dispatches. Otherwise one descriptor-free compute
+ * bake marches sun columns through the terrain mesher's occupancy tiles (one 16^3 uint tile per section,
+ * addressed through RtTerrain's CPU-maintained 64^3 section grid) and writes a four-level 128^3 RGBA8
+ * transmittance cache; the fog march in {@code world/fog.slang} then reads it with a handful of
+ * constant-time fetches instead of firing a TLAS visibility ray per sample. All four level lattices are
+ * world-pinned through {@code sky.fogVolumeAnchor} (the camera snaps to the 8-block light-space lattice,
+ * so cell boundaries never swim under the camera).
  *
  * <p>The volume is single-buffered: the bake and the trace that reads it run in the same submission with a
  * barrier between, and the composite's end-of-frame barrier orders the next frame's overwrite against this
@@ -54,30 +59,53 @@ public final class RtFogGrid {
     private static final int VOLUME_BYTES = VOLUME_LEVELS * VOLUME_CELLS * VOLUME_CELLS * VOLUME_CELLS * Integer.BYTES;
     private static final int GROUP_SIZE = 8;
 
+    /** Bake-state words; keep in lock-step with check.comp.slang / build.comp.slang. */
+    private static final int STATE_BYTES = 3 * Integer.BYTES; // key0, key1, decision
+
     private final RtContext ctx;
     private final RtBuffer volume;
+    private final RtBuffer stateBuffer;
     private final long descriptorSetLayout;
     private final long descriptorPool;
     private final long descriptorSet;
     private final long pipelineLayout;
     private final long pipeline;
+    private final long checkPipeline;
     private boolean destroyed;
 
-    private RtFogGrid(RtContext ctx, RtBuffer volume, long descriptorSetLayout, long descriptorPool,
-                      long descriptorSet, long pipelineLayout, long pipeline) {
+    private RtFogGrid(RtContext ctx, RtBuffer volume, RtBuffer stateBuffer, long descriptorSetLayout,
+                      long descriptorPool, long descriptorSet, long pipelineLayout, long pipeline,
+                      long checkPipeline) {
         this.ctx = ctx;
         this.volume = volume;
+        this.stateBuffer = stateBuffer;
         this.descriptorSetLayout = descriptorSetLayout;
         this.descriptorPool = descriptorPool;
         this.descriptorSet = descriptorSet;
         this.pipelineLayout = pipelineLayout;
         this.pipeline = pipeline;
+        this.checkPipeline = checkPipeline;
     }
 
     public static RtFogGrid create(RtContext ctx, long transmittanceView, long sampler) {
         VkDevice vk = ctx.vk();
         RtBuffer volume = ctx.createBuffer(VOLUME_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                 "fog transmittance volume");
+        // Where the change-check writes the last-baked key + decision; read by the bake in the same
+        // submission (barrier between). Host-visible only for the one-time sentinel below: a device-local
+        // buffer's initial contents are undefined, and the sentinel must guarantee the very first check
+        // reports "changed" so the volume is baked before the first trace can read it.
+        RtBuffer stateBuffer = ctx.createBuffer(STATE_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                "fog grid bake state");
+        try {
+            MemoryUtil.memIntBuffer(stateBuffer.mapped, STATE_BYTES / Integer.BYTES)
+                    .put(0xFFFFFFFF).put(0xFFFFFFFF).put(0);
+            stateBuffer.flush();
+        } catch (Throwable t) {
+            stateBuffer.destroy();
+            volume.destroy();
+            throw t;
+        }
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(1, stack);
             bindings.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -135,9 +163,12 @@ public final class RtFogGrid {
 
             long pipeline = createComputePipeline(ctx, stack, pipelineLayout,
                     "build.comp.spv", "fog grid bake pipeline");
-            return new RtFogGrid(ctx, volume, descriptorSetLayout, descriptorPool, descriptorSet,
-                    pipelineLayout, pipeline);
+            long checkPipeline = createComputePipeline(ctx, stack, pipelineLayout,
+                    "check.comp.spv", "fog grid change check pipeline");
+            return new RtFogGrid(ctx, volume, stateBuffer, descriptorSetLayout, descriptorPool,
+                    descriptorSet, pipelineLayout, pipeline, checkPipeline);
         } catch (Throwable t) {
+            stateBuffer.destroy();
             volume.destroy();
             throw t;
         }
@@ -156,16 +187,22 @@ public final class RtFogGrid {
      * exactly matching a world with no occluders.
      */
     public void record(VkCommandBuffer cmd, long worldPushAddress, long fogGridAddress,
-                       int gridShiftX, int gridShiftY, int gridShiftZ) {
+                       int gridShiftX, int gridShiftY, int gridShiftZ, int fogGridVersion) {
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog grid bake")) {
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
                     pipelineLayout, 0, stack.longs(descriptorSet), null);
-            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             ByteBuffer push = stack.malloc(FogGridPushData.BYTE_SIZE);
             new FogGridPushData(worldPushAddress, fogGridAddress, volume.deviceAddress,
-                    gridShiftX, gridShiftY, gridShiftZ).write(push);
+                    stateBuffer.deviceAddress, gridShiftX, gridShiftY, gridShiftZ, fogGridVersion)
+                    .write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            // Change check first: it writes a one-word decision the bake reads (barrier between), so an
+            // unchanged world/sun/anchor skips the whole 8M-sample occupancy march for one tiny dispatch.
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, checkPipeline);
+            VK10.vkCmdDispatch(cmd, 1, 1, 1);
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // state write visible to the bake
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdDispatch(cmd, (VOLUME_CELLS + GROUP_SIZE - 1) / GROUP_SIZE,
                     (VOLUME_CELLS + GROUP_SIZE - 1) / GROUP_SIZE, VOLUME_LEVELS);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // volume writes visible to raygen/miss
@@ -177,10 +214,12 @@ public final class RtFogGrid {
             return;
         }
         VkDevice vk = ctx.vk();
+        VK10.vkDestroyPipeline(vk, checkPipeline, null);
         VK10.vkDestroyPipeline(vk, pipeline, null);
         VK10.vkDestroyPipelineLayout(vk, pipelineLayout, null);
         VK10.vkDestroyDescriptorPool(vk, descriptorPool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, descriptorSetLayout, null);
+        stateBuffer.destroy();
         volume.destroy();
         destroyed = true;
     }

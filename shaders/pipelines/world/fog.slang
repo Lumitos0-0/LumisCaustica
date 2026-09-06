@@ -117,8 +117,11 @@ public struct FogIntegral {
 // jittered sampleSquare result): the volume is a single fixed light-space frame, and rotating it per
 // sample would remap every fetch to different cells. right/up are the same frame, computed once per
 // march segment rather than re-derived per step.
-public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, float3 up, inout uint seed) {
-    float3 rel = p - worldPush.camOffset;
+public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, float3 up,
+                                      float3 anchor, inout uint seed) {
+    // rel is against the same world-pinned lattice anchor the bake used (sky.fogVolumeAnchor), so a world
+    // point maps to the same cell regardless of camera position.
+    float3 rel = p - anchor;
     float uw = dot(rel, right);
     float vw = dot(rel, up);
     float zw = dot(rel, lightDir);
@@ -203,11 +206,19 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
     uint marchSeed = seed;
     marchSeed = pcg(marchSeed);
     float jitter = rndf(marchSeed);
-    // Fetch frame of the baked volume: fixed for the whole segment (the bake used the dominant direction),
-    // so derive it once rather than once per fog step.
+    // Fetch frame + anchor of the baked volume: fixed for the whole segment (the bake used the dominant
+    // direction and the same world-pinned lattice), so derive them once rather than once per fog step.
     float3 lightRight;
     float3 lightUp;
     celestialSquareFrame(light.dir, lightRight, lightUp);
+    float3 fogAnchor = fogVolumeAnchor(worldPush.camOffset, light.dir);
+
+    // Dynamic-occluder transmittance, one entity-only visibility ray per march segment rather than one
+    // per step (the old cost was 12 full-TLAS rays per fog segment). The ray is traced lazily from the
+    // segment midpoint on the first step with density, so fog entirely culled by the height/density
+    // checks never pays it; its direction is one jittered sample of the body, shared by every step.
+    bool entityRayReady = false;
+    float3 entityTransmittance = float3(1.0, 1.0, 1.0);
 
     for (int i = 0; i < FOG_STEPS; i++) {
         float u0 = (float(i) + jitter) / float(FOG_STEPS);
@@ -245,15 +256,23 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         stepSeed = pcg(stepSeed);
         float3 lightDir = light.halfAngle > 0.0
                 ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
-        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, stepSeed);
-        if ((worldPush.flags & 8u) != 0u && any(terrainT > 1.0e-4)) {
-            // Entity-only visibility ray: terrain occlusion already comes from the cache (and re-testing
-            // it would apply it twice), and this test uses the per-sample jittered direction for the
-            // dynamic-occluder penumbra. Bounded to the fog volume's extent: the march never scatters
-            // beyond farEnd (≤ 512), so an occluder farther away cannot affect this segment. Skipped
-            // when the cache says terrain fully blocks the sample: the direct term is 0 either way.
-            VisibilityResult vis = visibilityEntities(p, lightDir, 512.0);
-            terrainT *= vis.transmittance;
+        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, stepSeed);
+        if ((worldPush.flags & 8u) != 0u) {
+            if (!entityRayReady) {
+                // One entity-occlusion ray per segment, from the midpoint. Terrain occlusion already comes
+                // from the cache (an entity-only ray never sees terrain, and re-testing it would apply it
+                // twice); bounded to the fog volume's extent because the march never scatters beyond
+                // farEnd (≤ 512). The direction is a single jittered sample of the body, shared by all
+                // steps: same dynamic-occluder answer as the old per-step rays at far lower cost.
+                uint segmentSeed = seed ^ 0x2c1b3c6du;
+                segmentSeed = pcg(segmentSeed);
+                float3 segmentLightDir = light.halfAngle > 0.0
+                        ? sampleSquare(light.dir, light.halfAngle, segmentSeed) : light.dir;
+                float3 mid = ro + rd * (tEnd * 0.5);
+                entityTransmittance = visibilityEntities(mid, segmentLightDir, 512.0).transmittance;
+                entityRayReady = true;
+            }
+            terrainT *= entityTransmittance;
         }
         float cosTheta = dot(rd, light.dir);
         float phase = lerp(rayleighPhase(cosTheta), fogMiePhase(cosTheta, fog.mieG), fog.mieFraction);

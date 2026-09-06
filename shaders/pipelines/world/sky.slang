@@ -445,6 +445,28 @@ public void celestialSquareFrame(float3 bodyDir, out float3 right, out float3 up
 }
 
 /**
+ * World-pinned light-space lattice anchor for the fog transmittance volume. The volume's cells are a
+ * light-space lattice of step 8 blocks (the coarsest level's cell size); snapping the camera to the
+ * nearest lower lattice corner keeps the INFINITE lattice set fixed in the world while the camera moves —
+ * the anchor only translates by integer combinations of the lattice basis, which leaves the lattice
+ * unchanged. The bake and the fetch both derive the anchor from the same inputs, so a world point always
+ * lands in the same cell regardless of camera position (no cell swimming). 8 is a multiple of every
+ * level's cell size, so all four level lattices are nested at the shared anchor.
+ */
+public const float FOG_ANCHOR_BLOCKS = 8.0;
+
+public float3 fogVolumeAnchor(float3 camOffset, float3 lightDir) {
+    float3 right;
+    float3 up;
+    celestialSquareFrame(lightDir, right, up);
+    float s = FOG_ANCHOR_BLOCKS;
+    float su = dot(camOffset, right) - floor(dot(camOffset, right) / s) * s;
+    float sv = dot(camOffset, up) - floor(dot(camOffset, up) / s) * s;
+    float sz = dot(camOffset, lightDir) - floor(dot(camOffset, lightDir) / s) * s;
+    return camOffset - right * su - up * sv - lightDir * sz;
+}
+
+/**
  * Gnomonic projection of {@code dir} into a body's tangent square, in units of its half-angle:
  * {@code local} within [-1,1]² is on the body. A square (not a disc) because vanilla draws both bodies as
  * textured quads, and the sprite's own alpha then shapes what is actually visible.

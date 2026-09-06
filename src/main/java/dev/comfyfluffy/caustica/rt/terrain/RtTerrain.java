@@ -214,6 +214,10 @@ public final class RtTerrain {
     private int fogGridOriginZ;
     private long fogGridDirtyStart = Long.MAX_VALUE;
     private long fogGridDirtyEnd;
+    /** Monotonic publish/clear/rebuild counter for the fog section grid; the fog-volume bake keys on it
+     *  so a tile publish (which the GPU cannot detect — the grid buffer address is unchanged) retriggers
+     *  the bake. */
+    private int fogGridVersion;
 
     private RtTerrain() {
         missingIndex.defaultReturnValue(NO_MISSING_INDEX);
@@ -278,6 +282,11 @@ public final class RtTerrain {
 
     public int fogGridShiftZ() {
         return blockZ - fogGridOriginZ;
+    }
+
+    /** Fog section-grid publish version; changes whenever any grid entry is written (see the field docs). */
+    public int fogGridVersion() {
+        return fogGridVersion;
     }
 
     /** RIS-sampled global light buffer device address, or 0 while no lights are published. */
@@ -1741,6 +1750,7 @@ public final class RtTerrain {
         long start = (long) index * Long.BYTES;
         fogGridDirtyStart = Math.min(fogGridDirtyStart, start);
         fogGridDirtyEnd = Math.max(fogGridDirtyEnd, start + Long.BYTES);
+        fogGridVersion++;
     }
 
     private void fogGridClear(SectionGeom g) {

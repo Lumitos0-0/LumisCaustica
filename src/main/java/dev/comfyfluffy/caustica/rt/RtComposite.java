@@ -1234,7 +1234,8 @@ public final class RtComposite {
             if (LOOK.fog().enabled() && CausticaConfig.Rt.Composite.FOG.value()) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.fogGrid")) {
                     fogGrid.record(cmd, pushBuf.deviceAddress, terrain.fogGridAddress(),
-                            terrain.fogGridShiftX(), terrain.fogGridShiftY(), terrain.fogGridShiftZ());
+                            terrain.fogGridShiftX(), terrain.fogGridShiftY(), terrain.fogGridShiftZ(),
+                            terrain.fogGridVersion());
                 }
             }
 

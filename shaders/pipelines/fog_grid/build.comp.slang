@@ -120,6 +120,11 @@ void main(uint3 tid : SV_DispatchThreadID) {
     if (cx >= FOG_VOLUME_CELLS || cy >= FOG_VOLUME_CELLS || level >= FOG_VOLUME_LEVELS) {
         return;
     }
+    // check.comp.slang ran first in the same submission (barrier between): when nothing that affects the
+    // volume changed since the last bake, it clears this flag and the volume is already up to date.
+    if (ConstPtr<uint32_t>(pcFog.fogStateAddr)[2u] == 0u) {
+        return;
+    }
     WorldPush push = ConstPtr<WorldPush>(pcFog.worldPushAddr)[0];
     SkyState sky = skyState(push);
     CelestialLight light = dominantCelestialLight(sky, transmittanceLut);
@@ -130,6 +135,10 @@ void main(uint3 tid : SV_DispatchThreadID) {
     float3 right;
     float3 up;
     celestialSquareFrame(light.dir, right, up);
+    // World-pinned lattice anchor: snaps the camera to the light-space 8-block lattice (see sky.slang
+    // fogVolumeAnchor), so the cell set never moves as the camera travels — only the window indexing
+    // shifts, at whole-cell steps, every 8 blocks. This is what removes the per-frame cell swimming.
+    float3 anchor = fogVolumeAnchor(push.camOffset, light.dir);
     float size = exp2(float(level));               // 1, 2, 4, 8 blocks
     float halfExtent = 64.0 * size;
     int substeps = 1 << level;                     // z-substeps keep 1-block water/leaf steps exact
@@ -152,7 +161,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float zw = (float(z) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
         float uw = (float(cx) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
         float vw = (float(cy) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
-        float3 base = push.camOffset + light.dir * zw + right * uw + up * vw;
+        float3 base = anchor + light.dir * zw + right * uw + up * vw;
 
         float3 cellT = float3(1.0, 1.0, 1.0);
         for (int s = 0; s < substeps; s++) {

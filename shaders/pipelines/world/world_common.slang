@@ -50,9 +50,11 @@ public struct FogGridPush {
     public uint64_t worldPushAddr;
     public uint64_t fogGridAddr;
     public uint64_t fogVolumeAddr;
+    public uint64_t fogStateAddr;
     public int32_t  gridShiftX;
     public int32_t  gridShiftY;
     public int32_t  gridShiftZ;
+    public int32_t  fogGridVersion;
 };
 
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
