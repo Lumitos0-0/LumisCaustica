@@ -1134,7 +1134,7 @@ public final class RtComposite {
             // hold, so when any entity is in the scene the fog march keeps one RT visibility ray per sample
             // (flag bit 3) and multiplies it into the cached terrain transmittance — the old exact entity
             // behaviour, with the terrain ray cost gone.
-            if (fe.use()) {
+            if (fe.use() != null) {
                 flags |= 0b1000;
             }
             // Block-breaking overlay: resolves each destroy-stage RenderType's texture into the

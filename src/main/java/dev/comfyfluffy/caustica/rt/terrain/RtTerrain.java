@@ -1563,7 +1563,7 @@ public final class RtTerrain {
         }
 
         for (PreparedSection ps : prepared) {
-            SectionGeom g = new SectionGeom(ps.key(), ps.uvs(), ps.material(),
+            SectionGeom g = new SectionGeom(ps.key(), ps.uvs(), ps.material(), ps.fogTiles(),
                     ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights());
             if (!desired.contains(ps.key())) {
                 // Left the window while its batched BLAS build was in flight (window sync keeps running

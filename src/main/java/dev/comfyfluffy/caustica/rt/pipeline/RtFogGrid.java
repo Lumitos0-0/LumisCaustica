@@ -115,7 +115,7 @@ public final class RtFogGrid {
             // transmittance LUT and sampler the raygen uses (shared from RtSkyLut).
             VkDescriptorImageInfo imageInfo = VkDescriptorImageInfo.calloc(stack).imageView(transmittanceView)
                     .sampler(sampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkWriteDescriptorSet write = VkWriteDescriptorSet.calloc(1, stack);
+            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
             write.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0).descriptorCount(1)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .pImageInfo(VkDescriptorImageInfo.create(imageInfo.address(), 1));
