@@ -904,6 +904,14 @@ public final class RtAccel {
         return sizes;
     }
 
+    /** All 8 instance-mask bits: visible to every ray (the default for terrain and ordinary entities). */
+    public static final int MASK_ALL = 0xFF;
+
+    /** TLAS instance-mask bit 2: the fog march's entity-only visibility ray (world/trace.slang
+     *  {@code CULL_FOG_ENTITY}). Terrain must NOT carry it — its transmittance already comes from the
+     *  per-frame fog grid cache, and a terrain hit would apply it twice. */
+    public static final int MASK_FOG_ENTITY = 0x04;
+
     /**
      * A TLAS instance: a 3x4 row-major transform, the device address of its BLAS, the 24-bit
      * {@code instanceCustomIndex} the hit shaders read, the 8-bit visibility {@code mask} (ANDed with the

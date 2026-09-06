@@ -9,6 +9,10 @@ import bindings;
 
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
+// Fog-march entity-occlusion ray (fog.slang): instance mask bit used ONLY by this ray. Terrain
+// instances must not carry it — terrain transmittance already comes from the per-frame fog grid cache
+// and would be applied twice — while ordinary entities (mask 0xFF) and the first-person self do.
+public static const uint CULL_FOG_ENTITY = 0x04u;
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -97,6 +101,20 @@ public Payload makeShadowPayload() {
 }
 
 public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
+    return visibilityMasked(origin, dir, tmax, CULL_SECONDARY);
+}
+
+/**
+ * Entity-only fog-occlusion ray. The fog march already has full terrain transmittance from the per-frame
+ * voxel cache, so terrain must not be re-tested here (it would be applied twice, darkening shafts). The
+ * ray's cull mask is CULL_FOG_ENTITY, carried only by entity instances — including translucent/water
+ * entity materials, which the shadow any-hits tint and pass through exactly like the old full ray.
+ */
+public VisibilityResult visibilityEntities(float3 origin, float3 dir, float tmax) {
+    return visibilityMasked(origin, dir, tmax, CULL_FOG_ENTITY);
+}
+
+VisibilityResult visibilityMasked(float3 origin, float3 dir, float tmax, uint cullMask) {
     // Vulkan requires an identical payload structure for every stage reachable by this trace. The shadow
     // path uses only the albedo view as accumulated transmittance and hitT as the nearest-water crossing.
     Payload shadowPayload = makeShadowPayload();
@@ -106,7 +124,7 @@ public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
     // needs only ordinary TraceRay and no invocation-reorder capability.
     TraceRay(topLevelAS,
             RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
-            CULL_SECONDARY, SBT_SHADOW, SBT_STRIDE_BUCKET, MISS_GUIDE,
+            cullMask, SBT_SHADOW, SBT_STRIDE_BUCKET, MISS_GUIDE,
             makeRay(origin, RAY_TMIN, dir, tmax), shadowPayload);
     VisibilityResult result;
     result.transmittance = shadowPayload.flags == 0u

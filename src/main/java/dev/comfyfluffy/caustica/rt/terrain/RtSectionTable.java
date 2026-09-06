@@ -190,7 +190,10 @@ final class RtSectionTable {
     RtAccel.Instance instanceFor(SectionGeom geom, int rbx, int rby, int rbz) {
         float[] xform = {1, 0, 0, geom.sx - rbx, 0, 1, 0, geom.sy - rby,
                 0, 0, 1, geom.sz - rbz};
-        return new RtAccel.Instance(xform, geom.blas.deviceAddress, geom.slot);
+        // All bits except the fog-march entity-occlusion bit: the fog volume cache already carries
+        // terrain transmittance, so a fog visibility ray that hit terrain would darken shafts twice.
+        return new RtAccel.Instance(xform, geom.blas.deviceAddress, geom.slot,
+                RtAccel.MASK_ALL & ~RtAccel.MASK_FOG_ENTITY);
     }
 
     /** GPU residency for one section: shader attributes + compacted BLAS + world section origin. */

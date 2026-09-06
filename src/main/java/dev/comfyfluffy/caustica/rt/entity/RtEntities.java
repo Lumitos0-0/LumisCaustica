@@ -696,7 +696,10 @@ public final class RtEntities {
                 continue;
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
-            int mask = firstPersonSelf ? MASK_SECONDARY : MASK_ALL;
+            // Ordinary entities use MASK_ALL (includes the fog-entity bit). The first-person self stays
+            // visible to secondary rays (shadows/GI/reflections) but adds the fog-entity bit so the fog
+            // march's entity-only visibility ray still sees it exactly as the old full-TLAS ray did.
+            int mask = firstPersonSelf ? (MASK_SECONDARY | RtAccel.MASK_FOG_ENTITY) : MASK_ALL;
             float ix;
             float iy;
             float iz;

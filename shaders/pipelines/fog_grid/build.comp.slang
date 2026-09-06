@@ -37,7 +37,12 @@ public static const int FOG_VOLUME_CELLS       = 128; // cells per axis per leve
 public static const int FOG_VOLUME_LEVELS      = 4;
 
 // Per-1-block-sample transmittance from the section grid + occupancy tile. p is rebased world blocks.
-float3 fogTileTransmittance(float3 p, float3 waterTint) {
+// The section-grid entry changes only when the sample crosses a 16-block tile boundary, so a marching
+// column re-fetches it once per crossed tile instead of once per step — same addresses, ~16x fewer
+// dependent grid loads (the dominant bake cost). The cache is per-column and reset before each march.
+float3 fogTileTransmittance(float3 p, float3 waterTint,
+                            inout uint64_t cachedTileAddr, inout int cachedSx,
+                            inout int cachedSy, inout int cachedSz) {
     if (pcFog.fogGridAddr == 0u) {
         return float3(1.0, 1.0, 1.0); // no terrain published yet: clear, exactly like an escaping ray
     }
@@ -50,12 +55,18 @@ float3 fogTileTransmittance(float3 p, float3 waterTint) {
             || sz < -FOG_GRID_HALF || sz >= FOG_GRID_HALF) {
         return float3(1.0, 1.0, 1.0);
     }
-    uint index = uint((sz + FOG_GRID_HALF) * FOG_GRID_CELLS_PER_AXIS * FOG_GRID_CELLS_PER_AXIS
-            + (sy + FOG_GRID_HALF) * FOG_GRID_CELLS_PER_AXIS + (sx + FOG_GRID_HALF));
-    uint64_t tileAddr = ConstPtr<uint64_t>(pcFog.fogGridAddr)[index];
-    if (tileAddr == 0u) {
+    if (sx != cachedSx || sy != cachedSy || sz != cachedSz) {
+        uint index = uint((sz + FOG_GRID_HALF) * FOG_GRID_CELLS_PER_AXIS * FOG_GRID_CELLS_PER_AXIS
+                + (sy + FOG_GRID_HALF) * FOG_GRID_CELLS_PER_AXIS + (sx + FOG_GRID_HALF));
+        cachedTileAddr = ConstPtr<uint64_t>(pcFog.fogGridAddr)[index];
+        cachedSx = sx;
+        cachedSy = sy;
+        cachedSz = sz;
+    }
+    if (cachedTileAddr == 0u) {
         return float3(1.0, 1.0, 1.0); // unloaded/outside window: clear, exactly like an escaping ray
     }
+    uint64_t tileAddr = cachedTileAddr;
     float3 local = q - float3(float(sx * 16), float(sy * 16), float(sz * 16));
     int bx = clamp(int(local.x), 0, 15);
     int by = clamp(int(local.y), 0, 15);
@@ -130,6 +141,13 @@ void main(uint3 tid : SV_DispatchThreadID) {
     uint levelOffset = uint(level) * cellsPerLevel;
 
     float3 backT = float3(1.0, 1.0, 1.0);
+    // Per-column section-grid cache (see fogTileTransmittance): 0x7fffffff ensures the first step of the
+    // march fetches, and the addresses stay valid for the whole bake (the grid is CPU-patched only
+    // between frames, and a grid change invalidates the volume, triggering a fresh bake).
+    uint64_t cachedTileAddr = 0u;
+    int cachedSx = 0x7fffffff;
+    int cachedSy = 0x7fffffff;
+    int cachedSz = 0x7fffffff;
     for (int z = FOG_VOLUME_CELLS - 1; z >= 0; z--) {
         float zw = (float(z) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
         float uw = (float(cx) + 0.5 - float(FOG_VOLUME_CELLS / 2)) * size;
@@ -139,7 +157,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float3 cellT = float3(1.0, 1.0, 1.0);
         for (int s = 0; s < substeps; s++) {
             float zoff = ((float(s) + 0.5) / float(substeps) - 0.5) * size;
-            cellT *= fogTileTransmittance(base + light.dir * zoff, waterTint);
+            cellT *= fogTileTransmittance(base + light.dir * zoff, waterTint,
+                    cachedTileAddr, cachedSx, cachedSy, cachedSz);
         }
         backT *= cellT;
         uint outIndex = levelOffset + (uint(z) * FOG_VOLUME_CELLS + uint(cy)) * FOG_VOLUME_CELLS + uint(cx);

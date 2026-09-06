@@ -1133,7 +1133,9 @@ public final class RtComposite {
             // The fog grid caches TERRAIN occlusion only; dynamic entities are the one occluder it cannot
             // hold, so when any entity is in the scene the fog march keeps one RT visibility ray per sample
             // (flag bit 3) and multiplies it into the cached terrain transmittance — the old exact entity
-            // behaviour, with the terrain ray cost gone.
+            // behaviour, with the terrain ray cost gone. Fog entity rays carry their own TLAS visibility
+            // mask (see trace.slang CULL_FOG_ENTITY), so they test entity instances only and never re-test
+            // the terrain the cache already holds.
             if (fe.use() != null) {
                 flags |= 0b1000;
             }
