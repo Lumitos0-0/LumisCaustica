@@ -9,12 +9,16 @@ import bindings;
 
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
-// Fog-march entity-occlusion ray (fog.slang): instance mask bit used ONLY by the entity-only dynamic-
-// occluder ray. Terrain must not carry it (terrain transmittance already comes from the per-frame fog
-// grid cache and would be applied twice), while ordinary entities (mask 0xFF) and the first-person self
-// do. The fog march's exact-colour/edge fallback uses the ordinary CULL_SECONDARY ray (terrain +
-// entities together, exactly the old look), so no separate terrain-only mask is needed.
+// Fog-march rays (fog.slang). Instance mask bits used only by the fog march:
+//  * CULL_FOG_ENTITY (0x04): entity-only occluder ray used when no exact probe fires. Terrain must not
+//    carry it (terrain transmittance already comes from the per-frame fog grid cache and would be applied
+//    twice), while ordinary entities (0xFF) and the first-person self (0x05) do.
+//  * CULL_FOG_EXACT (0x08): the exact-colour probe — fired once per march at a tinted, still-lit column.
+//    Carried by terrain (0xFB) and ordinary/block entities (0xFF) so the ray measures per-channel tint
+//    AND entity occlusion; NOT carried by the first-person self (a camera-adjacent body hit would blank
+//    the probe) or particles (0x02).
 public static const uint CULL_FOG_ENTITY = 0x04u;
+public static const uint CULL_FOG_EXACT = 0x08u;
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -114,6 +118,17 @@ public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
  */
 public VisibilityResult visibilityEntities(float3 origin, float3 dir, float tmax) {
     return visibilityMasked(origin, dir, tmax, CULL_FOG_ENTITY);
+}
+
+/**
+ * Fog-march exact-colour probe. Fired once per march at a tinted cutout/translucent column (bake flag
+ * FOG_PACK_EXACT_COLOR) that the cache still shows as lit: the real any-hit path restores per-channel
+ * glass tint + texture-alpha dapple and measures entity occlusion in the same ray. Cull mask
+ * CULL_FOG_EXACT is carried by terrain and ordinary/block entities but NOT by the first-person self
+ * (body hits would blank the probe) or particles.
+ */
+public VisibilityResult visibilityFogExact(float3 origin, float3 dir, float tmax) {
+    return visibilityMasked(origin, dir, tmax, CULL_FOG_EXACT);
 }
 
 VisibilityResult visibilityMasked(float3 origin, float3 dir, float tmax, uint cullMask) {

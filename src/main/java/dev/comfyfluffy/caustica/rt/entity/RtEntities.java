@@ -696,9 +696,11 @@ public final class RtEntities {
                 continue;
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
-            // Ordinary entities use MASK_ALL (includes the fog-entity bit). The first-person self stays
-            // visible to secondary rays (shadows/GI/reflections) but adds the fog-entity bit so the
-            // fog march's entity-only visibility ray still sees it exactly as the old full-TLAS ray did.
+            // Ordinary entities use MASK_ALL: the fog march's entity-only ray AND its exact-colour probe
+            // (MASK_FOG_EXACT) both see them. The first-person self stays visible to secondary rays
+            // (shadows/GI/reflections) and adds the fog-entity bit, but deliberately does NOT carry
+            // MASK_FOG_EXACT — the probe is fired close to the camera and a hit on the player's own mesh
+            // would blank it.
             int mask = firstPersonSelf ? (MASK_SECONDARY | RtAccel.MASK_FOG_ENTITY) : MASK_ALL;
             float ix;
             float iy;

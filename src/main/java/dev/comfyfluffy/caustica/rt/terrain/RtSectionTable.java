@@ -192,8 +192,8 @@ final class RtSectionTable {
                 0, 0, 1, geom.sz - rbz};
         // All bits except the fog-march entity-occlusion bit. The fog volume cache already carries terrain
         // transmittance, so the entity-only fog ray must not hit terrain (that would darken shafts twice).
-        // The fog march's exact-cache fallback uses the ordinary CULL_SECONDARY ray, which still hits
-        // terrain through this mask.
+        // Bit 3 (MASK_FOG_EXACT) stays set: the fog march's exact-colour probe at tinted columns must hit
+        // terrain to measure per-channel glass tint + texture-alpha dapple.
         return new RtAccel.Instance(xform, geom.blas.deviceAddress, geom.slot,
                 RtAccel.MASK_ALL & ~RtAccel.MASK_FOG_ENTITY);
     }

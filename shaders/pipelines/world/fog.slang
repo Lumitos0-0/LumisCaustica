@@ -14,9 +14,10 @@
 //     the terrain mesher's occupancy tiles, so a march sample costs a handful of constant-time fetches
 //     instead of a TLAS visibility ray. The volume is rebuilt from the real section geometry every frame
 //     and reads at the same block-subcell resolution, so shafts keep their crisp canopy-sliced edges with
-//     real penumbra — but without the ray cost. Entities are the one dynamic occluder the cache excludes;
-//     when any entity exists (flags bit 3) the march keeps one RT visibility ray per sample for exactly
-//     the old behaviour.
+//     real penumbra — but without the ray cost. The cache excludes dynamic entities and is monochrome by
+//     construction, so the march keeps AT MOST ONE RT visibility ray per segment: an entity-only occluder
+//     ray when any entity exists (flags bit 3), or one exact-colour probe at a tinted cutout/translucent
+//     column — used only for its own sample so per-sample shadowing (the cache) is never overwritten.
 //
 // The march integrates each constant-density step analytically (Hillaire's
 // (L - L*stepT)/sigmaT form, identical to the sky module), so the count needed to avoid banding is
@@ -42,6 +43,10 @@ import bindings;
 
 public static const int   FOG_STEPS = 12;
 public static const float FOG_MIN_DENSITY = 1.0e-4; // per block; below this a sample fires no entity ray
+// A tinted column whose cache transmittance is below this is shadowed/occluded: the exact probe would
+// only measure the occluder (and in shadowed areas must never fire — that was the recent "fog disappears"
+// regression). Below this the cache's dark value is already the right answer.
+public static const float FOG_PROBE_MIN_TRANSMITTANCE = 0.05;
 // Light-space fog volume (see fog_grid.build.comp): 4 levels, 128^3 cells each, cellSize 2^k blocks and
 // extent 64*2^k blocks around the camera. Kept in lock-step with that pass.
 public static const int   FOG_VOLUME_LEVELS = 4;
@@ -130,11 +135,12 @@ float3 decodeFogPacked(uint packed) {
 // side of the boundary) instead of the full cell. The old full-cell tap averaged an opaque and a clear
 // cell across the whole cell width, letting light "leak" half a cell past solid geometry; the old coarse
 // levels were nearest-fetched, so edges snapped and jumped as the camera moved through the 64/128/256-block
-// ring boundaries. The narrow tap keeps a designed penumbra that is spatially stable; `needsExact` flags
-// samples on a significant transmittance discontinuity (or a tinted cutout/translucent column), where the
-// march replaces the interpolation with one full visibility ray.
+// ring boundaries. The narrow tap keeps a designed penumbra that is spatially stable. `tinted` reports
+// whether the tapped cells belong to a column the bake flagged as crossing tinted cutout/translucent
+// materials (stained glass, leaves, water): the march fires one exact-colour probe for those columns,
+// because the cache's monochrome approximation cannot carry per-channel tint or texture-alpha dapple.
 public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, float3 up,
-                                      float3 anchor, out bool needsExact) {
+                                      float3 anchor, out bool tinted) {
     // rel is against the same world-pinned lattice anchor the bake used (sky.fogVolumeAnchor), so a world
     // point maps to the same cell regardless of camera position.
     float3 rel = p - anchor;
@@ -151,9 +157,9 @@ public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, f
         }
     }
 
-    bool exactCoarse;
-    float3 transmittance = fogChain(uw, vw, zw, first, exactCoarse);
-    needsExact = exactCoarse;
+    bool tintedCoarse;
+    float3 transmittance = fogChain(uw, vw, zw, first, tintedCoarse);
+    tinted = tintedCoarse;
 
     // Crossfade with the finer level across each ring boundary (64, 128, 256 blocks): the two chains
     // differ only by resolution, and blending over a +/-1-cell window removes the pop when `first`
@@ -162,11 +168,11 @@ public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, f
         float ring = 64.0 * exp2(float(first - 1));
         float w = exp2(float(first - 1));
         if (axisMax > ring - w) {
-            bool exactFine;
-            float3 fine = fogChain(uw, vw, zw, first - 1, exactFine);
+            bool tintedFine;
+            float3 fine = fogChain(uw, vw, zw, first - 1, tintedFine);
             float t = clamp((axisMax - (ring - w)) / (2.0 * w), 0.0, 1.0);
             transmittance = lerp(fine, transmittance, t);
-            needsExact = needsExact || exactFine;
+            tinted = tinted || tintedFine;
         }
     }
     return transmittance;
@@ -174,8 +180,8 @@ public float3 fogTerrainTransmittance(float3 p, float3 lightDir, float3 right, f
 
 // The telescoping chain for one starting level: level `first` at the sample's own z cell, then each
 // coarser level at the shared boundary cell (z = 32.0 cells), all with the same narrow 2x2 lateral tap.
-float3 fogChain(float uw, float vw, float zw, int first, out bool needsExact) {
-    needsExact = false;
+float3 fogChain(float uw, float vw, float zw, int first, out bool tinted) {
+    tinted = false;
     float3 transmittance = float3(1.0, 1.0, 1.0);
     for (int k = first; k < FOG_VOLUME_LEVELS; k++) {
         float size = exp2(float(k));
@@ -211,9 +217,7 @@ float3 fogChain(float uw, float vw, float zw, int first, out bool needsExact) {
         uint p11 = ConstPtr<uint32_t>(pc.fogVolumeAddr)[levelBase + zBase
                 + uint(v1) * uint(FOG_VOLUME_CELLS) + uint(u1)];
 
-        needsExact = needsExact
-                || ((p00 | p01 | p10 | p11) & FOG_PACK_EXACT_COLOR) != 0u
-                || fogTapIsEdge(p00, p01, p10, p11);
+        tinted = tinted || ((p00 | p01 | p10 | p11) & FOG_PACK_EXACT_COLOR) != 0u;
 
         float3 t00 = decodeFogPacked(p00);
         float3 t01 = decodeFogPacked(p01);
@@ -223,34 +227,6 @@ float3 fogChain(float uw, float vw, float zw, int first, out bool needsExact) {
         transmittance *= levelT;
     }
     return transmittance;
-}
-
-// True when the four tapped cells carry materially different transmittance (a real shadow edge or a
-// tinted material), i.e. the interpolation would leak and the march should fire one exact visibility ray.
-bool fogTapIsEdge(uint p00, uint p01, uint p10, uint p11) {
-    uint maxDiff = 0u;
-    maxDiff = max(maxDiff, fogByteDiff(p00, p01));
-    maxDiff = max(maxDiff, fogByteDiff(p00, p10));
-    maxDiff = max(maxDiff, fogByteDiff(p00, p11));
-    maxDiff = max(maxDiff, fogByteDiff(p01, p10));
-    maxDiff = max(maxDiff, fogByteDiff(p01, p11));
-    maxDiff = max(maxDiff, fogByteDiff(p10, p11));
-    // ~4/255 of transmittance: gradient cells (fog-density decay per cell <= ~2) stay cached, while a
-    // 1.0 -> 0.9 glass edge (~25) or a solid/clear edge (255) triggers the exact ray.
-    return maxDiff > 16u;
-}
-
-uint fogByteDiff(uint a, uint b) {
-    uint d0 = a & 0xFFu;
-    uint e0 = b & 0xFFu;
-    uint d1 = (a >> 8u) & 0xFFu;
-    uint e1 = (b >> 8u) & 0xFFu;
-    uint d2 = (a >> 16u) & 0xFFu;
-    uint e2 = (b >> 16u) & 0xFFu;
-    uint m0 = d0 > e0 ? d0 - e0 : e0 - d0;
-    uint m1 = d1 > e1 ? d1 - e1 : e1 - d1;
-    uint m2 = d2 > e2 ? d2 - e2 : e2 - d2;
-    return max(m0, max(m1, m2));
 }
 
 public FogIntegral fogNoScatter() {
@@ -303,14 +279,65 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
     celestialSquareFrame(light.dir, lightRight, lightUp);
     float3 fogAnchor = fogVolumeAnchor(worldPush.camOffset, light.dir);
 
-    // Entity/edge transmittance, one ray per march segment at most (the old per-step cost was 12 full-TLAS
-    // rays per fog segment). Entity occlusion uses one entity-only ray from the segment midpoint on the
-    // first step with density; the exact-cache fallback below fires one full visibility ray instead and
-    // supersedes it. Both are lazy, so fog entirely culled by the height/density checks pays nothing.
+    // Transmittance source for the whole march: either the exact-colour probe (below) or the entity-only
+    // ray. ONE RT ray per march segment at most in both modes — the old per-step cost was 12 full-TLAS
+    // rays per fog segment. Both are lazy, so fog entirely culled by the height/density checks or fully
+    // shadowed (cache < FOG_PROBE_MIN_TRANSMITTANCE) pays nothing.
+    //
+    // EXACT-PROBE MODE. The cache cannot carry per-channel tint (it is monochrome by construction) and its
+    // half-cell tap softens edges slightly, so for tinted cutout/translucent columns the march fires ONE
+    // ray at the first still-LIT tinted sample. Critically, the measured value is used ONLY for its own
+    // step: a probe fired inside a shadow measures ~0 at that sample, and reusing it for the rest of the
+    // march was what made fog disappear in occluded areas. Other tinted steps keep the cache MAGNITUDE
+    // (their own occlusion is correct per-cell) and take only the probe's hue; entity occlusion comes from
+    // a tint-robust ratio of the same ray, so it never darkens a march that is merely tinted.
+    bool exactProbe = false;
+    int exactStep = -1;
+    float3 exactT = float3(1.0, 1.0, 1.0);
+    float3 exactTint = float3(1.0, 1.0, 1.0);
+    float3 exactEntityT = float3(1.0, 1.0, 1.0);
+    // Probe pass: identical cheap sample evaluation as the integration loop below (no RT unless a tinted
+    // lit column is found) — keep the two in sync.
+    for (int i = 0; i < FOG_STEPS; i++) {
+        float u0 = (float(i) + jitter) / float(FOG_STEPS);
+        float u1 = (float(i + 1) + jitter) / float(FOG_STEPS);
+        float t0 = tEnd * u0 * u0;
+        float t1 = min(tEnd * u1 * u1, tEnd);
+        float dt = t1 - t0;
+        if (dt <= 0.0) {
+            continue;
+        }
+        float tMid = 0.5 * (t0 + t1);
+        float3 p = ro + rd * tMid;
+        float fade = 1.0 - smoothstep(fog.farEnd * 0.7, fog.farEnd, tMid);
+        float sigma = fogDensity(fog, p) * fade;
+        if (sigma <= FOG_MIN_DENSITY) {
+            continue;
+        }
+        uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
+        stepSeed = pcg(stepSeed);
+        float3 lightDir = light.halfAngle > 0.0
+                ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
+        bool tinted;
+        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, tinted);
+        if (tinted && any(terrainT > FOG_PROBE_MIN_TRANSMITTANCE)) {
+            exactT = visibilityFogExact(p, lightDir, 512.0).transmittance;
+            // Hue normalised by the brightest channel (stable for strongly tinted glass/leaves).
+            float tintMax = max(max(exactT.x, exactT.y), exactT.z);
+            exactTint = tintMax > 1.0e-4 ? exactT / float3(tintMax) : float3(1.0, 1.0, 1.0);
+            // Entity occlusion: entities attenuate every channel; tint attenuates channels unevenly, so
+            // the MAX per-channel ratio is the closest colour-independent estimate. Clamped to [0,1] so
+            // a tinted ray can never darken the march as if an occluder were there.
+            float3 ratio = exactT / max(terrainT, float3(1.0e-4));
+            exactEntityT = clamp(max(max(ratio.x, ratio.y), ratio.z), 0.0, 1.0);
+            exactStep = i;
+            exactProbe = true;
+            break;
+        }
+    }
+
     bool entityRayReady = false;
     float3 entityTransmittance = float3(1.0, 1.0, 1.0);
-    bool exactRayReady = false;
-    float3 exactTerrainT = float3(1.0, 1.0, 1.0);
 
     for (int i = 0; i < FOG_STEPS; i++) {
         float u0 = (float(i) + jitter) / float(FOG_STEPS);
@@ -342,25 +369,27 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         // so the fetch MUST use the same axis or the per-sample direction jitter — which rotates the
         // frame by up to the body's half-angle — makes the same world point land in different cells per
         // sample and step, flashing through gaps. The penumbra is the volume's deterministic narrow 2x2
-        // tap; the jittered direction below is shared by the exact/entity fallback rays (same sample
+        // tap; the jittered direction below is shared by the probe/entity fallback rays (same sample
         // direction the surface NEE and the old per-ray visibility use).
         uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
         stepSeed = pcg(stepSeed);
         float3 lightDir = light.halfAngle > 0.0
                 ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
-        bool needsExact;
-        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, needsExact);
-        // Exact-cache fallback: a sample whose tap crosses a significant transmittance discontinuity (or
-        // a tinted cutout/translucent column) cannot be represented by the volume interpolation — it leaks
-        // and loses colour. One FULL secondary visibility ray (terrain + entities, exactly the old look)
-        // is fired lazily at the first such sample and reused for the remainder of the march; it already
-        // includes entities, so the entity-only ray below is skipped once it runs.
-        if (needsExact && !exactRayReady) {
-            exactTerrainT = visibility(p, lightDir, 512.0).transmittance;
-            exactRayReady = true;
-        }
-        if (exactRayReady) {
-            terrainT = exactTerrainT;
+        bool tinted;
+        float3 terrainT = fogTerrainTransmittance(p, light.dir, lightRight, lightUp, fogAnchor, tinted);
+        if (exactProbe) {
+            if (i == exactStep) {
+                // The measured ground truth for THIS sample only: per-channel tint, alpha dapple, crisp
+                // edge, and real entity occlusion in one ray.
+                terrainT = exactT;
+            } else {
+                // Cache per-sample magnitude (each step's own shadow/occlusion stays correct), the
+                // probe's hue for tinted columns, and the probe's entity estimate for every step.
+                if (tinted) {
+                    terrainT *= exactTint;
+                }
+                terrainT *= exactEntityT;
+            }
         } else if ((worldPush.flags & 8u) != 0u) {
             if (!entityRayReady) {
                 // One entity-occlusion ray per segment, from the midpoint. Terrain occlusion already comes
