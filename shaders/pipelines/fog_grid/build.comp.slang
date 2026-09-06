@@ -38,6 +38,9 @@ public static const int FOG_VOLUME_LEVELS      = 4;
 
 // Per-1-block-sample transmittance from the section grid + occupancy tile. p is rebased world blocks.
 float3 fogTileTransmittance(float3 p, float3 waterTint) {
+    if (pcFog.fogGridAddr == 0u) {
+        return float3(1.0, 1.0, 1.0); // no terrain published yet: clear, exactly like an escaping ray
+    }
     float3 q = p + float3(float(pcFog.gridShiftX), float(pcFog.gridShiftY), float(pcFog.gridShiftZ));
     int sx = int(floor(q.x * (1.0 / 16.0)));
     int sy = int(floor(q.y * (1.0 / 16.0)));
