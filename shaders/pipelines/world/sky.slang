@@ -453,7 +453,7 @@ public void celestialSquareFrame(float3 bodyDir, out float3 right, out float3 up
  * lands in the same cell regardless of camera position (no cell swimming). 8 is a multiple of every
  * level's cell size, so all four level lattices are nested at the shared anchor.
  */
-public const float FOG_ANCHOR_BLOCKS = 8.0;
+public static const float FOG_ANCHOR_BLOCKS = 8.0;
 
 public float3 fogVolumeAnchor(float3 camOffset, float3 lightDir) {
     float3 right;
