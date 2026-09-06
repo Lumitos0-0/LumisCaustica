@@ -1,4 +1,4 @@
-// PathSegment — a resumable continuation — plus its packed 48-byte buffer form. This is the record
+// PathSegment — a resumable continuation — plus its packed 52-byte buffer form. This is the record
 // the primary pass writes and the indirect pass reads. Depends on medium.
 
 
@@ -19,6 +19,11 @@ public struct PathSegment {
     public float3 ro;
     public float3 rd;
     public float3 throughput;
+    // Radiance the PREVIOUS trace already saw, carried along so a pass that resumes mid-path (pass A's
+    // dielectric split resumes AT the interface) does not lose the fog/absorption integral of the
+    // segment it skipped. Pass A folds the camera->interface fog here, split per branch weight, so the
+    // two split records sum to exactly one contribution; pass B adds it before any sampled transport.
+    public float3 accumFog;
     public MediumStack medium;
     public float rayConeWidth;
     public float rayConeSpread;
@@ -27,13 +32,14 @@ public struct PathSegment {
     public bool showCelestial;
 };
 
-public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, MediumStack medium,
-                            float rayConeWidth, float rayConeSpread, uint seed,
+public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, float3 accumFog,
+                            MediumStack medium, float rayConeWidth, float rayConeSpread, uint seed,
                             int bounce, bool showCelestial) {
     PathSegment s;
     s.ro = ro;
     s.rd = rd;
     s.throughput = throughput;
+    s.accumFog = accumFog;
     s.medium = medium;
     s.rayConeWidth = rayConeWidth;
     s.rayConeSpread = rayConeSpread;
@@ -42,11 +48,19 @@ public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, Medi
     s.showCelestial = showCelestial;
     return s;
 }
-// field is a uint, so Std430DataLayout gives this an exact 48-byte stride.
+// Ten 4-byte lanes after a 12-byte origin gives the exact 52-byte stride the Java queue allocates.
+// The origin is deliberately three scalars rather than a float3: Std430DataLayout gives float3 a
+// 16-byte alignment, which would tail-pad a 52-byte record to a 64-byte array stride on the GPU while
+// Java allocates 52 — the record must never be laid out by two different rules. Scalar alignment
+// (4 bytes) makes 52 the unambiguous stride. The accumFog lane is R9G9B9E5 like throughput, so the
+// record grew by one uint instead of a float3.
 public struct PackedPathSegment {
-    public float3 ro;
+    public float ro0;
+    public float ro1;
+    public float ro2;
     public uint rd;
     public uint throughput;
+    public uint accumFog;
     public uint currentExtinction;
     public uint outerExtinction;
     public uint mediumIors;
@@ -108,9 +122,13 @@ public float3 unpackRgb9e5(uint p) {
 
 public PackedPathSegment packPathSegment(PathSegment seg, uint nextRecord) {
     PackedPathSegment p;
-    p.ro = seg.ro;
+    float3 ro = seg.ro;
+    p.ro0 = ro.x;
+    p.ro1 = ro.y;
+    p.ro2 = ro.z;
     p.rd = packUnorm16x2(octEncode(seg.rd));
     p.throughput = packRgb9e5(seg.throughput);
+    p.accumFog = packRgb9e5(seg.accumFog);
     p.currentExtinction = packRgb9e5(seg.medium.current.extinction);
     p.outerExtinction = packRgb9e5(seg.medium.outer.extinction);
     p.mediumIors = packHalf2(float2(seg.medium.current.ior, seg.medium.outer.ior));
@@ -138,11 +156,12 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     medium.current = current;
     medium.outer = outer;
     float2 cone = unpackHalf2(p.rayCone);
-    return makePathSegment(p.ro, octDecode(unpackUnorm16x2(p.rd)),
-            unpackRgb9e5(p.throughput), medium, cone.x, cone.y, p.seed,
+    return makePathSegment(float3(p.ro0, p.ro1, p.ro2), octDecode(unpackUnorm16x2(p.rd)),
+            unpackRgb9e5(p.throughput), unpackRgb9e5(p.accumFog), medium, cone.x, cone.y, p.seed,
             int(p.pathFlags & 15u), (p.pathFlags & (1u << 8u)) != 0u);
 }
 
 // Walk only the visually-primary dielectric chain. The terminal non-dielectric/miss trace is repeated
 // by the indirect pass, so the returned record describes the state immediately BEFORE that trace.
 // This keeps closest-hit payload data out of the queue and, critically, writes the record before any
+// sample-dependent state could be lost across the primary/indirect dispatch boundary.

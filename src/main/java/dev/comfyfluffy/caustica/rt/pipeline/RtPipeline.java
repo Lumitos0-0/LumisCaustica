@@ -168,6 +168,9 @@ public final class RtPipeline {
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)
                     .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_MULTISCATTER).binding(WORLD_MULTISCATTER)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
             check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout");
@@ -446,10 +449,12 @@ public final class RtPipeline {
         return true;
     }
 
-    /** Bind this frame's atmosphere LUTs (see {@link RtSkyLut}); both share the LUT's own sampler. */
-    public void setSkyLuts(long skyViewImageView, long transmittanceImageView, long sampler) {
+    /** Bind this frame's atmosphere LUTs (see {@link RtSkyLut}); all share the LUT's own sampler. */
+    public void setSkyLuts(long skyViewImageView, long transmittanceImageView, long sampler,
+                           long multiScatterImageView) {
         writeAtlasBinding(WORLD_SKY_VIEW, skyViewImageView, sampler);
         writeAtlasBinding(WORLD_TRANSMITTANCE, transmittanceImageView, sampler);
+        writeAtlasBinding(WORLD_MULTISCATTER, multiScatterImageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

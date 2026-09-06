@@ -53,7 +53,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit4 waves
+    public uint     flags;            // bit0 submerged, bit1 volumetric air fog, bit4 waves
     public uint     maxBounces;
     // ---- Sky state. Only what the CPU alone can know: Minecraft's four eased celestial angles (the
     // 26.2 timeline drives them through a cubic-bezier ease and a datapack may replace the track, so
@@ -75,6 +75,11 @@ public struct WorldPush {
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
     public float4   waterParams;      // xyz linear ACEScg camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
+    // Volumetric air fog. One float4 of shape (density, scale, fade ranges) and one of the ratios and
+    // tuning the scatter integral needs. Bit 1 of `flags` gates the whole effect, so a frame where the
+    // look package disables it pays only the flag test; the constants are pushed regardless.
+    public float4   fogLook0;         // x per-block scatter density at fog base, y Mie phase fraction, z scale height (blocks), w fade end (blocks)
+    public float4   fogLook1;         // x sigmaS/sigmaT scatter fraction, y Mie g, z global intensity multiplier, w beam warmth 0..1
     public float4x4 curViewProj;      // forward camera-relative view-projection
     public uint     breakCount;
     public BreakEntry breaking[8];    // Java capacity and breakCount serialization are generated from this

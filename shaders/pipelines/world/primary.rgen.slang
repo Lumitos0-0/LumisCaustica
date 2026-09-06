@@ -21,6 +21,8 @@ import medium;
 import segment;
 import water;
 import trace;
+import sky;
+import fog;
 import guides;
 
 public PathSegment tracePrimary(PathSegment seg,
@@ -40,7 +42,9 @@ public PathSegment tracePrimary(PathSegment seg,
 
     {
         int bounce = seg.bounce;
-        PathSegment terminal = makePathSegment(ro, rd, throughput, medium,
+        // The terminal record keeps the camera origin (pass B re-traces from it), so it carries no
+        // pre-accumulated fog; pass A only pre-accumulates when it consumes a segment at a split below.
+        PathSegment terminal = makePathSegment(ro, rd, throughput, float3(0.0, 0.0, 0.0), medium,
                                                rayConeWidth, rayConeSpread, seed, bounce,
                                                showCelestial);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
@@ -100,6 +104,21 @@ public PathSegment tracePrimary(PathSegment seg,
         // the record for the next trace. The terminal hit above is deliberately not consumed here.
         if (any(medium.current.extinction > 0.0)) {
             throughput *= exp(-medium.current.extinction * payload.hitT);
+        }
+        // Air fog on the camera->interface walk. Pass B resumes AT the interface (this segment is
+        // consumed here), so it would never see this scattering: fold the transmittance into every
+        // continuation's throughput and carry the inscatter in the record. The two Fresnel branches
+        // together represent one path, so the shared fog term is split by their weights F/(1-F) —
+        // the branch estimates sum to exactly one fog contribution while each keeps its own transport.
+        float3 fogRadiance = float3(0.0, 0.0, 0.0);
+        if (fogIsEnabled(worldPush) && !any(medium.current.extinction > 0.0)) {
+            SkyState state = skyState(worldPush);
+            CelestialLight light = dominantCelestialLight(state, transmittanceLut);
+            light.illuminance = bt709ToAcesCg(light.illuminance);
+            FogIntegral fog = integrateFog(fogState(worldPush), ro, rd, payload.hitT, seed,
+                    light, state);
+            throughput *= fog.transmittance;
+            fogRadiance = fog.inscatter;
         }
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0),
                            RAY_CONE_MIN_WIDTH);
@@ -174,7 +193,7 @@ public PathSegment tracePrimary(PathSegment seg,
             float3 deferredDir = normalize(transmittedDir);
             PathSegment deferred = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
-                    deferredDir, throughput * (1.0 - F), transmittedMedium,
+                    deferredDir, throughput * (1.0 - F), fogRadiance * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true);
             queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
@@ -182,19 +201,21 @@ public PathSegment tracePrimary(PathSegment seg,
             float3 reflectedDir = reflect(rd, n);
             PathSegment reflected = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
-                    reflectedDir, throughput * F, medium,
+                    reflectedDir, throughput * F, fogRadiance * F, medium,
                     rayConeWidth, rayConeSpread, seed ^ 0xa511e9b3u, bounce + 1,
                     true);
             return reflected;
         }
 
         bool hasTransmission = dot(transmittedDir, transmittedDir) > 0.0;
+        // A single continuation also represents the whole post-interface path, so it takes the entire
+        // shared fog term, not a weighted slice.
         PathSegment continuation;
         if (!hasTransmission || F >= 1.0) {
             float3 reflectedDir = reflect(rd, n);
             continuation = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
-                    reflectedDir, throughput * F, medium,
+                    reflectedDir, throughput * F, fogRadiance, medium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true);
         } else {
@@ -206,7 +227,7 @@ public PathSegment tracePrimary(PathSegment seg,
             }
             continuation = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
-                    deferredDir, throughput * (1.0 - F), medium,
+                    deferredDir, throughput * (1.0 - F), fogRadiance, medium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true);
         }
@@ -242,7 +263,7 @@ void main() {
 
     seed = pcg(seed);
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
-            cameraMedium, 0.0, rayConeSpread, seed, 0, true);
+            float3(0.0, 0.0, 0.0), cameraMedium, 0.0, rayConeSpread, seed, 0, true);
     uint nextRecord;
     PathSegment terminal = tracePrimary(
             current, queue, splitRecord, nextRecord);

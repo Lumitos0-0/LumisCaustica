@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class RtLookPackageTest {
     private static final String VALID = """
-            {"schemaVersion":4,"id":"test","packageVersion":1,
+            {"schemaVersion":5,"id":"test","packageVersion":1,
              "exposure":{"minEv":-15,"maxEv":-2,"curve":"-2:-3,2:-2,8:0,15:1"},
              "lmt":{"resource":"lmt.bin"},
              "bloom":{"strength":0.08,"thresholdSceneLinear":1,"softKneeFraction":0.5,"radius":1,
@@ -18,7 +18,10 @@ final class RtLookPackageTest {
              "starLuminanceCdM2":10,"moonPhaseFixedFraction":0.1},
              "sky":{"sunNoonSouthTiltDegrees":30,"sunAngularRadiusDegrees":0.6,
              "moonAngularRadiusDegrees":1.5,"sunDiscHalfAngleDegrees":16.7,
-             "moonDiscHalfAngleDegrees":11.31,"groundAlbedo":0.1,"horizonSoftenDegrees":15}}
+             "moonDiscHalfAngleDegrees":11.31,"groundAlbedo":0.1,"horizonSoftenDegrees":15},
+             "fog":{"enabled":true,"density":0.0035,"mieFraction":0.85,"mieG":0.8,
+             "scaleHeightBlocks":48,"farEndBlocks":320,"scatterFraction":0.9,
+             "intensity":1.0,"warmth":0.35}}
             """;
 
     @Test
@@ -27,11 +30,14 @@ final class RtLookPackageTest {
         assertEquals(6, look.bloom().levels());
         assertEquals(30.0f, look.sky().sunNoonSouthTiltDegrees());
         assertEquals(0.1f, look.sky().groundAlbedo());
+        assertEquals(0.0035f, look.fog().density());
+        assertEquals(0.8f, look.fog().mieG());
+        assertEquals(320.0f, look.fog().farEndBlocks());
     }
 
     @Test
     void rejectsUnknownSchema() {
-        assertThrows(IllegalArgumentException.class, () -> parse(VALID.replace("\"schemaVersion\":4",
+        assertThrows(IllegalArgumentException.class, () -> parse(VALID.replace("\"schemaVersion\":5",
                 "\"schemaVersion\":3")));
     }
 
@@ -47,11 +53,24 @@ final class RtLookPackageTest {
         // A fade still running at the nadir leaves the lower hemisphere with no settled colour.
         assertThrows(IllegalArgumentException.class, () -> parse(
                 VALID.replace("\"horizonSoftenDegrees\":15", "\"horizonSoftenDegrees\":120")));
+        // Fog density is a per-block scattering coefficient; negative is nonsense and a g above 0.95
+        // makes the Cornette-Shanks peak effectively a delta (firefly beam spikes).
+        assertThrows(IllegalArgumentException.class, () -> parse(
+                VALID.replace("\"density\":0.0035", "\"density\":-0.01")));
+        assertThrows(IllegalArgumentException.class, () -> parse(
+                VALID.replace("\"mieG\":0.8", "\"mieG\":0.99")));
     }
 
     @Test
     void rejectsAMissingSkySection() {
         assertThrows(IllegalArgumentException.class, () -> parse(VALID.replace("\"sky\":", "\"nope\":")));
+    }
+
+    @Test
+    void rejectsAMissingFogSection() {
+        // The fog section is mandatory in v5: a package without it is not a fog-aware package, and
+        // silently defaulting would hide a disabled-by-error look.
+        assertThrows(IllegalArgumentException.class, () -> parse(VALID.replace("\"fog\":", "\"nope\":")));
     }
 
     private static RtLookPackage parse(String json) {

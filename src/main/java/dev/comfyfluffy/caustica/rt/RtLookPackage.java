@@ -25,8 +25,9 @@ public record RtLookPackage(
         String lmtResource,
         Bloom bloom,
         Lighting lighting,
-        Sky sky) {
-    public static final int SCHEMA_VERSION = 4;
+        Sky sky,
+        Fog fog) {
+    public static final int SCHEMA_VERSION = 5;
     /** Mirrors RtBloomPipeline.MAX_LEVELS; validated here so a bad package fails at load, not at resize. */
     private static final int MAX_BLOOM_LEVELS = 8;
     public static final String DEFAULT_ID = "default";
@@ -136,8 +137,28 @@ public record RtLookPackage(
         requireRange(sky.horizonSoftenDegrees(), 0.0f, 90.0f,
                 jsonResource, "sky.horizonSoftenDegrees");
 
+        JsonObject fogJson = requiredObject(root, "fog");
+        Fog fog = new Fog(
+                requiredBoolean(fogJson, "enabled"),
+                nonNegative(fogJson, "density", jsonResource, "fog"),
+                nonNegative(fogJson, "mieFraction", jsonResource, "fog"),
+                nonNegative(fogJson, "mieG", jsonResource, "fog"),
+                positive(fogJson, "scaleHeightBlocks", jsonResource, "fog"),
+                positive(fogJson, "farEndBlocks", jsonResource, "fog"),
+                positive(fogJson, "scatterFraction", jsonResource, "fog"),
+                nonNegative(fogJson, "intensity", jsonResource, "fog"),
+                nonNegative(fogJson, "warmth", jsonResource, "fog"));
+        requireRange(fog.density(), 0.0f, 0.1f, jsonResource, "fog.density");
+        requireRange(fog.mieFraction(), 0.0f, 1.0f, jsonResource, "fog.mieFraction");
+        requireRange(fog.mieG(), 0.0f, 0.95f, jsonResource, "fog.mieG");
+        requireRange(fog.scaleHeightBlocks(), 1.0f, 512.0f, jsonResource, "fog.scaleHeightBlocks");
+        requireRange(fog.farEndBlocks(), 16.0f, 2048.0f, jsonResource, "fog.farEndBlocks");
+        requireRange(fog.scatterFraction(), 1.0e-3f, 1.0f, jsonResource, "fog.scatterFraction");
+        requireRange(fog.intensity(), 0.0f, 8.0f, jsonResource, "fog.intensity");
+        requireRange(fog.warmth(), 0.0f, 1.0f, jsonResource, "fog.warmth");
+
         return new RtLookPackage(schemaVersion, id, packageVersion, exposure, lmtResource, bloom,
-                lighting, sky);
+                lighting, sky, fog);
     }
 
     private static RtLookPackage load(String resource) {
@@ -179,6 +200,14 @@ public record RtLookPackage(
             throw new IllegalArgumentException("missing integer " + name);
         }
         return value.getAsInt();
+    }
+
+    private static boolean requiredBoolean(JsonObject object, String name) {
+        JsonElement value = object.get(name);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) {
+            throw new IllegalArgumentException("missing boolean " + name);
+        }
+        return value.getAsBoolean();
     }
 
     private static float requiredFinite(JsonObject object, String name) {
@@ -310,5 +339,26 @@ public record RtLookPackage(
              * without this the horizon reads as a hard grey line. Zero restores the hard ground.
              */
             float horizonSoftenDegrees) {
+    }
+
+    /**
+     * Volumetric air fog. {@code density} is the per-block scattering coefficient at the fog base (sea
+     * level, matching the sky's own altitude reference); the profile is exponential in
+     * {@code scaleHeightBlocks} above it. The Mie phase is a Cornette-Shanks with authored
+     * {@code mieG}, blended with the Rayleigh phase by {@code mieFraction}. {@code scatterFraction} is
+     * sigmaS/sigmaT (the share of extinction that scatters rather than absorbs),
+     * {@code farEndBlocks} where the density fades to zero, {@code intensity} a global multiplier and
+     * {@code warmth} the golden-bias of the direct beams (weighted toward low sun).
+     */
+    public record Fog(
+            boolean enabled,
+            float density,
+            float mieFraction,
+            float mieG,
+            float scaleHeightBlocks,
+            float farEndBlocks,
+            float scatterFraction,
+            float intensity,
+            float warmth) {
     }
 }

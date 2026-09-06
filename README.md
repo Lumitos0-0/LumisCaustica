@@ -25,6 +25,7 @@ changes while the renderer is being built.
 - Dynamic entity rendering in the ray-traced scene
 - LabPBR-style material support
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations
+- Volumetric air fog with ray-traced sun/moon light shafts (per-sample RT visibility, no shadow map)
 
 ## Requirements
 
@@ -80,6 +81,7 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
+- [x] Volumetric air fog — deterministic march, per-sample ray-traced beams, look-package tunable
 - [ ] Nether/End sky, weather, volumetric fog/clouds
 - [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD

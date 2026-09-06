@@ -30,12 +30,17 @@ import trace_ser;
 #endif
 import lighting;
 import sky;
+import fog;
 import bindings;
 
 // Atmospheric transmittance LUT (RtSkyLut), also bound to world.rmiss at the same binding: raygen reads it
 // to colour the NEE sun/moonlight, the miss shader reads it to tint the visible discs and stars.
-public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
-    float3 L = float3(0.0, 0.0, 0.0);
+public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, SkyState sky) {
+    // Pass A may have consumed the camera->interface walk at a dielectric split; its fog integral was
+    // pre-accumulated into the record (already ACEScg and already branch-weighted), so it is added
+    // here before any sampled transport. Originates from the record's R9G9B9E5 lane, fine for this
+    // term's dynamic range — the fog integral stays well below the sun disc even at the forward peak.
+    float3 L = seg.accumFog;
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -89,6 +94,19 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
 
+        // ---- Air fog on this segment. The in-scatter is radiance the path sees along the way, so it is
+        // accumulated with the throughput as it stood BEFORE this segment's extinction; the
+        // transmittance then attenuates everything the segment's end contributes (surface, sky, bounce).
+        // Only air is fogged: the volume dielectrics carry their own absorption through MediumStack.
+        float3 fogTrans = float3(1.0, 1.0, 1.0);
+        if (fogIsEnabled(worldPush) && !any(medium.current.extinction > 0.0)) {
+            float tMax = payload.hitT < 0.0 ? 10000.0 : payload.hitT;
+            FogIntegral fog = integrateFog(fogState(worldPush), ro, rd, tMax, seed,
+                    celestialLight, sky);
+            L += throughput * fog.inscatter;
+            fogTrans = fog.transmittance;
+        }
+
         if (payload.hitT < 0.0) {
             // A ray still in water should leave through a water interface. A miss instead means the
             // streamed/open volume has no known exit; do not reinterpret that unknown region as air
@@ -100,18 +118,20 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into the payload's
             // surface words as a full float3, so this is absolute scene units with nothing to undo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.
-            float3 sky = payloadSky();
-            L += throughput * sky; // escaped to sky
+            float3 skyRadiance = payloadSky();
+            L += throughput * fogTrans * skyRadiance; // escaped to sky, through the fog
             break;
         }
 
         // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
         // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
         // lies within it), shifting the transmitted radiance with distance. Air's extinction is zero, so
-        // the ordinary case costs one comparison.
+        // the ordinary case costs one comparison. Fog only runs in air, so the two terms are mutually
+        // exclusive; fogTrans is folded in right behind whichever applied.
         if (any(medium.current.extinction > 0.0)) {
             throughput *= exp(-medium.current.extinction * payload.hitT);
         }
+        throughput *= fogTrans;
 
         float3 n = payloadNormal(); // oriented toward the incoming ray by the closest-hit
         float3 hitPos = ro + rd * payload.hitT;
@@ -401,8 +421,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
     // Derive this dispatch's directional light once. The same transmittance LUT drives terrain lighting
-    // and the visible sun/moon, keeping atmospheric tint consistent across both consumers.
-    celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
+    // and the visible sun/moon, keeping atmospheric tint consistent across both consumers. The same
+    // SkyState feeds the fog march, so fog samples the same atmosphere the sky itself was baked with.
+    SkyState sky = skyState(worldPush);
+    celestialLight = dominantCelestialLight(sky, transmittanceLut);
     // The path integral is ACEScg end to end; sky.slang works in linear BT.709, so this is the one seam.
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
@@ -417,7 +439,7 @@ void main() {
         PackedPathSegment packed = queue[recordIndex];
         PathSegment segment = unpackPathSegment(packed);
         for (uint s = 0u; s < spp; ++s) {
-            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp);
+            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp, sky);
         }
         if (packed.nextRecord == PATH_NO_NEXT) {
             break;

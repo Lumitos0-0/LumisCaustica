@@ -104,7 +104,9 @@ public final class RtComposite {
     // Hot addresses/frameIndex avoid unnecessary global-memory dereferences; WorldPushConstantsData is
     // generated from the same Slang module and owns this second ABI as well. debugView is no longer
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
-    private static final long PATH_RECORD_BYTES = 48L;
+    // 12-byte ro + ten 4-byte packed lanes (rd, throughput, accumFog, extinctions, iors, cone, seed,
+    // flags, next) — kept in lock-step with PackedPathSegment in segment.slang.
+    private static final long PATH_RECORD_BYTES = 52L;
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -789,7 +791,7 @@ public final class RtComposite {
             // not (a resource reload rebuilds it), so rebind them alongside the atlas.
             if (skyLut != null) {
                 worldPipeline.setSkyLuts(skyLut.skyViewView(), skyLut.transmittanceView(),
-                        skyLut.sampler());
+                        skyLut.sampler(), skyLut.multiScatterView());
             }
         }
         setCelestialUvAtlas(celView);
@@ -1061,9 +1063,13 @@ public final class RtComposite {
             ByteBuffer push = MemoryUtil.memByteBuffer(pushBuf.mapped, WORLD_PUSH_SIZE);
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
-            // submerged, fixing the air→water first-segment orientation) and animated water normals.
-            // Bit 1 remains unused to avoid conflicting with stale external readers.
+            // submerged, fixing the air→water first-segment orientation), volumetric air fog (bit 1,
+            // gated by the look package so a disabled effect costs one flag test in the shaders) and
+            // animated water normals.
             int flags = 0;
+            if (LOOK.fog().enabled()) {
+                flags |= 0b10;
+            }
             var level = Minecraft.getInstance().level;
             if (level != null) {
                 cameraBlockPos.set(Mth.floor(camX), Mth.floor(camY), Mth.floor(camZ));
@@ -1141,6 +1147,8 @@ public final class RtComposite {
                     sky.moonUv(),
                     waterParams,
                     waterAnchor,
+                    sky.fogLook0(),
+                    sky.fogLook1(),
                     mvCurProjView,
                     breaking.length,
                     breaking,
@@ -1335,7 +1343,7 @@ public final class RtComposite {
     }
 
     private record SkyPush(Float4 celestial, Float4 look0, Float4 look1, Float4 look2, Float4 look3,
-                           Float4 sunUv, Float4 moonUv) {}
+                           Float4 sunUv, Float4 moonUv, Float4 fogLook0, Float4 fogLook1) {}
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
 
@@ -1379,7 +1387,10 @@ public final class RtComposite {
 
         RtLookPackage.Sky sky = LOOK.sky();
         RtLookPackage.Lighting lighting = LOOK.lighting();
+        RtLookPackage.Fog fog = LOOK.fog();
         CelestialUv uv = celestialUv(moonPhase);
+        // Fog constants ride beside the sky state because the fog samples the same atmosphere LUTs: the
+        // two must be authored and versioned together, and one push slot means they can never disagree.
         return new SkyPush(
                 new Float4(sunAngle, moonAngle, starAngle, starBrightness),
                 new Float4(lighting.sunIlluminanceLux(), lighting.moonIlluminanceLux(),
@@ -1393,7 +1404,10 @@ public final class RtComposite {
                         viewerAltitudeKm, moonPhase),
                 new Float4(sky.groundAlbedo(), sky.horizonSoftenDegrees() * toRadians, 0f, 0f),
                 uv.sun(),
-                uv.moon());
+                uv.moon(),
+                new Float4(fog.density(), fog.mieFraction(), fog.scaleHeightBlocks(),
+                        fog.farEndBlocks()),
+                new Float4(fog.scatterFraction(), fog.mieG(), fog.intensity(), fog.warmth()));
     }
 
     /**

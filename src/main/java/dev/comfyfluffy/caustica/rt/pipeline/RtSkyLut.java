@@ -226,6 +226,10 @@ public final class RtSkyLut {
         return skyView.view;
     }
 
+    public long multiScatterView() {
+        return multiScatter.view;
+    }
+
     /**
      * Record this frame's sky LUT work: the two static LUTs on the first frame, then the sky-view LUT.
      * Must be recorded before the trace, with a barrier after (the caller's) — the miss and raygen stages
