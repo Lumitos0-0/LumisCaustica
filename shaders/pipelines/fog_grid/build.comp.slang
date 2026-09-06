@@ -122,8 +122,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
     float size = exp2(float(level));               // 1, 2, 4, 8 blocks
     float halfExtent = 64.0 * size;
     int substeps = 1 << level;                     // z-substeps keep 1-block water/leaf steps exact
-    uint cellBytes = FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * 4u;
-    uint levelOffset = uint(level) * cellBytes;
+
+    // Level stride in uint32 ELEMENTS, not bytes: DevicePtr<uint32_t> indexes storage in elements, so a
+    // byte-count levelOffset would push every level past k*8 MiB beyond the 32 MiB volume (level 3 would
+    // write at +96 MiB). The fog.slang fetch uses the same element stride — kept in lock-step.
+    uint cellsPerLevel = FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * FOG_VOLUME_CELLS;
+    uint levelOffset = uint(level) * cellsPerLevel;
 
     float3 backT = float3(1.0, 1.0, 1.0);
     for (int z = FOG_VOLUME_CELLS - 1; z >= 0; z--) {
