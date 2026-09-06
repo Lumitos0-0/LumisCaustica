@@ -60,6 +60,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtFogGrid;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -179,6 +180,7 @@ public final class RtComposite {
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
+    private RtFogGrid fogGrid;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -601,6 +603,11 @@ public final class RtComposite {
                 // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
                 // ensureWorld's own binding order otherwise guarantees never happens.
                 skyLut = RtSkyLut.create(ctx);
+            }
+            if (fogGrid == null) {
+                // The fog-grid bake shares the sky LUT's transmittance texture + sampler so its dominant
+                // light choice can never disagree with the raygen's.
+                fogGrid = RtFogGrid.create(ctx, skyLut.transmittanceView(), skyLut.sampler());
             }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
@@ -1064,16 +1071,13 @@ public final class RtComposite {
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
             // submerged, fixing the air→water first-segment orientation), volumetric air fog (bit 1,
-            // gated by the look package so a disabled effect costs one flag test in the shaders), the
-            // fog ambient term (bit 2, debug toggle isolating the sky-multiscatter in-scatter) and
-            // animated water normals. The two fog debug toggles are read here per frame, so flipping
-            // them in Video Settings applies on the next frame with no pipeline rebuild.
+            // gated by the look package so a disabled effect costs one flag test in the shaders),
+            // entity occlusion (bit 3 — per-step visibility rays for dynamic occluders the fog grid
+            // excludes) and animated water normals. The fog toggle is read here per frame, so flipping
+            // it in Video Settings applies on the next frame with no pipeline rebuild.
             int flags = 0;
             if (LOOK.fog().enabled() && CausticaConfig.Rt.Composite.FOG.value()) {
                 flags |= 0b10;
-                if (CausticaConfig.Rt.Composite.FOG_AMBIENT.value()) {
-                    flags |= 0b100;
-                }
             }
             var level = Minecraft.getInstance().level;
             if (level != null) {
@@ -1126,6 +1130,13 @@ public final class RtComposite {
             RtEntities.FrameEntities fe = RtEntities.INSTANCE.beginFrame(ctx, terrain.staticInstances(),
                     terrain.blockX, terrain.blockY, terrain.blockZ, camX, camY, camZ, frameProjection, frameViewRotation);
             frameEntities = fe;
+            // The fog grid caches TERRAIN occlusion only; dynamic entities are the one occluder it cannot
+            // hold, so when any entity is in the scene the fog march keeps one RT visibility ray per sample
+            // (flag bit 3) and multiplies it into the cached terrain transmittance — the old exact entity
+            // behaviour, with the terrain ray cost gone.
+            if (fe.use()) {
+                flags |= 0b1000;
+            }
             // Block-breaking overlay: resolves each destroy-stage RenderType's texture into the
             // SAME bindless entity-texture array (destroy_stage_N.png is a standalone Sampler0 texture,
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
@@ -1205,6 +1216,7 @@ public final class RtComposite {
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
+                    fogGrid.volumeAddress(), terrain.fogGridAddress(),
                     (int) frameCounter).write(pushConstants);
             // Sky LUTs, from the same WorldPush slot the trace is about to read: the sky the LUT holds and
             // the sky the frame shades are built from one set of angles, not two. Recorded here (after the
@@ -1213,6 +1225,16 @@ public final class RtComposite {
                 skyLut.record(cmd, pushBuf.deviceAddress);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
+
+            // Rebuild the light-space fog transmittance volume before the trace: the raygen's fog march
+            // reads it once per sample (a handful of fetches) instead of tracing a TLAS visibility ray,
+            // which is what made the volume fog slow. Only paid when the fog is actually enabled.
+            if (LOOK.fog().enabled() && CausticaConfig.Rt.Composite.FOG.value()) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.fogGrid")) {
+                    fogGrid.record(cmd, pushBuf.deviceAddress, terrain.fogGridAddress(),
+                            terrain.fogGridShiftX(), terrain.fogGridShiftY(), terrain.fogGridShiftZ());
+                }
+            }
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -1525,6 +1547,10 @@ public final class RtComposite {
         if (skyLut != null) {
             skyLut.destroy();
             skyLut = null;
+        }
+        if (fogGrid != null) {
+            fogGrid.destroy();
+            fogGrid = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();

@@ -1,23 +1,22 @@
 // Volumetric air fog: exponential height haze with physically based in-scatter, integrated into the
 // path integral in world.rgen (indirect pass) and at the pass-A dielectric split. This is the same
-// medium the atmosphere's sky-view LUT runs with — the same Rayleigh/Cornette-Shanks phase functions,
-// the same transmittance LUT for light reaching a sample, the same multiple-scattering LUT for light
-// already scattered by the air — but at block scale around the camera rather than planet scale.
+// medium the atmosphere's sky-view LUT runs with — the same Rayleigh/Cornette-Shanks phase functions and
+// the same transmittance LUT for light reaching a sample — but at block scale around the camera rather
+// than planet scale.
 //
-// The fog RTE splits into two terms that share one march:
+// The single term is the direct beam:
 //
-//   * Direct — sun/moon light scattered toward the viewer: sigmaS * phase(cos) * E_sample *
-//     T_terrain. E_sample is the dominant body's viewer-space illuminance corrected by the
-//     transmittance-LUT ratio between the sample's column and the viewer's (the ratio, not the raw LUT —
-//     the atmosphere must never be applied twice). T_terrain is a hardware RT visibility ray per march
-//     sample (the same TerminateOnFirstHit/SkipClosestHit path surface NEE uses — this renderer has no
-//     shadow map), so canopy and buildings slice the beams at block resolution with real penumbra, not a
-//     binary light test. The LUT colouring is the sky's own, so fog carries the same sunset hue.
-//   * Ambient — the sky's multiple-scattering LUT, evaluated per body and multiplied by the fog's
-//     scattering. It arrives from every direction and has no phase, exactly as
-//     sky.integrateScatteredLuminance adds it. This is what keeps twilight and moonlit night fog
-//     physical rather than black; terrain GI in-scatter is a separate transport term that is not part
-//     of this module.
+//   * Direct — sun/moon light scattered toward the viewer: sigmaS * phase(cos) * E_sample * T_terrain.
+//     E_sample is the dominant body's viewer-space illuminance corrected by the transmittance-LUT ratio
+//     between the sample's column and the viewer's (the ratio, not the raw LUT — the atmosphere must
+//     never be applied twice). T_terrain comes from the per-frame light-space fog volume (see
+//     fog_grid.build.comp): a camera-centered transmittance cache built by marching light columns through
+//     the terrain mesher's occupancy tiles, so a march sample costs a handful of constant-time fetches
+//     instead of a TLAS visibility ray. The volume is rebuilt from the real section geometry every frame
+//     and reads at the same block-subcell resolution, so shafts keep their crisp canopy-sliced edges with
+//     real penumbra — but without the ray cost. Entities are the one dynamic occluder the cache excludes;
+//     when any entity exists (flags bit 3) the march keeps one RT visibility ray per sample for exactly
+//     the old behaviour.
 //
 // The march integrates each constant-density step analytically (Hillaire's
 // (L - L*stepT)/sigmaT form, identical to the sky module), so the count needed to avoid banding is
@@ -42,11 +41,14 @@ import math;
 import bindings;
 
 public static const int   FOG_STEPS = 12;
-public static const float FOG_MIN_DENSITY = 1.0e-4; // per block; below this a sample fires no visibility ray
+public static const float FOG_MIN_DENSITY = 1.0e-4; // per block; below this a sample fires no entity ray
+// Light-space fog volume (see fog_grid.build.comp): 4 levels, 128^3 cells each, cellSize 2^k blocks and
+// extent 64*2^k blocks around the camera. Kept in lock-step with that pass.
+public static const int   FOG_VOLUME_LEVELS = 4;
+public static const int   FOG_VOLUME_CELLS = 128;
 
 public struct FogState {
     public bool   enabled;         // bit 1 of flags — whole effect
-    public bool   ambient;         // bit 2 of flags — sky-multiscatter ambient in-scatter
     public float  density;         // per-block scattering at the fog base
     public float  mieFraction;     // 0 = Rayleigh phase, 1 = Cornette-Shanks
     public float  mieG;            // forward-scatter anisotropy of the Mie part
@@ -60,11 +62,12 @@ public struct FogState {
 public FogState fogState(WorldPush push) {
     FogState f;
     f.enabled = (push.flags & 2u) != 0u;
-    f.ambient = (push.flags & 4u) != 0u;
     f.density = max(push.fogLook0.x, 0.0);
     f.mieFraction = clamp(push.fogLook0.y, 0.0, 1.0);
     f.scaleHeight = max(push.fogLook0.z, 1.0);
-    f.farEnd = max(push.fogLook0.w, 1.0);
+    // The light-space fog volume covers 512 blocks around the camera; beyond that the march has no
+    // terrain-transmittance data, so the authored fade is capped to the cache's extent.
+    f.farEnd = clamp(push.fogLook0.w, 1.0, 512.0);
     f.scatterFraction = clamp(push.fogLook1.x, 1.0e-3, 1.0);
     f.mieG = clamp(push.fogLook1.y, 0.0, 0.95);
     f.intensity = max(push.fogLook1.z, 0.0);
@@ -106,6 +109,56 @@ public struct FogIntegral {
     public float3 transmittance; // Beer-Lambert extinction the segment's later contributions inherit
 };
 
+// Terrain transmittance from p along lightDir, from the per-frame light-space fog volume. The volume is
+// a chain of four cubes: the level containing p covers to its own +z face, then each coarser level takes
+// over at the shared boundary — the chain telescopes to T(p -> light) with at most five fetches. Fetch
+// coordinates are jittered by the path seed so foliage dapples like the per-ray alpha test used to.
+public float3 fogTerrainTransmittance(float3 p, float3 lightDir, inout uint seed) {
+    float3 right;
+    float3 up;
+    celestialSquareFrame(lightDir, right, up);
+    float3 rel = p - worldPush.camOffset;
+    float uw = dot(rel, right);
+    float vw = dot(rel, up);
+    float zw = dot(rel, lightDir);
+
+    // Jitter is ±1 cell of the fetched level on the sample's own fetch only, so it crosses one cell
+    // boundary at every level (level-0 cells are 1 block, so this is the subcell dapple the per-ray
+    // alpha test used to produce) while the shared coarse boundary cells stay fixed per frame and the
+    // far field cannot flicker.
+    float jitter = (rndf(seed) - 0.5) * 2.0;
+
+    int first = 0;
+    for (int k = 0; k < FOG_VOLUME_LEVELS - 1; k++) {
+        float extent = 64.0 * exp2(float(k));
+        if (max(abs(uw), max(abs(vw), abs(zw))) > extent) {
+            first = k + 1;
+        }
+    }
+    float3 transmittance = float3(1.0, 1.0, 1.0);
+    for (int k = first; k < FOG_VOLUME_LEVELS; k++) {
+        float size = exp2(float(k));
+        // Coordinates are CELLS per axis (the volume stores 128 cells of size 2^k per level), so the
+        // fetch index is simply cellCoordinate + 64. For k == first this is the sample itself; for the
+        // coarser levels it is the boundary the previous level ends at (64 * 2^(k-1) blocks = 32 cells
+        // in level k), so the fetched cells tile the ray exactly once.
+        float boundary = (k == first) ? 0.0 : 32.0;
+        float u = (k == first) ? (uw / size + jitter) : (uw / size);
+        float v = (k == first) ? (vw / size + jitter) : (vw / size);
+        float z = (boundary > 0.0 ? boundary : zw / size);
+        int cu = clamp(int(floor(u + 64.0)), 0, FOG_VOLUME_CELLS - 1);
+        int cv = clamp(int(floor(v + 64.0)), 0, FOG_VOLUME_CELLS - 1);
+        int cz = clamp(int(floor(z + 64.0)), 0, FOG_VOLUME_CELLS - 1);
+        uint index = uint((cz * FOG_VOLUME_CELLS + cv) * FOG_VOLUME_CELLS + cu)
+                + uint(k) * uint(FOG_VOLUME_CELLS * FOG_VOLUME_CELLS * FOG_VOLUME_CELLS);
+        uint packed = ConstPtr<uint32_t>(pc.fogVolumeAddr)[index];
+        float3 levelT = float3(float(packed & 0xFFu), float((packed >> 8u) & 0xFFu),
+                float((packed >> 16u) & 0xFFu)) * (1.0 / 255.0);
+        transmittance *= levelT;
+    }
+    return transmittance;
+}
+
 public FogIntegral fogNoScatter() {
     FogIntegral result;
     result.inscatter = float3(0.0, 0.0, 0.0);
@@ -117,9 +170,9 @@ public FogIntegral fogNoScatter() {
  * March the fog along one segment and return its view-integrated in-scatter plus transmittance.
  *
  * {@code ro}/{@code rd} are the segment as the path tracer holds it; {@code light} is the dominant
- * celestial light in ACEScg illuminance and {@code sky} the per-frame sky state (both bodies' ambient
- * illuminance/directions). {@code tMax} is the geometry distance (miss case uses 10000; the march caps
- * itself at {@code fog.farEnd}).
+ * celestial light in ACEScg illuminance and {@code sky} the per-frame sky state (its viewer radius and
+ * body directions are what the atmosphere ratio needs). {@code tMax} is the geometry distance (miss case
+ * uses 10000; the march caps itself at {@code fog.farEnd}).
  */
 public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, uint seed,
                                 CelestialLight light, SkyState sky) {
@@ -149,18 +202,6 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
     uint marchSeed = seed;
     marchSeed = pcg(marchSeed);
     float jitter = rndf(marchSeed);
-    // One sky-occlusion probe per march feeds the ambient term: the multiscatter LUT is light already
-    // in the sky, so it must not light fog behind a roof. Single ray, shared by every step — coherent,
-    // and it stays a rough heuristic rather than a second per-sample cost. Debug toggle: with the
-    // ambient term off (flags bit 2) the probe is not fired at all, so the direct-beam-only test costs
-    // the same as a plain fog-off frame minus the march.
-    float skyVisible = 0.0;
-    if (fog.ambient) {
-        float3 mid = ro + rd * (tEnd * 0.5);
-        VisibilityResult skyVis = visibility(mid, float3(0.0, 1.0, 0.0), 10000.0);
-        skyVisible = max(skyVis.transmittance.x,
-                max(skyVis.transmittance.y, skyVis.transmittance.z));
-    }
 
     for (int i = 0; i < FOG_STEPS; i++) {
         float u0 = (float(i) + jitter) / float(FOG_STEPS);
@@ -186,14 +227,22 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         float3 sigmaS = sigma * beamTint;
         float3 stepT = exp(-sigmaT * dt);
 
-        // Direct: one RT visibility ray toward the jittered body. Jitter within the body's half-angle
-        // gives the penumbra the surface NEE already uses; the ray itself is the accurate terrain
-        // transmittance (T_terrain), NOT a shadow-map binary.
+        // Direct: the terrain transmittance comes from the per-frame light-space volume (a handful of
+        // constant-time fetches — the entire ray cost is gone). The light direction is jittered within the
+        // body's half-angle for the penumbra the surface NEE already uses; when any entity is present
+        // (flags bit 3) one RT visibility ray per sample adds the dynamic occluders the cache excludes,
+        // restoring exactly the old entity behaviour.
         uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
         stepSeed = pcg(stepSeed);
         float3 lightDir = light.halfAngle > 0.0
                 ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
-        VisibilityResult vis = visibility(p, lightDir, 10000.0);
+        float3 terrainT = fogTerrainTransmittance(p, lightDir, stepSeed);
+        if ((worldPush.flags & 8u) != 0u) {
+            // Bounded to the fog volume's extent: the march never scatters beyond farEnd (≤ 512), so an
+            // occluder farther away cannot affect this segment — shorter rays, same result.
+            VisibilityResult vis = visibility(p, lightDir, 512.0);
+            terrainT *= vis.transmittance;
+        }
         float cosTheta = dot(rd, light.dir);
         float phase = lerp(rayleighPhase(cosTheta), fogMiePhase(cosTheta, fog.mieG), fog.mieFraction);
         float radiusKm = ATMOS_BOTTOM_KM + max(fogAltitudeKm(p), MIN_VIEWER_ALTITUDE_KM);
@@ -206,22 +255,10 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         float3 sampleT = transmittanceToSpace(transmittanceLut, radiusKm, lightDir, light.halfAngle);
         float viewerLum = dot(viewerT, float3(0.2126, 0.7152, 0.0722));
         float3 sampleRelT = viewerLum > 1.0e-4 ? sampleT / max(viewerT, float3(1.0e-4)) : float3(1.0);
-        float3 direct = sigmaS * (phase * (light.illuminance * bt709ToAcesCg(sampleRelT) * vis.transmittance));
-
-        // Ambient: second-and-higher order atmosphere light per unit illuminance, both bodies, with one
-        // coarse terrain-sky occlusion probe so enclosed fog does not glow. Skipped when the debug
-        // toggle disables it, leaving the direct beam term as the only fog light.
-        float3 ambient = float3(0.0, 0.0, 0.0);
-        if (fog.ambient) {
-            float3 ambient709 = sampleMultiScatter(multiScatterLut, radiusKm, sky.sunDir.y)
-                    * sky.sunIlluminance
-                    + sampleMultiScatter(multiScatterLut, radiusKm, sky.moonDir.y) * sky.moonIlluminance;
-            ambient = sigmaS * bt709ToAcesCg(ambient709)
-                    * float3(skyVisible, skyVisible, skyVisible);
-        }
+        float3 direct = sigmaS * (phase * (light.illuminance * bt709ToAcesCg(sampleRelT) * terrainT));
 
         // Analytic constant-medium segment integral, same form the sky's raymarch uses.
-        float3 scattered = direct + ambient;
+        float3 scattered = direct;
         float3 safeExtinction = max(sigmaT, float3(1.0e-6));
         result.inscatter += T * (scattered - scattered * stepT) / safeExtinction;
         T *= stepT;

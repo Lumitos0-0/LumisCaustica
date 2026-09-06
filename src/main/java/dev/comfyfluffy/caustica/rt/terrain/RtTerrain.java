@@ -49,6 +49,8 @@ import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.Vector3fc;
+import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.vulkan.VK10;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -195,6 +197,24 @@ public final class RtTerrain {
     // STREAM_FALLBACK_AFTER_NANOS).
     private long lastFrameStreamNanos;
 
+    // Fog-grid section grid: 64^3 u64 device addresses of resident section occupancy tiles, indexed by
+    // 16-block-aligned coordinates relative to fogGridOrigin* (see fog_grid.build.comp). 0 = no tile
+    // (unloaded/clear). This is the CPU-side source the per-frame fog transmittance volume is baked from;
+    // RtComposite pushes its device address + gridShift with the bake. The grid is invariant between
+    // publishes except for whole-section edits, so tiles are patched incrementally and fully rebuilt only
+    // on rebase or when the player crosses a section boundary (the volume is camera-centered).
+    private static final int FOG_GRID_CELLS = 64;
+    private static final int FOG_GRID_HALF = 32;
+    private static final int FOG_GRID_ENTRIES = FOG_GRID_CELLS * FOG_GRID_CELLS * FOG_GRID_CELLS;
+    private static final long FOG_GRID_BYTES = (long) FOG_GRID_ENTRIES * Long.BYTES;
+    private final long[] fogSectionGrid = new long[FOG_GRID_ENTRIES];
+    private RtBuffer fogGridBuffer;
+    private int fogGridOriginX;
+    private int fogGridOriginY;
+    private int fogGridOriginZ;
+    private long fogGridDirtyStart = Long.MAX_VALUE;
+    private long fogGridDirtyEnd;
+
     private RtTerrain() {
         missingIndex.defaultReturnValue(NO_MISSING_INDEX);
         queuedDirtyGroup.defaultReturnValue(NO_DIRTY_GROUP);
@@ -233,6 +253,31 @@ public final class RtTerrain {
     /** Section table device address: {@code {u64 primAddr, u64 uvAddr, u32 triBase[4]}} per section, indexed by gl_InstanceCustomIndexEXT. */
     public long tableAddress() {
         return table.address();
+    }
+
+    /** Fog-grid section grid device address ({@code u64} occupancy-tile addresses in {@code {sz,sy,sx}} z-major
+     *  order), or 0 until the first section is published. 0 entries read as clear in the bake. */
+    public long fogGridAddress() {
+        return fogGridBuffer != null ? fogGridBuffer.deviceAddress : 0L;
+    }
+
+    /**
+     * The bake maps a rebased point {@code p} into grid coordinates as {@code q = p + gridShift} and
+     * derives the section index from {@code floor(q / 16)}, so this is exactly {@code rebaseOrigin −
+     * gridOrigin} in blocks: the 16-aligned parts of the two cancel inside {@code floor(q / 16)}, leaving
+     * the section offset. Signed, because the player may travel behind the last rebase origin between
+     * rebases while the grid keeps its own recentered window.
+     */
+    public int fogGridShiftX() {
+        return blockX - fogGridOriginX;
+    }
+
+    public int fogGridShiftY() {
+        return blockY - fogGridOriginY;
+    }
+
+    public int fogGridShiftZ() {
+        return blockZ - fogGridOriginZ;
     }
 
     /** RIS-sampled global light buffer device address, or 0 while no lights are published. */
@@ -440,6 +485,16 @@ public final class RtTerrain {
             return;
         }
         lastFrameStreamNanos = System.nanoTime();
+        int pbx = mc.player.getBlockX();
+        int pby = mc.player.getBlockY();
+        int pbz = mc.player.getBlockZ();
+        if (fogGridBuffer != null
+                && ((pbx >> 4) != (fogGridOriginX >> 4) || (pby >> 4) != (fogGridOriginY >> 4)
+                || (pbz >> 4) != (fogGridOriginZ >> 4))) {
+            // The fog volume is camera-centered and rebuilt every frame, while the section grid is only
+            // re-anchored on a section boundary; keep the two windows aligned.
+            rebuildFogGrid(ctx, pbx, pby, pbz);
+        }
         stream(ctx);
     }
 
@@ -1487,6 +1542,7 @@ public final class RtTerrain {
             boolean removesPublishedLights = current == g && hasLights(g.lights);
             int removedLightSlot = removesPublishedLights ? g.slot : -1;
             table.removePublished(resident, published, g);
+            fogGridClear(g);
             lightsChanged |= removesPublishedLights;
             if (removedLightSlot >= 0) lightSections.remove(removedLightSlot);
         }
@@ -1494,6 +1550,11 @@ public final class RtTerrain {
 
 
         if (!prepared.isEmpty()) {
+            if (fogGridBuffer == null) {
+                // First publish: anchor the section grid on the player now (the player may be far from
+                // world origin, and a grid left at (0,0,0) would silently drop every off-window section).
+                rebuildFogGrid(ctx, rbx, rby, rbz);
+            }
             Generation oldGeneration = table.beginWriteGeneration(ctx, table.liveSlotCapacity(prepared, resident));
             if (oldGeneration != null) {
                 retireGeneration(ctx, lastGraphicsUse, oldGeneration);
@@ -1531,6 +1592,7 @@ public final class RtTerrain {
             }
             if (sectionLightsChanged || prev == null) updateLightSection(g);
             published.add(ps.key());
+            fogGridWrite(g.sx >> 4, g.sy >> 4, g.sz >> 4, g.fogTiles.deviceAddress);
         }
         table.flushWrites();
 
@@ -1564,6 +1626,12 @@ public final class RtTerrain {
             // Zero resident sections (e.g. every section just evicted on a respawn) is a transient
             // streaming state, not "no world" — keep tracing (sky/entities only) instead of handing the
             // frame back to vanilla; see ensureEmptyTableReady.
+            if (fogGridBuffer != null) {
+                Arrays.fill(fogSectionGrid, 0L);
+                fogGridDirtyStart = 0L;
+                fogGridDirtyEnd = FOG_GRID_BYTES;
+                flushFogGrid();
+            }
             markLightHierarchyDirty();
             flushLightHierarchyUpdate(ctx);
             ensureEmptyTableReady(ctx);
@@ -1579,7 +1647,11 @@ public final class RtTerrain {
             blockX = rbx;
             blockY = rby;
             blockZ = rbz;
+            // Re-anchor the section grid at the new player position; the fog volume re-centers on the
+            // same frame's camOffset, so the two stay aligned through the teleport.
+            rebuildFogGrid(ctx, rbx, rby, rbz);
         }
+        flushFogGrid();
         table.instances = table.instanceList;
         if (lightsChanged || rebase) {
             markLightHierarchyDirty();
@@ -1629,6 +1701,85 @@ public final class RtTerrain {
     private void ensureEmptyTableReady(RtContext ctx) {
         table.ensureEmpty(ctx);
         ready = true;
+    }
+
+    // ---- Fog-grid section grid (see the field block above) -------------------------------------------
+
+    /** Lazily allocate the 64^3 address grid, cleared (all sections absent) on first use. */
+    private void ensureFogGridBuffer(RtContext ctx) {
+        if (fogGridBuffer != null) {
+            return;
+        }
+        fogGridBuffer = ctx.createBuffer(FOG_GRID_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                "fog section grid");
+        MemoryUtil.memLongBuffer(fogGridBuffer.mapped, FOG_GRID_ENTRIES).put(fogSectionGrid);
+        fogGridBuffer.flush();
+    }
+
+    private boolean fogGridContains(int scx, int scy, int scz) {
+        int rx = scx - (fogGridOriginX >> 4);
+        int ry = scy - (fogGridOriginY >> 4);
+        int rz = scz - (fogGridOriginZ >> 4);
+        return rx >= -FOG_GRID_HALF && rx < FOG_GRID_HALF
+                && ry >= -FOG_GRID_HALF && ry < FOG_GRID_HALF
+                && rz >= -FOG_GRID_HALF && rz < FOG_GRID_HALF;
+    }
+
+    /** Patch one section slot; sections outside the current grid window are simply absent (0 = clear). */
+    private void fogGridWrite(int scx, int scy, int scz, long tileAddress) {
+        if (fogGridBuffer == null || !fogGridContains(scx, scy, scz)) {
+            return;
+        }
+        int rx = scx - (fogGridOriginX >> 4) + FOG_GRID_HALF;
+        int ry = scy - (fogGridOriginY >> 4) + FOG_GRID_HALF;
+        int rz = scz - (fogGridOriginZ >> 4) + FOG_GRID_HALF;
+        int index = (rz * FOG_GRID_CELLS + ry) * FOG_GRID_CELLS + rx;
+        if (fogSectionGrid[index] == tileAddress) {
+            return;
+        }
+        fogSectionGrid[index] = tileAddress;
+        long start = (long) index * Long.BYTES;
+        fogGridDirtyStart = Math.min(fogGridDirtyStart, start);
+        fogGridDirtyEnd = Math.max(fogGridDirtyEnd, start + Long.BYTES);
+    }
+
+    private void fogGridClear(SectionGeom g) {
+        fogGridWrite(g.sx >> 4, g.sy >> 4, g.sz >> 4, 0L);
+    }
+
+    /**
+     * Re-anchor the section grid at a 16-block-aligned world position and rebuild every entry from the
+     * current residency. Runs on rebase and whenever the player crosses a section boundary, keeping the
+     * grid window centered on the camera the fog volume is centered on.
+     */
+    private void rebuildFogGrid(RtContext ctx, int centerX, int centerY, int centerZ) {
+        fogGridOriginX = centerX & ~15;
+        fogGridOriginY = centerY & ~15;
+        fogGridOriginZ = centerZ & ~15;
+        ensureFogGridBuffer(ctx);
+        if (fogGridBuffer == null) {
+            return;
+        }
+        Arrays.fill(fogSectionGrid, 0L);
+        for (SectionGeom g : resident.values()) {
+            fogGridWrite(g.sx >> 4, g.sy >> 4, g.sz >> 4, g.fogTiles.deviceAddress);
+        }
+        flushFogGrid();
+    }
+
+    /** Copy the dirty range of the CPU grid into the mapped buffer and flush it. */
+    private void flushFogGrid() {
+        if (fogGridBuffer == null || fogGridDirtyStart == Long.MAX_VALUE) {
+            return;
+        }
+        long start = fogGridDirtyStart;
+        long length = fogGridDirtyEnd - start;
+        fogGridDirtyStart = Long.MAX_VALUE;
+        fogGridDirtyEnd = 0L;
+        int first = (int) (start / Long.BYTES);
+        int count = (int) (length / Long.BYTES);
+        MemoryUtil.memLongBuffer(fogGridBuffer.mapped + start, count).put(fogSectionGrid, first, count);
+        fogGridBuffer.flush(start, length);
     }
 
     /** Queue old GPU resources until the last graphics submission that could reference them completes. */
@@ -1683,6 +1834,14 @@ public final class RtTerrain {
         ctx.waitIdle();
         ctx.gpuExecutor().flushDestroysAfterDeviceIdle();
         table.destroyRecycledGenerations();
+        fogGridDirtyStart = Long.MAX_VALUE;
+        fogGridDirtyEnd = 0L;
+        Arrays.fill(fogSectionGrid, 0L);
+        fogGridOriginX = fogGridOriginY = fogGridOriginZ = 0;
+        if (fogGridBuffer != null) {
+            fogGridBuffer.destroy();
+            fogGridBuffer = null;
+        }
         snapshots.clear();
         synchronized (dirtyLock) {
             dirty.clear(); // any pending re-extract keys refer to the old world/coords — drop them
@@ -1816,6 +1975,18 @@ public final class RtTerrain {
             retireGeneration(ctx, lastGraphicsUse, oldGeneration);
         }
         lightGrid.invalidate(ctx, lastGraphicsUse);
+        // The fog grid is read by this frame's compute bake; retire it with the rest of the detached
+        // world state so an in-flight frame never touches freed memory. The grid then reads as absent
+        // until the new world's first section publishes.
+        fogGridDirtyStart = Long.MAX_VALUE;
+        fogGridDirtyEnd = 0L;
+        Arrays.fill(fogSectionGrid, 0L);
+        fogGridOriginX = fogGridOriginY = fogGridOriginZ = 0;
+        RtBuffer oldFogGrid = fogGridBuffer;
+        fogGridBuffer = null;
+        if (oldFogGrid != null) {
+            ctx.gpuExecutor().retireAfterGraphics(lastGraphicsUse, oldFogGrid::destroy);
+        }
         if (!oldGeometry.isEmpty()) {
             ArrayList<SectionGeom> retirement = new ArrayList<>(oldGeometry);
             ctx.gpuExecutor().retireAfterGraphics(lastGraphicsUse,

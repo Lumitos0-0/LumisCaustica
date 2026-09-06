@@ -41,6 +41,7 @@ final class RtSectionBuilder {
         RtBuffer indices = null;
         RtBuffer uvs = null;
         RtBuffer material = null;
+        RtBuffer fogTiles = null;
         RtBuffer upload = null;
         RtAccel.PreparedBlas blas = null;
         try {
@@ -48,6 +49,7 @@ final class RtSectionBuilder {
             long indicesBytes = (long) packed.indices().length * Integer.BYTES;
             long uvsBytes = (long) packed.uvs().length * Float.BYTES;
             long materialBytes = (long) packed.material().length * Float.BYTES;
+            long fogBytes = (long) packed.fogTiles().length * Integer.BYTES;
             int transferDst = VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
             positions = ctx.createAsyncBuffer(positionsBytes, asInput | transferDst, false,
@@ -56,8 +58,12 @@ final class RtSectionBuilder {
                     label + " indices");
             uvs = ctx.createAsyncBuffer(uvsBytes, storage | transferDst, false, label + " uvs");
             material = ctx.createAsyncBuffer(materialBytes, storage | transferDst, false, label + " material");
-            upload = ctx.createUploadBuffer(positionsBytes + indicesBytes + uvsBytes + materialBytes,
-                    label + " upload");
+            // Fog-grid occupancy tile: 16^3 x uint32, the terrain-side source the light-space fog volume
+            // is baked from (see RtFogGrid / fog_grid.build.comp). The volume bake reads it by device
+            // address through the section grid, so it is part of this section's resident ABI.
+            fogTiles = ctx.createAsyncBuffer(fogBytes, storage | transferDst, false, label + " fog tiles");
+            upload = ctx.createUploadBuffer(positionsBytes + indicesBytes + uvsBytes + materialBytes
+                    + fogBytes, label + " upload");
 
             long cursor = upload.mapped;
             MemoryUtil.memFloatBuffer(cursor, packed.positions().length).put(packed.positions());
@@ -67,18 +73,21 @@ final class RtSectionBuilder {
             MemoryUtil.memFloatBuffer(cursor, packed.uvs().length).put(packed.uvs());
             cursor += uvsBytes;
             MemoryUtil.memFloatBuffer(cursor, packed.material().length).put(packed.material());
+            cursor += materialBytes;
+            MemoryUtil.memIntBuffer(cursor, packed.fogTiles().length).put(packed.fogTiles());
             upload.flush();
 
             blas = RtAccel.prepareTerrainBlas(ctx, positions, vertCount, indices,
                     packed.bucketTris(), ommInput, compactBlas, label + " BLAS");
-            return new PreparedSection(key, positions, indices, uvs, material, upload, blas,
+            return new PreparedSection(key, positions, indices, uvs, material, fogTiles, upload, blas,
                     packed.triBase(), sox, soy, soz, packed.lights());
         } catch (Throwable t) {
             if (blas != null) {
-                destroy(new PreparedSection(key, positions, indices, uvs, material, upload, blas,
+                destroy(new PreparedSection(key, positions, indices, uvs, material, fogTiles, upload, blas,
                         packed.triBase(), sox, soy, soz, packed.lights()));
             } else {
                 if (upload != null) upload.destroy();
+                if (fogTiles != null) fogTiles.destroy();
                 if (material != null) material.destroy();
                 if (uvs != null) uvs.destroy();
                 if (indices != null) indices.destroy();
@@ -125,15 +134,18 @@ final class RtSectionBuilder {
         prepared.blas.accel.destroy();
         prepared.upload.destroy();
         prepared.material.destroy();
+        prepared.fogTiles.destroy();
         prepared.uvs.destroy();
         prepared.indices.destroy();
         prepared.positions.destroy();
     }
 
     /** Worker-owned native section state paired with its prepared BLAS. {@code lights} = packed
-     *  section-local RIS light records (CPU-side, flattened into the global buffer at publish). */
+     *  section-local RIS light records (CPU-side, flattened into the global buffer at publish);
+     *  {@code fogTiles} = resident 16^3 occupancy tile the fog volume is baked from. */
     record PreparedSection(long key, RtBuffer positions, RtBuffer indices, RtBuffer uvs,
-                           RtBuffer material, RtBuffer upload, RtAccel.PreparedBlas blas, int[] triBase,
+                           RtBuffer material, RtBuffer fogTiles, RtBuffer upload,
+                           RtAccel.PreparedBlas blas, int[] triBase,
                            int sx, int sy, int sz, float[] lights) {
         void releaseUpload() {
             upload.destroy();
@@ -145,7 +157,7 @@ final class RtSectionBuilder {
         }
 
         PreparedSection withBlas(RtAccel.PreparedBlas replacement) {
-            return new PreparedSection(key, positions, indices, uvs, material, upload, replacement,
+            return new PreparedSection(key, positions, indices, uvs, material, fogTiles, upload, replacement,
                     triBase, sx, sy, sz, lights);
         }
     }

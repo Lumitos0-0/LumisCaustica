@@ -27,6 +27,8 @@ public struct WorldPushConstants {
     public uint64_t lightGridCellAddr;   // dense light grid cell headers (0 = global proposals only)
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
+    public uint64_t fogVolumeAddr;       // per-frame light-space fog transmittance volume (0 = fog off/unbuilt)
+    public uint64_t fogGridAddr;         // section-coordinate -> occupancy-tile-address table (0 = unbuilt)
     public uint frameIndex;
 };
 
@@ -35,6 +37,22 @@ public struct WorldPushConstants {
 // per-frame source of sky state and no way for the LUT and the frame it shades to disagree.
 public struct PushAddr {
     public uint64_t worldPushAddr;
+};
+
+// Fog-grid bake push block. The bake is descriptor-free: everything it touches is reached through the
+// three device addresses here. gridShift maps a rebased world point p into grid coordinates as
+// q = p + gridShift, so it is exactly rebaseOrigin − gridOrigin (16-aligned, in blocks) — signed because
+// the player can travel behind the last rebase origin between rebases, and the floor(q/16) section index
+// is what the CPU uses to publish tiles. One frame's bake reads the section grid the CPU just published
+// and writes the light-space transmittance volume both raygen passes sample, so it also uses the same
+// WorldPush slot as the trace.
+public struct FogGridPush {
+    public uint64_t worldPushAddr;
+    public uint64_t fogGridAddr;
+    public uint64_t fogVolumeAddr;
+    public int32_t  gridShiftX;
+    public int32_t  gridShiftY;
+    public int32_t  gridShiftZ;
 };
 
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
@@ -53,7 +71,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit1 volumetric air fog, bit2 fog ambient (sky multiscatter), bit4 waves
+    public uint     flags;            // bit0 submerged, bit1 volumetric air fog, bit3 entity occlusion (per-step RT rays), bit4 waves
     public uint     maxBounces;
     // ---- Sky state. Only what the CPU alone can know: Minecraft's four eased celestial angles (the
     // 26.2 timeline drives them through a cubic-bezier ease and a datapack may replace the track, so

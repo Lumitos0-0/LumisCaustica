@@ -86,6 +86,18 @@ void probePushAddr(uint3 id : SV_DispatchThreadID) {
     }
 }
 
+// The fog-grid bake pushes its three device addresses plus the rebase remainder (world_common.FogGridPush).
+[[vk::push_constant]] FogGridPush fogGridPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogGridPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(fogGridPushProbe.worldPushAddr)
+                + float(fogGridPushProbe.gridShiftX) + float(fogGridPushProbe.gridShiftY)
+                + float(fogGridPushProbe.gridShiftZ);
+    }
+}
+
 [[vk::push_constant]] BloomPush bloomPushProbe;
 [shader("compute")]
 [numthreads(1, 1, 1)]

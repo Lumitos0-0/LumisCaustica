@@ -152,7 +152,9 @@ public record RtLookPackage(
         requireRange(fog.mieFraction(), 0.0f, 1.0f, jsonResource, "fog.mieFraction");
         requireRange(fog.mieG(), 0.0f, 0.95f, jsonResource, "fog.mieG");
         requireRange(fog.scaleHeightBlocks(), 1.0f, 512.0f, jsonResource, "fog.scaleHeightBlocks");
-        requireRange(fog.farEndBlocks(), 16.0f, 2048.0f, jsonResource, "fog.farEndBlocks");
+        // The fog cache covers 512 blocks around the camera; larger authored values are clamped in the
+        // shader, so keep the validation honest about the supported range.
+        requireRange(fog.farEndBlocks(), 16.0f, 512.0f, jsonResource, "fog.farEndBlocks");
         requireRange(fog.scatterFraction(), 1.0e-3f, 1.0f, jsonResource, "fog.scatterFraction");
         requireRange(fog.intensity(), 0.0f, 8.0f, jsonResource, "fog.intensity");
         requireRange(fog.warmth(), 0.0f, 1.0f, jsonResource, "fog.warmth");

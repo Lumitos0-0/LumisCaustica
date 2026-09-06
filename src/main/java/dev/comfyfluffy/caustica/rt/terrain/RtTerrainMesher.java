@@ -178,7 +178,8 @@ final class RtTerrainMesher {
             vertBase += vertSize / 3;
             triAcc += bucketTris[b];
         }
-        return new PackedSection(positions, indices, uvs, material, bucketTris, triBase, lights);
+        return new PackedSection(positions, indices, uvs, material, bucketTris, triBase, lights,
+                mesh.fogTiles);
     }
 
     private static void tessellate(BlockAndTintGetter region, BlockStateModelSet modelSet,
@@ -204,6 +205,13 @@ final class RtTerrainMesher {
                     // (15) rides the emission channel (water emits 0).
                     FluidState fluid = state.getFluidState();
                     if (!fluid.isEmpty()) {
+                        // The whole cell is water for the fog grid (the surface quads are what the light
+                        // ray crosses; waterlogged models keep water semantics so the volume tint matches
+                        // the visibility any-hit path rather than double-counting a solid model). Lava gets
+                        // the same subcell and class story as any opaque emitter: solid.
+                        boolean water = fluid.is(FluidTags.WATER);
+                        mesh.markFogTile(lx, ly, lz, 0xFF,
+                                water ? SectionMesh.FOG_CLASS_WATER : SectionMesh.FOG_CLASS_SOLID);
                         fluidCapture.emission = state.getLightEmission() / 15f;
                         // Water is the dielectric fluid; lava stays an opaque emitter. Tagged per-prim
                         // so the path tracer can branch (see emitQuad).
@@ -237,9 +245,10 @@ final class RtTerrainMesher {
     }
 
     /** Worker-packed terrain payload; native preparation allocates buffers and bulk-copies these arrays.
-     *  {@code lights} = packed section-local RIS light records (possibly empty), CPU-side only. */
+     *  {@code lights} = packed section-local RIS light records (possibly empty), CPU-side only;
+     *  {@code fogTiles} = 4096 occupancy uints for the fog grid (see {@link SectionMesh}), CPU-side only. */
     record PackedSection(float[] positions, int[] indices, float[] uvs, float[] material,
-                         int[] bucketTris, int[] triBase, float[] lights) {
+                         int[] bucketTris, int[] triBase, float[] lights, int[] fogTiles) {
     }
 
 
@@ -277,6 +286,17 @@ final class RtTerrainMesher {
             return geomOrEmpty(cutout);
         }
 
+        // Fog-grid occupancy: one uint per block (x-major index (ly*16 + lz)*16 + lx), bits 0..7 = 2x2x2
+        // subcell mask (bit s = sx + sy*2 + sz*4), bits 8..10 = material class (1 solid, 2 cutout,
+        // 3 translucent, 4 water). This is the source the light-space fog volume is baked from, so its
+        // format is an ABI with fog_grid.build.comp and RtFogGrid — do not repack without touching all three.
+        static final int FOG_CLASS_SHIFT = 8;
+        static final int FOG_CLASS_SOLID = 1;
+        static final int FOG_CLASS_CUTOUT = 2;
+        static final int FOG_CLASS_TRANSLUCENT = 3;
+        static final int FOG_CLASS_WATER = 4;
+        final int[] fogTiles = new int[4096];
+
         Geom opaque() {
             return opaque != null ? opaque : (opaque = new Geom(OPAQUE_TRI_CAP));
         }
@@ -310,6 +330,32 @@ final class RtTerrainMesher {
             resetGeom(cutout);
             resetGeom(translucent);
             resetGeom(water);
+            java.util.Arrays.fill(fogTiles, 0);
+        }
+
+        /** OR {@code mask} into a block and keep the strongest material class (solid > water > cutout > translucent). */
+        void markFogTile(int bx, int by, int bz, int mask, int cls) {
+            int index = (by * 16 + bz) * 16 + bx;
+            int existing = fogTiles[index];
+            int existingClass = (existing >> FOG_CLASS_SHIFT) & 7;
+            int priority = fogClassPriority(cls);
+            int existingPriority = fogClassPriority(existingClass);
+            int classBits = priority < existingPriority || existingClass == 0 ? cls : existingClass;
+            fogTiles[index] = (existing & 0xFF) | mask | (classBits << FOG_CLASS_SHIFT);
+        }
+
+        /** Smallest value = strongest occluder; 0 (empty) never replaces a set class. */
+        private static int fogClassPriority(int cls) {
+            if (cls == FOG_CLASS_SOLID) {
+                return 0;
+            }
+            if (cls == FOG_CLASS_WATER) {
+                return 1;
+            }
+            if (cls == FOG_CLASS_CUTOUT) {
+                return 2;
+            }
+            return 3;
         }
 
         private static void resetGeom(Geom geom) {
@@ -589,6 +635,64 @@ final class RtTerrainMesher {
             }
         }
 
+        /**
+         * Mark the 2x2x2 subcells of the quad's block that its surface passes through. Each subcell is
+         * tested at its centre in the quad's projected plane (dominant normal axis), so a leaf cross gets
+         * a diagonal pattern of holes rather than a solid block — the fog volume's lateral jitter then
+         * reads those holes as dappled light exactly like the per-ray alpha test did.
+         */
+        private static int quadFogMask(PendingQuad q, int bx, int by, int bz) {
+            float ax = Math.abs(q.nx), ay = Math.abs(q.ny), az = Math.abs(q.nz);
+            boolean projX = az >= ax && az >= ay; // x,y plane
+            boolean projY = !projX && ay >= ax;   // x,z plane
+            int mask = 0;
+            for (int sx = 0; sx < 2; sx++) {
+                for (int sy = 0; sy < 2; sy++) {
+                    for (int sz = 0; sz < 2; sz++) {
+                        float px = bx + 0.25f + 0.5f * sx;
+                        float py = by + 0.25f + 0.5f * sy;
+                        float pz = bz + 0.25f + 0.5f * sz;
+                        float pu = projX ? px : (projY ? px : py);
+                        float pv = projX ? py : (projY ? pz : pz);
+                        if (inQuad(q, projX, projY, pu, pv)) {
+                            mask |= 1 << (sx + sy * 2 + sz * 4);
+                        }
+                    }
+                }
+            }
+            return mask;
+        }
+
+        /**
+         * Point-in-quad via the two triangles of the projected corners (0,1,2 / 0,2,3), barycentric sign
+         * test. The projection matches {@code quadFogMask}'s dominant-axis choice; accessing the corners
+         * through this switch keeps the hot path allocation-free on worker threads.
+         */
+        private static boolean inQuad(PendingQuad q, boolean projX, boolean projY, float pu, float pv) {
+            float ax = projX ? q.x[0] : (projY ? q.x[0] : q.y[0]);
+            float ay = projX ? q.y[0] : (projY ? q.z[0] : q.z[0]);
+            float bx = projX ? q.x[1] : (projY ? q.x[1] : q.y[1]);
+            float by = projX ? q.y[1] : (projY ? q.z[1] : q.z[1]);
+            float cx = projX ? q.x[2] : (projY ? q.x[2] : q.y[2]);
+            float cy = projX ? q.y[2] : (projY ? q.z[2] : q.z[2]);
+            if (inTriangle(ax, ay, bx, by, cx, cy, pu, pv)) {
+                return true;
+            }
+            float dx = projX ? q.x[3] : (projY ? q.x[3] : q.y[3]);
+            float dy = projX ? q.y[3] : (projY ? q.z[3] : q.z[3]);
+            return inTriangle(ax, ay, cx, cy, dx, dy, pu, pv);
+        }
+
+        private static boolean inTriangle(float ax, float ay, float bx, float by,
+                                          float cx, float cy, float px, float py) {
+            float s0 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+            float s1 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
+            float s2 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
+            boolean neg = s0 < -1.0e-4f || s1 < -1.0e-4f || s2 < -1.0e-4f;
+            boolean pos = s0 > 1.0e-4f || s1 > 1.0e-4f || s2 > 1.0e-4f;
+            return !(neg && pos);
+        }
+
         /** Emit one resolved quad into its section bucket (2 triangles, corner UVs, per-prim records). */
         private void emit(PendingQuad q) {
             // Recess translucent (glass / ice) faces slightly into their own block. Vanilla culls a glass
@@ -597,6 +701,30 @@ final class RtTerrainMesher {
             // inward inset makes the glass resolve consistently behind the neighbour's surface.
             if (q.translucent) {
                 offset(q, -TRANSLUCENT_INSET);
+            }
+            // Fog-grid occupancy for this block, derived from the emitted faces exactly like the old
+            // per-ray visibility saw them: a fully-enclosed cube emits nothing and blocks nothing (the
+            // old RT ray never hit it either — its occluding neighbours already zero the column), a full
+            // face marks its whole cell opaque, and partial models keep their light holes. Fluid cells
+            // were marked water by the block pass and keep water semantics (waterlogged models still
+            // read water).
+            int cls = q.translucent ? SectionMesh.FOG_CLASS_TRANSLUCENT
+                    : (q.cutout ? SectionMesh.FOG_CLASS_CUTOUT : SectionMesh.FOG_CLASS_SOLID);
+            // The cell that owns the surface: the quad centroid pulled 0.5 blocks back along its normal.
+            // An axis-aligned face lies exactly ON a block boundary — using the raw corner min would assign
+            // it to the outboard neighbour, letting a thin ledge leak light in the volume.
+            int fx = Math.clamp((int) Math.floor(
+                    (q.x[0] + q.x[1] + q.x[2] + q.x[3]) * 0.25f - 0.5f * q.nx), 0, 15);
+            int fy = Math.clamp((int) Math.floor(
+                    (q.y[0] + q.y[1] + q.y[2] + q.y[3]) * 0.25f - 0.5f * q.ny), 0, 15);
+            int fz = Math.clamp((int) Math.floor(
+                    (q.z[0] + q.z[1] + q.z[2] + q.z[3]) * 0.25f - 0.5f * q.nz), 0, 15);
+            int existingClass = (cur.fogTiles[(fy * 16 + fz) * 16 + fx] >> SectionMesh.FOG_CLASS_SHIFT) & 7;
+            if (existingClass != SectionMesh.FOG_CLASS_WATER) {
+                int mask = quadFogMask(q, fx, fy, fz);
+                if (mask != 0) {
+                    cur.markFogTile(fx, fy, fz, mask, cls);
+                }
             }
             Geom g = q.translucent ? cur.translucent() : (q.cutout ? cur.cutout() : cur.opaque());
             int base = g.verts.size() / 3;

@@ -198,6 +198,8 @@ final class RtSectionTable {
         final long key;
         final RtBuffer uvs;
         final RtBuffer material;
+        /** 16^3 x uint32 fog-grid occupancy tile (see RtTerrainMesher.SectionMesh): the fog volume's source. */
+        final RtBuffer fogTiles;
         final RtAccel blas;
         final int[] triBase;
         final int sx;
@@ -208,11 +210,12 @@ final class RtSectionTable {
         int slot = -1;
         int instanceIndex = -1;
 
-        SectionGeom(long key, RtBuffer uvs, RtBuffer material,
+        SectionGeom(long key, RtBuffer uvs, RtBuffer material, RtBuffer fogTiles,
                     RtAccel blas, int[] triBase, int sx, int sy, int sz, float[] lights) {
             this.key = key;
             this.uvs = uvs;
             this.material = material;
+            this.fogTiles = fogTiles;
             this.blas = blas;
             this.triBase = triBase;
             this.sx = sx;
@@ -224,6 +227,7 @@ final class RtSectionTable {
         void destroy() {
             blas.destroy();
             material.destroy();
+            fogTiles.destroy();
             uvs.destroy();
         }
     }
