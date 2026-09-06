@@ -113,6 +113,9 @@ public struct FogIntegral {
 // a chain of four cubes: the level containing p covers to its own +z face, then each coarser level takes
 // over at the shared boundary — the chain telescopes to T(p -> light) with at most five fetches. Fetch
 // coordinates are jittered by the path seed so foliage dapples like the per-ray alpha test used to.
+// lightDir MUST be the same dominant, UNJITTERED direction the bake used (light.dir, not the per-sample
+// jittered sampleSquare result): the volume is a single fixed light-space frame, and rotating it per
+// sample would remap every fetch to different cells.
 public float3 fogTerrainTransmittance(float3 p, float3 lightDir, inout uint seed) {
     float3 right;
     float3 up;
@@ -228,15 +231,18 @@ public FogIntegral integrateFog(FogState fog, float3 ro, float3 rd, float tMax, 
         float3 stepT = exp(-sigmaT * dt);
 
         // Direct: the terrain transmittance comes from the per-frame light-space volume (a handful of
-        // constant-time fetches — the entire ray cost is gone). The light direction is jittered within the
-        // body's half-angle for the penumbra the surface NEE already uses; when any entity is present
-        // (flags bit 3) one RT visibility ray per sample adds the dynamic occluders the cache excludes,
-        // restoring exactly the old entity behaviour.
+        // constant-time fetches — the entire ray cost is gone). The volume is built in the frame of the
+        // DOMINANT, unjittered body direction (see fog_grid.build.comp: celestialSquareFrame(light.dir)),
+        // so the fetch MUST use the same axis or the per-sample direction jitter — which rotates the
+        // frame by up to the body's half-angle — makes the same world point land in different cells per
+        // sample and step, flashing through gaps. The penumbra is carried by the volume's own ±1-cell
+        // fetch jitter; the jittered direction below is only for the entity ray (same sample direction
+        // the surface NEE and the old per-ray terrain visibility use).
         uint stepSeed = seed ^ (uint(i) * 0x9e3779b9u + 0x85ebca6bu);
         stepSeed = pcg(stepSeed);
         float3 lightDir = light.halfAngle > 0.0
                 ? sampleSquare(light.dir, light.halfAngle, stepSeed) : light.dir;
-        float3 terrainT = fogTerrainTransmittance(p, lightDir, stepSeed);
+        float3 terrainT = fogTerrainTransmittance(p, light.dir, stepSeed);
         if ((worldPush.flags & 8u) != 0u) {
             // Bounded to the fog volume's extent: the march never scatters beyond farEnd (≤ 512), so an
             // occluder farther away cannot affect this segment — shorter rays, same result.
