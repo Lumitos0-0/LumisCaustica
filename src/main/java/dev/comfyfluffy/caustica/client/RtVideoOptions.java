@@ -49,6 +49,8 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            fogEnabled(),
+            fogQuality(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -190,6 +192,24 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, steps.size() - 1),
             Math.max(initialPosition, 0),
             position -> setting.set(steps.get(position)));
+    }
+
+    private static OptionInstance<Boolean> fogEnabled() {
+        return bool("caustica.options.rt.fog", CausticaConfig.Rt.Fog.ENABLED);
+    }
+
+    /** Froxel grid resolution and slice count; see {@code RtVolumetricFog}'s tier table. */
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Fog.QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
+            // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
+            (caption, value) -> Component.translatable("caustica.options.rt.fogQuality." + value),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3), Codec.INT),
+            Math.clamp(setting.value(), 0, 3),
+            setting::set);
     }
 
     private static OptionInstance<Integer> debugView() {

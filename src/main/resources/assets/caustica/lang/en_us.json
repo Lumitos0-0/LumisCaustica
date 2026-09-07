@@ -29,6 +29,14 @@
 
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
+	"caustica.options.rt.fog": "Volumetric Fog",
+	"caustica.options.rt.fog.tooltip": "Ray-traced sun and moon shafts scattering through the air. Shafts are shadowed by real geometry and tinted by whatever they pass through, so light through stained glass carries its colour.",
+	"caustica.options.rt.fogQuality": "Volumetric Fog Quality",
+	"caustica.options.rt.fogQuality.tooltip": "Froxel grid resolution and depth slice count. Higher settings sharpen shaft edges and remove depth banding at the cost of more shadow rays per frame.",
+	"caustica.options.rt.fogQuality.0": "Low",
+	"caustica.options.rt.fogQuality.1": "Medium",
+	"caustica.options.rt.fogQuality.2": "High",
+	"caustica.options.rt.fogQuality.3": "Ultra",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",

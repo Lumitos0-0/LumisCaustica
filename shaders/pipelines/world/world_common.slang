@@ -88,6 +88,19 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // ---- Froxel volumetric fog. See shaders/pipelines/world/fog.slang for the grid parameterisation,
+    // the density field and the phase function; every consumer derives all three from these fields, so
+    // the grid the shadow rays are traced through and the grid the composite samples cannot diverge.
+    public int4     fogGridDims;    // xyz froxel dimensions, w != 0 enables the system
+    public float4   fogParams0;     // x near dist, y far dist, z slice-distribution exponent, w base density
+    public float4   fogParams1;     // x height falloff, y falloff base Y, z anisotropy, w scattering albedo
+    public float4   fogParams2;     // x noise scale, y noise strength, z ambient, w weather multiplier
+    public float4   fogTemporal;    // x alpha floor, y change sensitivity, z variance weight, w unused
+    public float4   fogJitter;      // xyz per-frame grid jitter in froxel units, w unused
+    // xyz rebase origin modulo 4096 (added to a rebased position to recover a world-pinned coordinate
+    // small enough for fp32, exactly as waterAnchor does), w noise animation phase.
+    public float4   fogAnchor;
+    public uint     fogFlags;       // bit0 history valid, bit1 depth cull enabled
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

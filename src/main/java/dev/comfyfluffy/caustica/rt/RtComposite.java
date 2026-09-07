@@ -60,6 +60,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetricFog;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -177,6 +178,15 @@ public final class RtComposite {
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
+    // Froxel volumetric fog: the three frustum-aligned volumes plus the integrate/composite compute
+    // passes. Injection is a raygen in worldPipeline, not here; this owns the images it writes into.
+    private RtVolumetricFog volumetricFog;
+    // Terrain rebase origin the fog history was accumulated against. A rebase shifts every rebased
+    // coordinate at once, so the reprojection would silently read the wrong froxels until it is retired.
+    private int fogHistoryRebaseX;
+    private int fogHistoryRebaseY;
+    private int fogHistoryRebaseZ;
+    private boolean fogHistoryRebaseValid;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -600,6 +610,9 @@ public final class RtComposite {
                 // ensureWorld's own binding order otherwise guarantees never happens.
                 skyLut = RtSkyLut.create(ctx);
             }
+            if (volumetricFog == null) {
+                volumetricFog = RtVolumetricFog.create(ctx);
+            }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
@@ -655,6 +668,18 @@ public final class RtComposite {
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                     exposure.stateBuffer());
+            // Checked every frame, not just on resize: the fog grid also changes when the quality tier or
+            // the enable toggle moves, and neither of those resizes anything ensureOutput watches. The
+            // call is a cheap comparison when the grid already matches.
+            if (volumetricFog != null) {
+                boolean gridChanged = volumetricFog.ensureResources(renderW, renderH, rrOutput, gDepth);
+                if (gridChanged) {
+                    fogHistoryRebaseValid = false;
+                    if (worldPipeline != null) {
+                        worldPipeline.setFogScatter(volumetricFog.scatterView());
+                    }
+                }
+            }
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -716,9 +741,14 @@ public final class RtComposite {
                 skyLut = RtSkyLut.create(ctx);
             }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
+            // Raygen 2 is the froxel fog injection. It shares this pipeline's miss and hit tables on
+            // purpose: its shadow queries must run the SAME any-hit records surface NEE runs, which is
+            // what makes a shaft through stained glass carry the pane's colour with no second
+            // implementation of the tint chain.
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            "fog_inject.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -857,6 +887,9 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
+        if (volumetricFog != null && volumetricFog.ready()) {
+            worldPipeline.setFogScatter(volumetricFog.scatterView());
+        }
     }
 
     private void destroyGuideImages() {
@@ -1121,6 +1154,24 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            // Froxel fog. A terrain rebase moves every rebased coordinate at once, so the accumulated
+            // volume no longer describes the same world points and must be retired -- otherwise the
+            // reprojection reads structurally wrong froxels and smears a shifted copy of the old shafts.
+            boolean fogReady = volumetricFog != null && volumetricFog.ready();
+            if (fogReady && (!fogHistoryRebaseValid || fogHistoryRebaseX != terrain.blockX
+                    || fogHistoryRebaseY != terrain.blockY || fogHistoryRebaseZ != terrain.blockZ)) {
+                volumetricFog.invalidateHistory();
+                fogHistoryRebaseX = terrain.blockX;
+                fogHistoryRebaseY = terrain.blockY;
+                fogHistoryRebaseZ = terrain.blockZ;
+                fogHistoryRebaseValid = true;
+            }
+            boolean fogActive = fogReady && RtVolumetricFog.enabled();
+            FogPush fog = fogPush(terrain, fogReady,
+                    fogReady ? volumetricFog.gridWidth() : 0,
+                    fogReady ? volumetricFog.gridHeight() : 0,
+                    fogReady ? volumetricFog.gridDepth() : 0,
+                    fogReady && volumetricFog.historyValid() && mvHasPrev);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1156,7 +1207,9 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    fog.gridDims(), fog.params0(), fog.params1(), fog.params2(),
+                    fog.temporal(), fog.jitter(), fog.anchor(), fog.flags()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1210,7 +1263,25 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
+            // Froxel fog injection: one colour-carrying shadow ray per froxel, reusing this pipeline's
+            // shadow SBT records. Recorded after the primary trace because the depth cull reads gDepth,
+            // and deliberately without a barrier against the indirect pass above -- the two write
+            // disjoint images and can overlap on the GPU.
+            if (fogActive) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog inject");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogInject")) {
+                    active.trace(cmd, volumetricFog.gridWidth(), volumetricFog.gridHeight(),
+                            volumetricFog.gridDepth(), pushConstants, 2);
+                }
+            }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            if (fogActive) {
+                // Temporal blend + depth integration. Separated from the injection by the barrier above.
+                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogIntegrate")) {
+                    volumetricFog.recordIntegrate(cmd, pushBuf.deviceAddress);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // integrated volume visible to composite
+            }
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1233,7 +1304,19 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog composite / exposure
+
+            // Fog composite: in place over rrOutput, AFTER reconstruction and BEFORE exposure metering.
+            // After RR because the volume owns its own temporal history and RR has no valid guide for
+            // in-scatter between the camera and the g-buffer surface; before exposure because the
+            // histogram meters rrOutput and fog outside the meter makes auto-exposure drift as the
+            // player walks into it.
+            if (fogActive) {
+                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogComposite")) {
+                    volumetricFog.recordComposite(cmd, pushBuf.deviceAddress, displayW, displayH);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog writes visible to exposure histogram
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1332,6 +1415,84 @@ public final class RtComposite {
             }
         }
         return count == result.length ? result : java.util.Arrays.copyOf(result, count);
+    }
+
+    /**
+     * The froxel fog's per-frame push state. Bundles the six vectors and the flag word so the grid the
+     * injection raygen traces, the grid the integration marches and the grid the composite samples are
+     * all derived from one computation.
+     */
+    private record FogPush(Int4 gridDims, Float4 params0, Float4 params1, Float4 params2,
+                           Float4 temporal, Float4 jitter, Float4 anchor, int flags) {
+    }
+
+    /**
+     * Radical-inverse jitter in froxel units. A per-frame offset of the whole grid is what turns the
+     * volume's trilinear interpolation into temporal supersampling rather than a permanent blur, and it
+     * is the reason the fog path needs no spatial filter at all.
+     */
+    private static float radicalInverse(int index, int base) {
+        float inverseBase = 1.0f / base;
+        float digitScale = inverseBase;
+        float result = 0.0f;
+        int i = index;
+        while (i > 0) {
+            result += (i % base) * digitScale;
+            i /= base;
+            digitScale *= inverseBase;
+        }
+        return result;
+    }
+
+    private FogPush fogPush(RtTerrain terrain, boolean gridValid, int gridX, int gridY, int gridZ,
+                            boolean historyValid) {
+        boolean on = gridValid && RtVolumetricFog.enabled();
+        // Weather raises density toward the configured boost. Thunder is deliberately not read
+        // separately: a thunderstorm already drives the rain level to 1, so it would add nothing.
+        float weather = 1.0f;
+        var level = Minecraft.getInstance().level;
+        if (level != null) {
+            float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+            float rain = Mth.clamp(level.getRainLevel(partial), 0.0f, 1.0f);
+            weather = 1.0f + rain * (CausticaConfig.Rt.Fog.RAIN_BOOST.value() - 1.0f);
+        }
+        int frame = (int) (frameCounter & 0x3fffffffL);
+        // Halton (2,3,5) minus 0.5: a zero-mean offset, so the accumulated grid stays centred on the
+        // froxel centres instead of drifting toward one corner.
+        Float4 jitter = on
+                ? new Float4(radicalInverse(frame + 1, 2) - 0.5f,
+                        radicalInverse(frame + 1, 3) - 0.5f,
+                        radicalInverse(frame + 1, 5) - 0.5f, 0f)
+                : new Float4(0f, 0f, 0f, 0f);
+        // Same world-pinning trick waterAnchor uses: the rebase origin modulo 4096 keeps the noise
+        // domain fixed in the world while staying small enough for fp32.
+        float noisePhase = (float) (System.nanoTime() / 1.0e9 % 3600.0) * 0.02f;
+        Float4 anchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
+                terrain.blockY & WATER_ANCHOR_MASK, terrain.blockZ & WATER_ANCHOR_MASK, noisePhase);
+        int flags = 0;
+        if (historyValid && CausticaConfig.Rt.Fog.TEMPORAL.value()) {
+            flags |= 0b01;
+        }
+        if (CausticaConfig.Rt.Fog.DEPTH_CULL.value()) {
+            flags |= 0b10;
+        }
+        return new FogPush(
+                new Int4(gridX, gridY, gridZ, on ? 1 : 0),
+                // Near is fixed: the first froxel must start in front of the near plane, and anything
+                // closer than a quarter block cannot contain a visible amount of medium anyway.
+                new Float4(0.25f, CausticaConfig.Rt.Fog.MAX_DISTANCE.value(), 2.0f,
+                        on ? CausticaConfig.Rt.Fog.DENSITY.value() : 0f),
+                new Float4(CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value(),
+                        CausticaConfig.Rt.Fog.BASE_Y.value(),
+                        CausticaConfig.Rt.Fog.ANISOTROPY.value(),
+                        CausticaConfig.Rt.Fog.SCATTER_ALBEDO.value()),
+                new Float4(CausticaConfig.Rt.Fog.NOISE_SCALE.value(),
+                        CausticaConfig.Rt.Fog.NOISE_STRENGTH.value(),
+                        CausticaConfig.Rt.Fog.AMBIENT.value(), weather),
+                new Float4(CausticaConfig.Rt.Fog.TEMPORAL_ALPHA_MIN.value(),
+                        CausticaConfig.Rt.Fog.TEMPORAL_SENSITIVITY.value(),
+                        CausticaConfig.Rt.Fog.TEMPORAL_VARIANCE.value(), 0f),
+                jitter, anchor, flags);
     }
 
     private record SkyPush(Float4 celestial, Float4 look0, Float4 look1, Float4 look2, Float4 look3,
@@ -1506,6 +1667,10 @@ public final class RtComposite {
         if (skyLut != null) {
             skyLut.destroy();
             skyLut = null;
+        }
+        if (volumetricFog != null) {
+            volumetricFog.destroy();
+            volumetricFog = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();

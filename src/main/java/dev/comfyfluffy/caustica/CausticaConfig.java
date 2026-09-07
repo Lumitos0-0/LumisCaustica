@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.Fog.ENABLED, Rt.Lights.RIS_CANDIDATES, Ngx.PATH,
         };
     }
 
@@ -95,6 +95,13 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("fog",
+                " Ray-traced volumetric fog: sun and moon shafts scattering through the air.\n"
+                        + " density is the base extinction per block; 0 leaves the system enabled but with\n"
+                        + " nothing to scatter, which costs nothing and changes no pixels.\n"
+                        + " quality selects the froxel grid: 0 low, 1 medium, 2 high, 3 ultra.\n"
+                        + " anisotropy shapes the forward scattering lobe that makes a shaft read as a shaft.\n"
+                        + " ambient adds unshadowed fill and therefore also glows inside caves; 0 by default.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -565,6 +572,57 @@ public final class CausticaConfig {
                     bool("caustica.rt.blasCompaction", "terrain.blas-compaction", true);
 
             private Terrain() {
+            }
+        }
+
+        /**
+         * Froxel volumetric fog (sun/moon shafts). {@code density = 0} makes the system a no-op while
+         * leaving it enabled: the injection pass culls every froxel, the integration writes unit
+         * transmittance and zero in-scatter, and the composite becomes an exact identity.
+         */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fog", "fog.enabled", true);
+            /** 0 low, 1 medium, 2 high, 3 ultra. Selects froxel grid resolution and slice count. */
+            public static final IntSetting QUALITY = clampedInt("caustica.rt.fogQuality", "fog.quality", 2, 0, 3);
+            /** Base extinction in 1/blocks at the falloff base height, before weather and noise. */
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.fogDensity", "fog.density", 0.02f, 0.0f, 1.0f);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.fogMaxDistance", "fog.max-distance", 192.0f, 16.0f, 512.0f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 0.03f, 0.0f, 1.0f);
+            /** World Y at which the height falloff starts; below this the medium is at full density. */
+            public static final FloatSetting BASE_Y =
+                    finiteFloat("caustica.rt.fogBaseY", "fog.base-y", 62.0f);
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.7f, -0.95f, 0.95f);
+            public static final FloatSetting SCATTER_ALBEDO =
+                    clampedFloat("caustica.rt.fogScatterAlbedo", "fog.scatter-albedo", 0.9f, 0.0f, 1.0f);
+            /**
+             * Isotropic fill added to every lit froxel. Zero by default and deliberately so: the term is
+             * unoccluded, so any non-zero value also glows inside caves.
+             */
+            public static final FloatSetting AMBIENT =
+                    clampedFloat("caustica.rt.fogAmbient", "fog.ambient", 0.0f, 0.0f, 1.0f);
+            public static final FloatSetting NOISE_SCALE =
+                    clampedFloat("caustica.rt.fogNoiseScale", "fog.noise-scale", 0.05f, 0.0f, 2.0f);
+            public static final FloatSetting NOISE_STRENGTH =
+                    clampedFloat("caustica.rt.fogNoiseStrength", "fog.noise-strength", 0.4f, 0.0f, 1.0f);
+            /** Density multiplier at full rain/thunder, interpolated from the weather level. */
+            public static final FloatSetting RAIN_BOOST =
+                    clampedFloat("caustica.rt.fogRainBoost", "fog.rain-boost", 4.0f, 1.0f, 32.0f);
+            public static final BooleanSetting TEMPORAL = bool("caustica.rt.fogTemporal", "fog.temporal", true);
+            /** Blend floor: the smallest weight a converged froxel gives this frame's new sample. */
+            public static final FloatSetting TEMPORAL_ALPHA_MIN =
+                    clampedFloat("caustica.rt.fogTemporalAlphaMin", "fog.temporal-alpha-min", 0.04f, 0.005f, 1.0f);
+            public static final FloatSetting TEMPORAL_SENSITIVITY =
+                    clampedFloat("caustica.rt.fogTemporalSensitivity", "fog.temporal-sensitivity", 0.6f, 0.0f, 8.0f);
+            public static final FloatSetting TEMPORAL_VARIANCE =
+                    clampedFloat("caustica.rt.fogTemporalVariance", "fog.temporal-variance", 0.25f, 0.0f, 8.0f);
+            public static final BooleanSetting DEPTH_CULL =
+                    bool("caustica.rt.fogDepthCull", "fog.depth-cull", true);
+
+            private Fog() {
             }
         }
 

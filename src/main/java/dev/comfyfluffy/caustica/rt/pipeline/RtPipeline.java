@@ -168,6 +168,11 @@ public final class RtPipeline {
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)
                     .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            // Froxel fog scatter volume, written only by the fog injection raygen. Always present in the
+            // layout so toggling fog does not invalidate the descriptor set.
+            binds.get(WORLD_FOG_SCATTER).binding(WORLD_FOG_SCATTER)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
             check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout");
@@ -423,6 +428,21 @@ public final class RtPipeline {
         }
     }
 
+    /** Bind the froxel fog scatter volume (see {@link RtVolumetricFog}) into every ring slot. */
+    public void setFogScatter(long imageView) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
+            imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(RING, stack);
+            for (int i = 0; i < RING; i++) {
+                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_FOG_SCATTER)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .pImageInfo(imgInfo);
+            }
+            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
+        }
+    }
+
     /** Bind the block albedo atlas into every ring slot. */
     public void setBlockAlbedoAtlas(long imageView, long sampler) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -508,6 +528,15 @@ public final class RtPipeline {
      * hit regions are shared, so passes over the same scene differ only in this index.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex) {
+        trace(cmd, width, height, 1, pushConstants, raygenIndex);
+    }
+
+    /**
+     * Three-dimensional variant. The froxel fog injection raygen dispatches one thread per froxel, so its
+     * grid is the volume's extent rather than a screen rectangle.
+     */
+    public void trace(VkCommandBuffer cmd, int width, int height, int depth,
+                      java.nio.ByteBuffer pushConstants, int raygenIndex) {
         if (raygenIndex < 0 || raygenIndex >= raygenCount) {
             throw new IllegalArgumentException("raygen index " + raygenIndex + " out of range [0, " + raygenCount + ")");
         }
@@ -529,7 +558,7 @@ public final class RtPipeline {
             VkStridedDeviceAddressRegionKHR hit = VkStridedDeviceAddressRegionKHR.calloc(stack)
                     .deviceAddress(sbt.deviceAddress + (long) (raygenCount + missCount) * sbtStride).stride(sbtStride).size((long) hitGroupCount * sbtStride);
             VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
-            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, 1);
+            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, depth);
         }
     }
 
