@@ -144,7 +144,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                 }
             } else {
                 // Surface hit nearby: ambient room bounce based on surrounding enclosure
-                float hitDist = probeQ.RayTCurrent();
+                float hitDist = probeQ.CommittedRayT();
                 float proximityWeight = clamp(1.0 - (hitDist / 24.0), 0.0, 1.0);
                 // Subtle ambient bounce matching the surrounding environment luminance
                 probeRadianceSum += skyLuminanceAces * (skyOcclusion * 0.25 * proximityWeight * isotropicPhase * scatteringCoeff);
