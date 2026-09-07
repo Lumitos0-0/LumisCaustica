@@ -44,8 +44,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     // this pixel's own surface — no footprint, no neighbourhood, no filtering decision to get wrong.
     float depth = sceneDepth[pixel];
 
+    // The pixel's own ray direction uses the camera's jittered NDC, exactly as primary.rgen traced it,
+    // so the distance below describes the surface this pixel actually sees.
     float2 uv = (float2(pixel) + 0.5) / float2(sceneDims);
-    float2 ndc = uv * 2.0 - 1.0;
+    float2 jitterUv = worldPush.jitter / float2(sceneDims);
+    float2 ndc = (uv + jitterUv) * 2.0 - 1.0;
 
     // Radial distance to the surface, in the same metric the grid slices by. Sky pixels carry far depth
     // (~0 under reversed-Z) and land past grid.far, so they receive the fully integrated column — the
@@ -69,11 +72,28 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     float surfaceSlice = fogDistanceSlice(grid, distance);
     float w = clamp((surfaceSlice - 0.5) / float(grid.dims.z), 0.0, 1.0);
 
-    // Plain trilinear. Correct here precisely because depth is exact per pixel: there is no
-    // misalignment left for a bilateral weight to compensate for, and a depth-weighted variant would be
-    // actively harmful — rejecting neighbours at a silhouette degenerates the fetch to a point sample of
-    // one froxel column, which stamps hard froxel-sized blocks along exactly the edges it was meant to
-    // protect.
+    // Sample the volume at the UNJITTERED uv — deliberately, and the reasoning is worth stating because
+    // the sign is easy to get backwards.
+    //
+    // The correct rule is to match RAY DIRECTIONS, not coordinates. Froxel column c was traced along the
+    // ray through screen uv (c + 0.5)/dims + j, and this pixel's own primary ray went through uv + j
+    // with the SAME j, since the grid now inherits the camera's jitter. Setting the two equal gives
+    // (c + 0.5)/dims = uv: the offsets cancel, so the sampler coordinate is simply uv.
+    //
+    // (The reprojection in integrate.comp is the asymmetric case: it starts from a world point projected
+    // to a previous SCREEN uv, with no matching ray to cancel against, so it must subtract the previous
+    // frame's offset explicitly.)
+    //
+    // What this buys: the fog lattice now shifts each frame in the same direction the camera jitter
+    // shifts geometry, and both land in the image DLSS-RR reconstructs. RR already knows that offset, so
+    // it resolves fog and geometry together and the froxel grid is antialiased by the same mechanism
+    // that antialiases edges — which a private per-froxel offset could never achieve, because the
+    // composite read on a fixed lattice and so never saw it.
+    //
+    // Plain trilinear on top. Correct because depth is exact per pixel at render resolution; a
+    // depth-weighted variant would be actively harmful, since rejecting neighbours at a silhouette
+    // degenerates the fetch to a point sample of one column and stamps hard froxel-sized blocks along
+    // exactly the edges it was meant to protect.
     float4 fog = fogIntegratedSampler.SampleLevel(float3(uv, w), 0.0);
 
     float4 scene = sceneImage[pixel];

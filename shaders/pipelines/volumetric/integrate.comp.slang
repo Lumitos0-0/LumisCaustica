@@ -29,15 +29,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         return;
     }
 
-    // Column-constant part of the sampling offset; the Z component varies per slice below. Must match
-    // fog_inject exactly or density would be evaluated at a different point than the ray was traced.
-    float3 columnJitter = fogJitter(worldPush, column, 0);
-    FogRay ray = fogColumnRay(worldPush, grid, column, columnJitter.xy);
-    // The reprojection must describe a fixed world point across frames, so it needs the column ray with
-    // the jitter removed. Reusing the jittered ray would move the "stable" position by up to a froxel
-    // every frame, so the history lookup would chase its own sampling offset and the accumulated result
-    // would never converge — which defeats the entire purpose of jittering.
-    FogRay stableRay = fogColumnRay(worldPush, grid, column, float2(0.0, 0.0));
+    // Same grid offset the injection used, so this pass reconstructs the exact position each froxel's
+    // ray was traced from. Both come from the push block, so they cannot drift apart.
+    float2 gridJitter = fogGridJitterUv(worldPush);
+    float sliceJitter = fogSliceJitter(worldPush);
+    FogRay ray = fogColumnRay(worldPush, grid, column, gridJitter);
     bool historyValid = fogHistoryValid(worldPush);
 
     // Blend weight for this frame's sample against the accumulated history. Fixed, not adaptive --
@@ -71,26 +67,32 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         // are guaranteed to describe the same point of the density field, and the field is evaluated
         // once per froxel per frame instead of twice.
         float extinction = scatterSample.a;
+        float sliceDistance = fogSliceDistance(grid, float(slice) + 0.5 + sliceJitter);
 
         // ---- Temporal accumulation.
         //
-        // Reprojection uses the UNJITTERED froxel centre on the UNJITTERED ray: the jitter is a
-        // sampling offset, not motion, and carrying it into the reprojection would chase the history
-        // around by a froxel each frame and undo the supersampling it exists to provide.
-        float3 stablePosition = stableRay.origin
-                + stableRay.dir * fogSliceDistance(grid, float(slice) + 0.5);
+        // Reproject the froxel's ACTUAL sample position — the jittered one this frame's ray was traced
+        // from. The grid offset is now shared by every column rather than per-column noise, so the whole
+        // lattice translates rigidly and reprojecting the true position is both correct and stable: the
+        // history lookup below undoes the previous frame's offset explicitly.
+        float3 samplePosition = ray.origin + ray.dir * sliceDistance;
         // Fallback when reprojection fails: this frame's sample, with a history length of one.
         float4 history = float4(raw, 1.0);
         bool reprojected = false;
         if (historyValid) {
             // Camera-relative -> previous clip. camDelta moves the point into the previous frame's
             // camera-relative space, exactly as the guide motion vectors do.
-            float3 cameraRelative = stablePosition - worldPush.camOffset;
+            float3 cameraRelative = samplePosition - worldPush.camOffset;
             float4 previousClip = mul(worldPush.prevViewProj,
                     float4(cameraRelative + worldPush.camDelta, 1.0));
             if (previousClip.w > 0.0) {
                 float3 previousNdc = previousClip.xyz / previousClip.w;
-                float2 previousUv = previousNdc.xy * 0.5 + 0.5;
+                // Subtract the PREVIOUS frame's grid offset: the history volume was written through a
+                // lens shifted by that amount, so a world point's texel there sits at
+                // (screen uv - previous offset). Skipping this would misread the history by up to a
+                // froxel every frame, which is exactly the jitter-without-a-resolve error this change
+                // exists to remove.
+                float2 previousUv = previousNdc.xy * 0.5 + 0.5 - fogPrevGridJitterUv(worldPush);
                 // Distance from the PREVIOUS eye, so the slice lookup matches how that frame's grid was
                 // built rather than reusing this frame's radial distance.
                 float previousDistanceAlongRay = length(cameraRelative + worldPush.camDelta);

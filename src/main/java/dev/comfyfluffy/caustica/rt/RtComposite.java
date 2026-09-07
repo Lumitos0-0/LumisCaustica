@@ -187,6 +187,10 @@ public final class RtComposite {
     private int fogHistoryRebaseY;
     private int fogHistoryRebaseZ;
     private boolean fogHistoryRebaseValid;
+    // The grid offset (in UV) the fog history volume was written through last frame. The integration
+    // pass subtracts it to find a world point's texel in that volume.
+    private float fogPrevJitterX;
+    private float fogPrevJitterY;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -1175,7 +1179,12 @@ public final class RtComposite {
                     fogReady ? volumetricFog.gridWidth() : 0,
                     fogReady ? volumetricFog.gridHeight() : 0,
                     fogReady ? volumetricFog.gridDepth() : 0,
-                    fogReady && volumetricFog.historyValid() && mvHasPrev);
+                    fogReady && volumetricFog.historyValid() && mvHasPrev,
+                    jitterX, jitterY);
+            // Retained for the next frame's history lookup, which must undo the offset the history
+            // volume was written through.
+            fogPrevJitterX = fog.jitter().x();
+            fogPrevJitterY = fog.jitter().y();
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1426,26 +1435,8 @@ public final class RtComposite {
                            Float4 temporal, Float4 jitter, Float4 anchor, int flags) {
     }
 
-    /**
-     * Radical-inverse jitter in froxel units. A per-frame offset of the whole grid is what turns the
-     * volume's trilinear interpolation into temporal supersampling rather than a permanent blur, and it
-     * is the reason the fog path needs no spatial filter at all.
-     */
-    private static float radicalInverse(int index, int base) {
-        float inverseBase = 1.0f / base;
-        float digitScale = inverseBase;
-        float result = 0.0f;
-        int i = index;
-        while (i > 0) {
-            result += (i % base) * digitScale;
-            i /= base;
-            digitScale *= inverseBase;
-        }
-        return result;
-    }
-
     private FogPush fogPush(RtTerrain terrain, boolean gridValid, int gridX, int gridY, int gridZ,
-                            boolean historyValid) {
+                            boolean historyValid, float jitterX, float jitterY) {
         boolean on = gridValid && RtVolumetricFog.enabled();
         // Weather raises density toward the configured boost. Thunder is deliberately not read
         // separately: a thunderstorm already drives the rain level to 1, so it would add nothing.
@@ -1456,14 +1447,19 @@ public final class RtComposite {
             float rain = Mth.clamp(level.getRainLevel(partial), 0.0f, 1.0f);
             weather = 1.0f + rain * (CausticaConfig.Rt.Fog.RAIN_BOOST.value() - 1.0f);
         }
-        int frame = (int) (frameCounter & 0x3fffffffL);
-        // Halton (2,3,5) minus 0.5: a zero-mean offset, so the accumulated grid stays centred on the
-        // froxel centres instead of drifting toward one corner.
+        // The froxel grid is offset by the CAMERA's sub-pixel jitter, in UV, rather than by an offset of
+        // its own. Sharing the camera's offset is what makes the jitter resolvable: the fog signal then
+        // moves in lockstep with the geometry signal DLSS-RR is already reconstructing, so RR resolves
+        // both consistently and the froxel lattice is antialiased by the same mechanism that antialiases
+        // geometry edges. A private per-froxel offset could never do this, because the composite reads
+        // the volume on a fixed lattice and so never saw the offset at all.
+        //
+        // zw carries the PREVIOUS frame's offset, which the integration pass needs to locate a world
+        // point in the history volume — that volume was written through the previous frame's lens.
         Float4 jitter = on
-                ? new Float4(radicalInverse(frame + 1, 2) - 0.5f,
-                        radicalInverse(frame + 1, 3) - 0.5f,
-                        radicalInverse(frame + 1, 5) - 0.5f, 0f)
+                ? new Float4(jitterX / renderW, jitterY / renderH, fogPrevJitterX, fogPrevJitterY)
                 : new Float4(0f, 0f, 0f, 0f);
+
         // Same world-pinning trick waterAnchor uses: the rebase origin modulo 4096 keeps the noise
         // domain fixed in the world while staying small enough for fp32.
         float noisePhase = (float) (System.nanoTime() / 1.0e9 % 3600.0) * 0.02f;

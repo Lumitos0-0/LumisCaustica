@@ -134,6 +134,63 @@ final class RtVolumetricFogGridTest {
         return total > 1.0e-4 ? sum / total : 0.0;
     }
 
+    /**
+     * The froxel grid inherits the camera's sub-pixel jitter, so a column's ray and the ray of the pixel
+     * it covers carry the SAME offset and it cancels: the composite samples the volume at the plain,
+     * unjittered uv.
+     *
+     * <p>The invariant that matters is the RAY DIRECTION, not the texel index — indices are fractional
+     * because the grid width does not divide the render width. Sampling at uv reproduces the pixel's own
+     * ray exactly; subtracting the offset displaces the fetch by exactly the jitter, which is the sign
+     * error this pins down. Getting it wrong is silent: the image still looks plausible, it just never
+     * converges, because the volume is written on a moving lattice and read on a fixed one.
+     */
+    @Test
+    void gridJitterCancelsAtTheComposite() {
+        final float renderWidth = 1280.0f;
+        final int columns = 224;
+        for (float jitterPixels : new float[]{-0.5f, -0.13f, 0.0f, 0.37f, 0.5f}) {
+            float jitterUv = jitterPixels / renderWidth;
+            for (int pixel : new int[]{0, 137, 640, 1279}) {
+                float uv = (pixel + 0.5f) / renderWidth;
+                // The ray this pixel's primary trace actually used.
+                float pixelRayUv = uv + jitterUv;
+                // Sampling at the plain uv selects this continuous column, whose own ray carries the
+                // same jitter the grid was built with.
+                float column = uv * columns - 0.5f;
+                float sampledRayUv = (column + 0.5f) / columns + jitterUv;
+                assertEquals(pixelRayUv, sampledRayUv, 1.0e-7,
+                        "unjittered fetch must reproduce the pixel's own ray direction");
+
+                // Subtracting the offset — the plausible-looking mistake — displaces the fetch by
+                // exactly the jitter.
+                float shiftedColumn = (uv - jitterUv) * columns - 0.5f;
+                float shiftedRayUv = (shiftedColumn + 0.5f) / columns + jitterUv;
+                assertEquals(Math.abs(jitterUv), Math.abs(shiftedRayUv - pixelRayUv), 1.0e-7,
+                        "subtracting the grid offset must displace the fetch by the jitter");
+            }
+        }
+    }
+
+    /**
+     * The reprojection is the asymmetric case: it starts from a world point projected to a previous
+     * SCREEN uv, with no matching ray to cancel against, so it must subtract the previous frame's grid
+     * offset explicitly.
+     */
+    @Test
+    void historyLookupUndoesThePreviousGridOffset() {
+        final int columns = 224;
+        final float previousJitterUv = 0.41f / 1280.0f;
+        for (int column : new int[]{0, 57, 223}) {
+            // That column of the history volume was written along the ray through this screen uv.
+            float writtenRayUv = (column + 0.5f) / columns + previousJitterUv;
+            // Reprojection recovers that screen uv, then subtracts the offset to index the volume.
+            float sampledColumn = (writtenRayUv - previousJitterUv) * columns - 0.5f;
+            assertEquals(column, sampledColumn, 1.0e-3,
+                    "history fetch must undo the offset its volume was written through");
+        }
+    }
+
     @Test
     void gridSizeIsPositiveAtEveryTier() {
         // gridSizeFor reads live config, so this only pins the arithmetic shape: a divisor must never

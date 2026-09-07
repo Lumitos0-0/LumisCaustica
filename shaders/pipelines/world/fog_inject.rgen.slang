@@ -42,10 +42,11 @@ void main() {
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
 
-    // Shared with the integration pass so both agree on exactly where this froxel was sampled.
-    float3 jitter = fogJitter(worldPush, index.xy, index.z);
-    FogRay ray = fogColumnRay(worldPush, grid, index.xy, jitter.xy);
-    float distance = fogSliceDistance(grid, float(index.z) + 0.5 + jitter.z);
+    // The whole grid is offset by the camera's own sub-pixel jitter this frame, so the fog signal moves
+    // in lockstep with the geometry signal DLSS-RR reconstructs. Both values are grid-wide and derived
+    // from the push block, so the integration pass reproduces this froxel's position exactly.
+    FogRay ray = fogColumnRay(worldPush, grid, index.xy, fogGridJitterUv(worldPush));
+    float distance = fogSliceDistance(grid, float(index.z) + 0.5 + fogSliceJitter(worldPush));
     float3 position = ray.origin + ray.dir * distance;
 
     float extinction = fogDensity(worldPush, position);

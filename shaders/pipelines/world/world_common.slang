@@ -96,7 +96,9 @@ public struct WorldPush {
     public float4   fogParams1;     // x height falloff, y falloff base Y, z anisotropy, w scattering albedo
     public float4   fogParams2;     // x noise scale, y noise strength, z ambient, w weather multiplier
     public float4   fogTemporal;    // x alpha floor, y change sensitivity, z variance weight, w unused
-    public float4   fogJitter;      // xyz per-frame grid jitter in froxel units, w unused
+    // xy this frame's froxel-grid offset in UV (the camera's own sub-pixel jitter, so the fog lattice
+    // moves with the geometry DLSS-RR reconstructs), zw the previous frame's, for the history lookup.
+    public float4   fogJitter;
     // xyz rebase origin modulo 4096 (added to a rebased position to recover a world-pinned coordinate
     // small enough for fp32, exactly as waterAnchor does), w noise animation phase.
     public float4   fogAnchor;

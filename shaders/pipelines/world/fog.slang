@@ -92,15 +92,17 @@ public struct FogRay {
 };
 
 /**
- * Camera ray through a froxel column's jittered NDC. Reconstructed from two unprojected points exactly
- * like primary.rgen, because Minecraft bakes view bobbing into the projection and the effective eye
- * therefore comes from the matrix rather than from the origin.
+ * Camera ray through a froxel column, offset by the frame's grid jitter.
  *
- * `jitterXy` is in froxel units and is what turns the grid's trilinear interpolation into temporal
- * supersampling instead of permanent blur.
+ * `jitterUv` is in UV, matching how primary.rgen offsets the camera ray, so the froxel grid and the
+ * camera sample the frustum through the same shifted lens each frame.
+ *
+ * Reconstructed from two unprojected points exactly like primary.rgen, because Minecraft bakes view
+ * bobbing into the projection and the effective eye therefore comes from the matrix rather than from
+ * the origin.
  */
-public FogRay fogColumnRay(WorldPush push, FogGrid g, int2 columnIndex, float2 jitterXy) {
-    float2 uv = (float2(columnIndex) + 0.5 + jitterXy) / float2(g.dims.xy);
+public FogRay fogColumnRay(WorldPush push, FogGrid g, int2 columnIndex, float2 jitterUv) {
+    float2 uv = (float2(columnIndex) + 0.5) / float2(g.dims.xy) + jitterUv;
     float2 ndc = uv * 2.0 - 1.0;
     float4 nearH = mul(push.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
     float4 farH = mul(push.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
@@ -110,13 +112,6 @@ public FogRay fogColumnRay(WorldPush push, FogGrid g, int2 columnIndex, float2 j
     r.origin = nearP + push.camOffset;
     r.dir = normalize(farP - nearP);
     return r;
-}
-
-/** World (rebased) position of a froxel centre, with the frame's grid jitter applied on all three axes. */
-public float3 fogFroxelPosition(WorldPush push, FogGrid g, int3 index, float3 jitter) {
-    FogRay ray = fogColumnRay(push, g, index.xy, jitter.xy);
-    float t = fogSliceDistance(g, float(index.z) + 0.5 + jitter.z);
-    return ray.origin + ray.dir * t;
 }
 
 // ---- Density field -------------------------------------------------------------------------------
@@ -179,31 +174,55 @@ public float fogDensity(WorldPush push, float3 rebasedPos) {
 // ---- Sampling offsets ----------------------------------------------------------------------------
 
 /**
- * Per-froxel sub-cell sampling offset, in froxel units, zero-mean on every axis.
+ * Sub-cell offset of the WHOLE froxel grid for this frame, in UV.
  *
- * The injection raygen and the integration pass MUST derive this identically — the integration
- * recomputes the froxel's world position to evaluate density, and if it disagreed with where the
- * raygen actually traced, extinction and in-scatter would describe different points.
+ * This is the camera's own sub-pixel jitter, converted to UV, exactly as primary.rgen applies it
+ * (`uv + worldPush.jitter / size`). Both the camera ray and the froxel column ray therefore receive the
+ * same offset, which is what makes the scheme work at all.
  *
- * A single global per-frame offset (what the frame's Halton value alone gives) translates the entire
- * grid as one rigid block, so the froxel lattice stays perfectly correlated across neighbours and the
- * eye keeps reading it as blockiness no matter how long it accumulates. Adding a per-column
- * Cranley-Patterson rotation decorrelates adjacent columns: each samples an independent sub-position
- * inside its own footprint, so the error becomes high-frequency noise that bilinear filtering and the
- * temporal average both remove, instead of a coherent grid that neither can.
+ * The previous approach offset each column by an independent hash. That is jitter without a resolve:
+ * the injection sampled a position that moved every frame, while the composite always read the texel at
+ * its NOMINAL centre, so the temporal filter averaged values describing different points and called it
+ * convergence. It could never antialias the lattice either, because the lattice is defined by where the
+ * volume is READ, and the read never moved.
  *
- * XY is shared by every froxel in a column because the whole system is built on one ray per column;
- * only Z varies per slice.
+ * Driving the grid from the camera jitter fixes both. The fog signal now moves in lockstep with the
+ * geometry signal DLSS-RR is already reconstructing, so RR resolves the two consistently instead of
+ * fighting an offset it knows nothing about. It also leaves the pixel-to-froxel correspondence
+ * jitter-invariant: column c sits at uv (c + 0.5)/dims + j and a pixel's ray passes through uv_pixel + j,
+ * so the two match when (c + 0.5)/dims == uv_pixel — the same lookup the composite already performs,
+ * with no jitter term needed at read time.
  */
-public float3 fogJitter(WorldPush push, int2 column, int slice) {
-    float3 frameOffset = push.fogJitter.xyz;
-    float2 columnRotation = float2(
-            fogHash13(float3(float(column.x), float(column.y), 0.0)),
-            fogHash13(float3(float(column.x), float(column.y), 17.0)));
-    float2 xy = frac(frameOffset.xy + 0.5 + columnRotation) - 0.5;
-    float sliceRotation = fogHash13(float3(float(column.x), float(column.y), float(slice) * 0.3719 + 5.0));
-    float z = frac(frameOffset.z + 0.5 + sliceRotation) - 0.5;
-    return float3(xy, z);
+public float2 fogGridJitterUv(WorldPush push) {
+    return push.fogJitter.xy;
+}
+
+/** The previous frame's grid offset, needed to read the history in its own jittered frame. */
+public float2 fogPrevGridJitterUv(WorldPush push) {
+    return push.fogJitter.zw;
+}
+
+/**
+ * Per-frame slice offset in slice units, in [-0.5, 0.5].
+ *
+ * Depth has no camera jitter to inherit — the camera's is purely lateral — so the slice axis keeps its
+ * own low-discrepancy offset. It is derived from the frame index rather than passed in, which
+ * guarantees the injection and the integration agree on it without a second push field to keep in sync.
+ * A shared, grid-wide offset (not per-froxel) so the whole grid stays coherent, as above.
+ */
+public float fogSliceJitter(WorldPush push) {
+    uint bits = push.frameIndex + 1u;
+    float scale = 0.5;
+    float result = 0.0;
+    [unroll]
+    for (int b = 0; b < 16; ++b) {
+        if ((bits & 1u) != 0u) {
+            result += scale;
+        }
+        bits >>= 1u;
+        scale *= 0.5;
+    }
+    return result - 0.5;
 }
 
 /**
