@@ -99,46 +99,74 @@ void main() {
         return;
     }
 
-    // Froxels behind the g-buffer surface are never sampled by the composite, so their shadow ray is
-    // pure waste. In enclosed geometry this removes most of the grid; looking at open sky it removes
-    // nothing, which is why it is a cull and not a resize.
+    // Froxels far behind the g-buffer surface skip their SHADOW RAY, which is the expensive part, but
+    // they must still be filled with a plausible value rather than zero.
+    //
+    // The composite fetches this volume through a TRILINEAR sampler, so a froxel is read by the XY taps
+    // of neighbouring columns too. At a silhouette the neighbouring column can be at a completely
+    // different depth — background at 100 blocks beside a pillar at 5 — and no amount of Z margin helps,
+    // because the background pixel's XY tap lands on the pillar's column at the FAR slice, which the
+    // cull had zeroed. Writing zero there is what produced the dark halo hugging every edge: the cull,
+    // an optimisation, was corrupting data the composite genuinely reads.
+    //
+    // Writing the unshadowed in-scatter instead keeps the field continuous and costs nothing (the ray is
+    // still skipped). It is "wrong" only in being unoccluded, and nothing samples it directly — it is
+    // reachable solely by interpolation from neighbours, where plausible fog is far closer to correct
+    // than a hole.
+    bool skipShadowRay = false;
     if (fogDepthCullEnabled(worldPush)) {
         float sceneDistance = fogColumnSceneDistance(grid, index.xy, ray.origin);
         float margin = fogSliceDistance(grid, float(index.z) + 0.5 + FOG_DEPTH_CULL_MARGIN_SLICES)
                 - distance;
-        if (distance > sceneDistance + margin) {
-            fogScatter[index] = float4(0.0, 0.0, 0.0, 0.0);
-            return;
-        }
+        skipShadowRay = distance > sceneDistance + margin;
     }
-
-    uint seed = uint(index.x) * 1973u + uint(index.y) * 9277u + uint(index.z) * 26699u
-            ^ worldPush.frameIndex * 2654435761u;
-    seed = pcg(seed);
 
     // Sample a point on the body's disc rather than its centre direction. This is what gives a shaft
     // edge a physically-sized penumbra; softening it later with a blur would be both slower and wrong,
-    // and the plan's "no spatial blur" rule depends on getting the softness from here instead.
+    // and the "no spatial blur" rule depends on getting the softness from here instead.
+    //
+    // Driven by the R2 low-discrepancy sequence rather than a PRNG: this single sample is temporally
+    // accumulated, so successive frames should probe the disc in a stratified pattern rather than at
+    // independent random points. White noise leaves low-frequency error that survives both the bilinear
+    // fetch and the temporal average, which is what showed up as clumpy speckle.
     float3 lightDir = celestialLight.dir;
     if (celestialLight.halfAngle > 0.0) {
-        lightDir = sampleSquare(lightDir, celestialLight.halfAngle, seed);
+        lightDir = sampleSquareAt(lightDir, celestialLight.halfAngle,
+                fogSampleR2(index, worldPush.frameIndex));
     }
     // visibility() returns per-channel transmittance: the shadow SBT's any-hit records alpha-test
     // cutouts and MULTIPLY translucent/water tint into it. That float3 is the entire colour-carrying
     // mechanism of this system.
-    float3 transmittance = visibility(position, lightDir, FOG_SHADOW_TMAX).transmittance;
+    float3 transmittance = skipShadowRay
+            ? float3(1.0, 1.0, 1.0)
+            : visibility(position, lightDir, FOG_SHADOW_TMAX).transmittance;
 
+    // Store the PHASELESS in-scatter: scattering coefficient x light x visibility, with no view
+    // dependence. The phase term is applied later, at integration time, from the current frame's ray
+    // direction.
+    //
+    // This matters because the stored value is temporally accumulated. Baking the phase in makes the
+    // history describe the sun-view angle of the frame it was captured in, so every camera rotation
+    // leaves a tail of stale phase values, and the strong forward lobe (g = 0.7) magnifies the error
+    // enormously right where the shaft is brightest. That is what smeared the beams. Visibility and
+    // extinction genuinely are view-independent and are the only things worth averaging over time;
+    // the phase is exact and free to evaluate per frame.
     float scattering = extinction * worldPush.fogParams1.w;
-    float phase = fogPhase(dot(ray.dir, lightDir), worldPush.fogParams1.z);
-    float3 inscatter = scattering * phase * celestialLight.illuminance * transmittance;
+    float3 direct = scattering * celestialLight.illuminance * transmittance;
 
-    // Flat isotropic fill. Defaults to zero: it is unoccluded, so any non-zero value glows inside caves.
+    // Flat isotropic fill, folded in here rather than kept separate: being isotropic its phase is the
+    // constant 1/4pi, so it needs no view direction and can ride in the same channels. Defaults to
+    // zero, since it is unoccluded and would otherwise glow inside caves.
     float ambient = worldPush.fogParams2.z;
-    if (ambient > 0.0) {
-        inscatter += scattering * FOG_INV_4PI * ambient * celestialLight.illuminance;
-    }
+    float3 ambientTerm = ambient > 0.0
+            ? scattering * FOG_INV_4PI * ambient * celestialLight.illuminance
+            : float3(0.0, 0.0, 0.0);
 
-    // Absolute scene units, never pre-exposed here. HALF_MAX-clamped because the store is a half format
-    // and an infinity would propagate through the temporal history for as long as the froxel lives.
-    fogScatter[index] = float4(clamp(inscatter, float3(0.0), float3(HALF_MAX)), 0.0);
+    // RGB carries the phaseless DIRECT term; the integration pass multiplies it by this frame's phase.
+    // Alpha carries the already-phased ambient as a luminance, reconstructed against the light colour
+    // at integration time — the ambient is a small achromatic fill, so a scalar is ample and it avoids
+    // a second RGB volume purely to keep two terms apart.
+    float ambientLuma = fogLuminance(ambientTerm);
+    fogScatter[index] = float4(clamp(direct, float3(0.0), float3(HALF_MAX)),
+            clamp(ambientLuma, 0.0, HALF_MAX));
 }

@@ -61,7 +61,19 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         }
     }
 
-    float w = fogDistanceW(grid, distance);
+    // Pull the sample back half a slice before fetching.
+    //
+    // The volume stores each slice's prefix at its CENTRE, so a trilinear fetch at the surface's exact
+    // w blends the slice in front of the surface with the one behind it. The slice behind is integrated
+    // through space the surface occludes, so that blend leaks exterior fog through walls — standing in
+    // a dark room with sun outside, up to a third of the fetched value came from beyond the wall. It is
+    // most obvious in spectator/noclip, where the camera sits close to geometry and the near slices are
+    // fractions of a block thick.
+    //
+    // Biasing by half a slice makes the fetch interpolate between the two slices IN FRONT of the
+    // surface, so every froxel contributing to a pixel is one the pixel can actually see through.
+    float surfaceSlice = fogDistanceSlice(grid, distance);
+    float w = clamp((surfaceSlice - 0.5) / float(grid.dims.z), 0.0, 1.0);
     float4 fog = fogIntegratedSampler.SampleLevel(float3(uv, w), 0.0);
 
     float4 scene = sceneImage[pixel];

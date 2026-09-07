@@ -142,12 +142,20 @@ public float3 cosineDir(float3 n, inout uint s) {
 // Averaged over frames by DLSS-RR this yields soft penumbrae that widen with occluder distance
 // (contact-hardening) for free. halfAngle <= 0 ⇒ exact direction (hard).
 public float3 sampleSquare(float3 axis, float halfAngle, inout uint s) {
+    return sampleSquareAt(axis, halfAngle, float2(rndf(s), rndf(s)));
+}
+
+// As sampleSquare, but with the two uniform variates supplied by the caller. Lets a caller drive the
+// disc sample from a low-discrepancy sequence instead of a PRNG stream, which matters wherever the
+// result is temporally accumulated: a stratified sequence decorrelates successive frames and so
+// converges far faster than independent white-noise draws.
+public float3 sampleSquareAt(float3 axis, float halfAngle, float2 xi) {
     float3 right;
     float3 up;
     celestialSquareFrame(axis, right, up);
     float t = tan(halfAngle);
-    float u = (rndf(s) * 2.0 - 1.0) * t;
-    float v = (rndf(s) * 2.0 - 1.0) * t;
+    float u = (xi.x * 2.0 - 1.0) * t;
+    float v = (xi.y * 2.0 - 1.0) * t;
     return normalize(axis + u * right + v * up);
 }
 

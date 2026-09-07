@@ -201,6 +201,23 @@ public float3 fogJitter(WorldPush push, int2 column, int slice) {
     return float3(xy, z);
 }
 
+/**
+ * Spatiotemporal low-discrepancy sample pair for a froxel's sun-disc lookup.
+ *
+ * White noise (a raw PCG hash, which is what this used before) spreads its error evenly across all
+ * frequencies, so the low-frequency part survives both the bilinear fetch and the temporal average and
+ * is exactly what reads as clumpy speckle. This uses R2 — Roberts' generalised golden-ratio sequence —
+ * offset per froxel, which keeps successive frames' samples maximally separated and pushes the residual
+ * into high frequencies that the temporal average removes fastest. It is the cheap analytic stand-in
+ * for the 256x256x128 blue-noise array MCRTX ships, needing no texture and no descriptor.
+ */
+public float2 fogSampleR2(int3 index, uint frameIndex) {
+    // Plastic-constant reciprocals; the canonical R2 lattice generators.
+    const float2 R2 = float2(0.7548776662466927, 0.5698402909980532);
+    float offset = fogHash13(float3(index)) * 4096.0;
+    return frac(R2 * (float(frameIndex) + offset));
+}
+
 // ---- Phase ---------------------------------------------------------------------------------------
 
 /** Henyey-Greenstein, 4pi-normalised. Local copy: math.slang pulls in the world descriptor set. */

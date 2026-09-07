@@ -614,12 +614,16 @@ public final class CausticaConfig {
             public static final BooleanSetting TEMPORAL = bool("caustica.rt.fogTemporal", "fog.temporal", true);
             /**
              * Blend weight a fully converged froxel gives this frame's new sample; its reciprocal is the
-             * effective sample count the temporal average settles at. 0.04 is ~25 frames, matching the
-             * 5% exponential blend Frostbite uses for the same buffer. Lower is cleaner but slower to
-             * react to lighting changes.
+             * effective sample count the temporal average settles at.
+             *
+             * <p>Only view-independent scattering is accumulated (the phase is re-evaluated per frame),
+             * so the history stays valid under camera rotation and this only has to average Monte Carlo
+             * visibility noise. 0.1 is ~10 frames: long enough to resolve the sun-disc sampling, short
+             * enough that a moving occluder does not trail. Frostbite's 5% is for a buffer that also
+             * carries the phase and therefore needs a longer, blurrier tail.
              */
             public static final FloatSetting TEMPORAL_ALPHA_MIN =
-                    clampedFloat("caustica.rt.fogTemporalAlphaMin", "fog.temporal-alpha-min", 0.04f, 0.005f, 1.0f);
+                    clampedFloat("caustica.rt.fogTemporalAlphaMin", "fog.temporal-alpha-min", 0.1f, 0.005f, 1.0f);
             public static final BooleanSetting DEPTH_CULL =
                     bool("caustica.rt.fogDepthCull", "fog.depth-cull", true);
 

@@ -11,6 +11,7 @@
 // supersampling rather than permanent blur), the change-adaptive blend below, and the sun-disc area
 // sampling that already gave the shaft edge a physical penumbra.
 import world_common;
+import sky;
 import fog;
 import bindings;
 
@@ -43,13 +44,23 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     // see the note at the blend below. fogTemporal.yz are unused by the current filter.
     float alphaFloor = worldPush.fogTemporal.x;
 
+    // The phase is applied HERE, per frame, from the current ray direction — the injection stores a
+    // phaseless value precisely so that camera rotation cannot leave a tail of stale phase in the
+    // history. Only the direction is needed, and skyState is a pure function of the push block, so no
+    // transmittance LUT (which this pass does not bind) is required.
+    SkyState sky = skyState(worldPush);
+    float3 lightDir = sky.sunIlluminance >= sky.moonIlluminance ? sky.sunDir : sky.moonDir;
+    float anisotropy = worldPush.fogParams1.z;
+
     float3 integrated = float3(0.0, 0.0, 0.0);
     float transmittance = 1.0;
     float previousDistance = grid.near;
 
     for (int slice = 0; slice < grid.dims.z; ++slice) {
         int3 index = int3(column, slice);
-        float3 raw = fogScatter[index].rgb;
+        float4 scatterSample = fogScatter[index];
+        float3 raw = scatterSample.rgb;
+        float rawAmbient = scatterSample.a;
 
         float sliceDistance = fogSliceDistance(grid, float(slice) + 0.5 + fogJitter(worldPush, column, slice).z);
         float3 position = ray.origin + ray.dir * sliceDistance;
@@ -119,6 +130,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         float3 blended = lerp(history.rgb, raw, alpha);
         blended = clamp(blended, float3(0.0), float3(HALF_MAX));
         fogHistory[index] = float4(blended, historyLength);
+        // Apply this frame's phase to the accumulated, view-INDEPENDENT scattering.
+        //
+        // The ambient fill is isotropic and unshadowed, so it carries no Monte Carlo noise and needs no
+        // temporal accumulation at all — this frame's value is already exact. It is taken straight from
+        // the raw sample (where it was stored pre-scaled by 1/4pi) rather than blended, which also keeps
+        // it out of the history and leaves the alpha channel free for the history length.
+        float phase = fogPhase(dot(ray.dir, lightDir), anisotropy);
+        float3 lit = blended * phase + rawAmbient;
 
         // ---- Depth integration.
         //
@@ -137,7 +156,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
             float toCentre = max(sliceCentre - previousDistance, 0.0);
             if (toCentre > 0.0) {
                 float stepTransmittance = exp(-extinction * toCentre);
-                integrated += transmittance * (blended - blended * stepTransmittance) / extinction;
+                integrated += transmittance * (lit - lit * stepTransmittance) / extinction;
                 transmittance *= stepTransmittance;
             }
         }
@@ -146,7 +165,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
             float toFar = max(sliceFar - sliceCentre, 0.0);
             if (toFar > 0.0) {
                 float stepTransmittance = exp(-extinction * toFar);
-                integrated += transmittance * (blended - blended * stepTransmittance) / extinction;
+                integrated += transmittance * (lit - lit * stepTransmittance) / extinction;
                 transmittance *= stepTransmittance;
             }
         }
