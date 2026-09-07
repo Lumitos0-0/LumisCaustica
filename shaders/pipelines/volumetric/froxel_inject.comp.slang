@@ -25,11 +25,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
 
-    // Sub-voxel temporal blue-noise jittering along view ray to eliminate slicing bands
-    float jitter = interleavedGradientNoise(float2(dispatchId.xy), pc.frameIndex) - 0.5;
-    float continuousSlice = float(dispatchId.z) + jitter;
-
-    // UV in [0, 1] for current froxel column
+    // Stable froxel center in screen/NDC space (stable world-locked coordinates prevent swimming)
     float2 uv = (float2(dispatchId.xy) + 0.5) / float2(FROXEL_DIMS.xy);
     float2 ndc = uv * 2.0 - 1.0;
 
@@ -40,12 +36,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 farP = farH.xyz / farH.w;
     float3 rayDir = normalize(farP - nearP);
 
-    // Froxel slice depth with continuous jitter
-    float linearDepth = froxelSliceToDepth(continuousSlice, FROXEL_DIMS.z);
-    float3 hitCamRel = rayDir * linearDepth;
+    // Exact slice depth for froxel center
+    float sliceDepth = froxelSliceToDepth(float(dispatchId.z) + 0.5, FROXEL_DIMS.z);
+    float3 hitCamRel = rayDir * sliceDepth;
     float3 hitPos = hitCamRel + worldPush.camOffset;
 
-    // Medium density with exponential height falloff
+    // Medium density with smooth exponential height falloff
     float altitude = hitPos.y;
     float heightDiff = max(altitude - pc.fogHeightBaseline, 0.0);
     float heightAtten = exp(-heightDiff / max(pc.fogHeightFalloff, 1.0));
@@ -59,8 +55,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // =========================================================================
     // PATH 1: DIRECT SUN/MOON SHAFTS (MCRTX High-Frequency Direct Inscattering)
     // =========================================================================
-    // Uses hardware RayQuery with RAY_FLAG_FORCE_OPAQUE (no geometry leaks).
-    // Evaluates Henyey-Greenstein anisotropic phase (g = 0.80) for forward god rays.
     SkyState sky = skyState(worldPush);
     CelestialLight celLight = dominantCelestialLight(sky, transmittanceLut);
     float3 sunIllumAces = bt709ToAcesCg(celLight.illuminance);
@@ -76,8 +70,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
         q.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, ray);
-        while (q.Proceed()) {
-        }
+        while (q.Proceed()) {}
         if (q.CommittedStatus() == COMMITTED_NOTHING) {
             float cosTheta = dot(rayDir, lightDir);
             float phase = henyeyGreenstein(cosTheta, clamp(pc.anisotropy, -0.9, 0.95));
@@ -86,39 +79,13 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     // =========================================================================
-    // PATH 2: TRUE VOLUMETRIC INDIRECT GI (MCRTX Low-Frequency Ambient Volume)
+    // PATH 2: TRUE VOLUMETRIC INDIRECT GI (MCRTX Multi-Directional Ambient Volume)
     // =========================================================================
-    // Multi-scattered diffuse light from the entire surrounding environment.
-    // Isotropic phase function: p = 1 / (4 * PI)
     const float isotropicPhase = 1.0 / (4.0 * 3.14159265359);
     float3 volumetricGiRadiance = float3(0.0);
 
     if (scatteringCoeff > 1.0e-7) {
-        // A. Diffuse Sky Dome Irradiance (gated by vertical sky occlusion)
-        float skyOcclusion = 1.0;
-        {
-            RayDesc skyOcclusionRay;
-            skyOcclusionRay.Origin = hitPos;
-            skyOcclusionRay.Direction = float3(0.0, 1.0, 0.0);
-            skyOcclusionRay.TMin = 0.05;
-            skyOcclusionRay.TMax = 96.0;
-
-            RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> skyQ;
-            skyQ.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, skyOcclusionRay);
-            while (skyQ.Proceed()) {}
-            if (skyQ.CommittedStatus() != COMMITTED_NOTHING) {
-                skyOcclusion = 0.0; // Fully occluded: inside cave, tunnel, or building
-            }
-        }
-
-        float2 sunZenithUv = skyViewLutUv(sky.viewerRadiusKm, 0.99, lightViewCosine(float3(0.0, 1.0, 0.0), sky.sunDir), SKY_VIEW_BODY_SUN);
-        float2 moonZenithUv = skyViewLutUv(sky.viewerRadiusKm, 0.99, lightViewCosine(float3(0.0, 1.0, 0.0), sky.moonDir), SKY_VIEW_BODY_MOON);
-        float3 zenithSkyLuminance709 = skyViewLut.SampleLevel(sunZenithUv, 0.0).rgb + skyViewLut.SampleLevel(moonZenithUv, 0.0).rgb;
-        float3 skyLuminanceAces = bt709ToAcesCg(zenithSkyLuminance709);
-        float3 skyAmbientGI = skyLuminanceAces * (skyOcclusion * isotropicPhase * scatteringCoeff);
-
-        // B. Multi-Directional Spherical Gather (MCRTX Pure Stochastic Radiative Transfer)
-        // Number of probe rays scales with quality: High=1, Very High=2, Ultra=4
+        // Multi-directional spherical probe gather (smooth ambient transition without harsh binary step)
         uint totalProbes = pc.qualityMode == 2u ? 4u : (pc.qualityMode == 1u ? 2u : 1u);
         float3 probeRadianceSum = float3(0.0);
 
@@ -128,31 +95,29 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
             probeRay.Origin = hitPos;
             probeRay.Direction = probeDir;
             probeRay.TMin = 0.05;
-            probeRay.TMax = 24.0;
+            probeRay.TMax = 32.0;
 
             RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> probeQ;
             probeQ.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, probeRay);
             while (probeQ.Proceed()) {}
 
             if (probeQ.CommittedStatus() == COMMITTED_NOTHING) {
-                // Ray escaped into open sky: sample sky luminance in probe direction
-                if (probeDir.y > 0.0) {
-                    float cosView = lightViewCosine(probeDir, sky.sunDir);
-                    float2 probeSkyUv = skyViewLutUv(sky.viewerRadiusKm, probeDir.y, cosView, SKY_VIEW_BODY_SUN);
-                    float3 probeSkyAces = bt709ToAcesCg(skyViewLut.SampleLevel(probeSkyUv, 0.0).rgb);
-                    probeRadianceSum += probeSkyAces * (isotropicPhase * scatteringCoeff);
-                }
+                // Ray escaped to sky: sample sky luminance in probe direction
+                float cosView = lightViewCosine(probeDir, sky.sunDir);
+                float2 probeSkyUv = skyViewLutUv(sky.viewerRadiusKm, max(probeDir.y, 0.01), cosView, SKY_VIEW_BODY_SUN);
+                float3 probeSkyAces = bt709ToAcesCg(skyViewLut.SampleLevel(probeSkyUv, 0.0).rgb);
+                probeRadianceSum += probeSkyAces * (isotropicPhase * scatteringCoeff);
             } else {
-                // Surface hit nearby: ambient room bounce based on surrounding enclosure
+                // Surface hit: soft ambient bounce reflecting surrounding room
                 float hitDist = probeQ.CommittedRayT();
-                float proximityWeight = clamp(1.0 - (hitDist / 24.0), 0.0, 1.0);
-                // Subtle ambient bounce matching the surrounding environment luminance
-                probeRadianceSum += skyLuminanceAces * (skyOcclusion * 0.25 * proximityWeight * isotropicPhase * scatteringCoeff);
+                float proximityWeight = clamp(hitDist / 32.0, 0.05, 1.0);
+                float2 zenithUv = skyViewLutUv(sky.viewerRadiusKm, 0.99, lightViewCosine(float3(0.0, 1.0, 0.0), sky.sunDir), SKY_VIEW_BODY_SUN);
+                float3 ambientSkyAces = bt709ToAcesCg(skyViewLut.SampleLevel(zenithUv, 0.0).rgb);
+                probeRadianceSum += ambientSkyAces * (proximityWeight * 0.2 * isotropicPhase * scatteringCoeff);
             }
         }
 
-        float3 environmentGI = probeRadianceSum / float(totalProbes);
-        volumetricGiRadiance = (skyAmbientGI + environmentGI) * max(pc.giStrength, 0.0);
+        volumetricGiRadiance = (probeRadianceSum / float(totalProbes)) * max(pc.giStrength, 0.0);
     }
 
     // =========================================================================
@@ -161,7 +126,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 currentRadiance = (directShaftRadiance + volumetricGiRadiance) * worldPush.preExposure;
 
     // =========================================================================
-    // TEMPORAL REPROJECTION & NEIGHBORHOOD CLAMP (Eliminates Reprojection Lag)
+    // WORLD-STABLE TEMPORAL REPROJECTION & NEIGHBORHOOD CLAMP
     // =========================================================================
     float3 prevCamRel = hitCamRel + worldPush.camDelta;
     float4 prevClip = mul(worldPush.prevViewProj, float4(prevCamRel, 1.0));
@@ -181,7 +146,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         }
     }
 
-    // Dynamic color box clamping to eliminate ghosting trails, camera smearing, and lag
+    // Soft color box clamping to eliminate ghosting trails while preserving smooth gradients
     float3 minHistBound = currentRadiance * 0.2;
     float3 maxHistBound = currentRadiance * 4.0 + 0.05;
     float3 clampedHistory = clamp(historyRadiance, minHistBound, maxHistBound);
