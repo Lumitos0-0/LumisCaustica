@@ -343,13 +343,13 @@ public final class RtVolumetricPipeline {
 
             ByteBuffer push = stack.malloc(VolumetricPushData.BYTE_SIZE);
             new VolumetricPushData(worldPushAddress,
-                    CausticaConfig.Rt.Volumetrics.DENSITY.value().floatValue(),
-                    CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF.value().floatValue(),
+                    CausticaConfig.Rt.Volumetrics.DENSITY.value(),
+                    CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF.value(),
                     64.0f,
-                    CausticaConfig.Rt.Volumetrics.ANISOTROPY.value().floatValue(),
-                    CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value().floatValue(),
-                    CausticaConfig.Rt.Volumetrics.GI_STRENGTH.value().floatValue(),
-                    CausticaConfig.Rt.Volumetrics.DIRECT_STRENGTH.value().floatValue(),
+                    CausticaConfig.Rt.Volumetrics.ANISOTROPY.value(),
+                    CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value(),
+                    CausticaConfig.Rt.Volumetrics.GI_STRENGTH.value(),
+                    CausticaConfig.Rt.Volumetrics.DIRECT_STRENGTH.value(),
                     frameIndex).write(push);
             VK10.vkCmdPushConstants(cmd, injectPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
 

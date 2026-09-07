@@ -1209,7 +1209,7 @@ public final class RtComposite {
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
 
             if (CausticaConfig.Rt.Volumetrics.ENABLED.value() && volumetricPipeline != null) {
-                volumetricPipeline.setResources(frameTlas.handle, skyLut.skyViewView(), skyLut.sampler(),
+                volumetricPipeline.setResources(frameTlas.accel.handle, skyLut.skyViewView(), skyLut.sampler(),
                         skyLut.transmittanceView(), skyLut.sampler());
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
