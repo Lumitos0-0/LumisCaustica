@@ -35,6 +35,14 @@ public static const float FOG_STALENESS_MIN_ERROR   = 0.02;
 public static const float FOG_STALENESS_RETAINED_FRAMES = 3.0;
 public static const float FOG_DISOCCLUSION_FRAMES       = 2.0;
 
+// Variance-adaptive blur along Z (see volumetric/integrate.comp.slang). Radius 2 while a froxel is
+// still noisy, 1 while it settles, 0 once converged, keyed off the history length. Confined to the
+// depth axis because the medium is smooth along a view ray while a shaft's structure lives in XY:
+// blurring Z costs no shaft definition, whereas blurring XY smears the froxel lattice across
+// silhouettes. Turning it off at convergence is what keeps the edge bit-identical to no filtering.
+public static const float FOG_ZBLUR_NOISY_FRAMES     = 2.0;
+public static const float FOG_ZBLUR_SETTLING_FRAMES  = 5.0;
+
 // Below this extinction a froxel contributes nothing a half can represent over a whole slice, so the
 // injection pass skips its shadow ray entirely. With the default height falloff this culls most of the
 // grid in clear weather, which is the single largest performance lever in the system.
