@@ -584,9 +584,17 @@ public final class CausticaConfig {
             public static final BooleanSetting ENABLED = bool("caustica.rt.fog", "fog.enabled", true);
             /** 0 low, 1 medium, 2 high, 3 ultra. Selects froxel grid resolution and slice count. */
             public static final IntSetting QUALITY = clampedInt("caustica.rt.fogQuality", "fog.quality", 2, 0, 3);
-            /** Base extinction in 1/blocks at the falloff base height, before weather and noise. */
+            /**
+             * Base extinction in 1/blocks at the falloff base height, before weather and noise.
+             *
+             * <p>0.0025 is an optical depth of ~0.48 over the default 192-block range, leaving distant
+             * terrain at ~62% contrast — clear-day haze rather than fog. The previous 0.02 was an
+             * optical depth of 3.84, i.e. 98% opaque air, which washed the whole image out. Shafts stay
+             * bright at the lower value because the forward phase lobe is ~45x the perpendicular one,
+             * so reducing density dims the flat ambient wash far more than it dims the beam.
+             */
             public static final FloatSetting DENSITY =
-                    clampedFloat("caustica.rt.fogDensity", "fog.density", 0.02f, 0.0f, 1.0f);
+                    clampedFloat("caustica.rt.fogDensity", "fog.density", 0.0025f, 0.0f, 1.0f);
             public static final FloatSetting MAX_DISTANCE =
                     clampedFloat("caustica.rt.fogMaxDistance", "fog.max-distance", 192.0f, 16.0f, 512.0f);
             public static final FloatSetting HEIGHT_FALLOFF =

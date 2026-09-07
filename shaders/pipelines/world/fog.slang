@@ -18,6 +18,13 @@ import world_common;
 public static const float FOG_PI = 3.14159265359;
 public static const float FOG_INV_4PI = 0.07957747155;
 
+// Depth-similarity tolerance for the composite's bilateral upsample, as a FRACTION of the pixel's own
+// view distance, plus an absolute floor in blocks for the near field. A froxel column whose surface sits
+// further than this from the pixel's is integrating light through a different part of the world and is
+// rejected from the blend.
+public static const float FOG_UPSAMPLE_DEPTH_TOLERANCE = 0.06;
+public static const float FOG_UPSAMPLE_MIN_TOLERANCE   = 0.35;
+
 // Below this extinction a froxel contributes nothing a half can represent over a whole slice, so the
 // injection pass skips its shadow ray entirely. With the default height falloff this culls most of the
 // grid in clear weather, which is the single largest performance lever in the system.

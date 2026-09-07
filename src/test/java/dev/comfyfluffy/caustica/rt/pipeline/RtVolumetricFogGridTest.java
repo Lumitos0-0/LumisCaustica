@@ -82,6 +82,58 @@ final class RtVolumetricFogGridTest {
         }
     }
 
+    /**
+     * The composite's bilateral upsample must reject a froxel column whose surface sits at a very
+     * different distance. Without it, a column aimed out through a cave opening blends its sunlit
+     * prefix into a pixel looking at a wall two blocks away, painting daylight onto the wall — the
+     * leak, the jaggies and the oversoftening all come from that one blend.
+     */
+    @Test
+    void bilateralUpsampleRejectsColumnsAtADifferentDepth() {
+        double pixelDistance = 2.0;
+        double[] columnDistances = {2.0, 2.0, 192.0, 192.0};
+        double[] columnValues = {0.05, 0.05, 4.0, 4.0};
+        double plain = weightedFog(pixelDistance, columnDistances, columnValues, false);
+        double bilateral = weightedFog(pixelDistance, columnDistances, columnValues, true);
+        assertTrue(plain > 1.5, "plain bilinear should leak the sunlit columns, got " + plain);
+        assertTrue(bilateral < 0.1, "bilateral should reject them, got " + bilateral);
+    }
+
+    /** ...while leaving a continuous surface blending smoothly, so no banding is introduced. */
+    @Test
+    void bilateralUpsampleKeepsSmoothSurfacesSmooth() {
+        double pixelDistance = 10.3;
+        double[] columnDistances = {10.0, 10.4, 10.2, 10.6};
+        double[] columnValues = {1.0, 1.02, 1.01, 1.03};
+        double plain = weightedFog(pixelDistance, columnDistances, columnValues, false);
+        double bilateral = weightedFog(pixelDistance, columnDistances, columnValues, true);
+        assertEquals(plain, bilateral, 0.01,
+                "a continuous surface must not be altered by the depth weighting");
+    }
+
+    /** Mirrors the 2x2 weighting in {@code volumetric/composite.comp.slang}. */
+    private static double weightedFog(double pixelDistance, double[] columnDistances,
+                                      double[] columnValues, boolean bilateral) {
+        final double toleranceFraction = 0.06;
+        final double minimumTolerance = 0.35;
+        double tolerance = Math.max(pixelDistance * toleranceFraction, minimumTolerance);
+        double fractionX = 0.6;
+        double fractionY = 0.5;
+        double total = 0.0;
+        double sum = 0.0;
+        for (int tap = 0; tap < 4; tap++) {
+            int offsetX = tap & 1;
+            int offsetY = (tap >> 1) & 1;
+            double weight = Math.abs((1 - offsetX) - fractionX) * Math.abs((1 - offsetY) - fractionY);
+            if (bilateral) {
+                weight *= Math.exp(-Math.abs(columnDistances[tap] - pixelDistance) / tolerance);
+            }
+            sum += columnValues[tap] * weight;
+            total += weight;
+        }
+        return total > 1.0e-4 ? sum / total : 0.0;
+    }
+
     @Test
     void gridSizeIsPositiveAtEveryTier() {
         // gridSizeFor reads live config, so this only pins the arithmetic shape: a divisor must never

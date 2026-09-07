@@ -61,20 +61,70 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         }
     }
 
-    // Pull the sample back half a slice before fetching.
+    // Pull the sample back half a slice in W before fetching.
     //
-    // The volume stores each slice's prefix at its CENTRE, so a trilinear fetch at the surface's exact
-    // w blends the slice in front of the surface with the one behind it. The slice behind is integrated
-    // through space the surface occludes, so that blend leaks exterior fog through walls — standing in
-    // a dark room with sun outside, up to a third of the fetched value came from beyond the wall. It is
-    // most obvious in spectator/noclip, where the camera sits close to geometry and the near slices are
-    // fractions of a block thick.
-    //
-    // Biasing by half a slice makes the fetch interpolate between the two slices IN FRONT of the
-    // surface, so every froxel contributing to a pixel is one the pixel can actually see through.
+    // The volume stores each slice's prefix at its CENTRE, so a fetch at the surface's exact w blends
+    // the slice in front of the surface with the one behind it. The slice behind is integrated through
+    // space the surface occludes, so that blend leaks exterior fog through walls — standing in a dark
+    // room with sun outside, up to a third of the fetched value came from beyond the wall.
     float surfaceSlice = fogDistanceSlice(grid, distance);
     float w = clamp((surfaceSlice - 0.5) / float(grid.dims.z), 0.0, 1.0);
-    float4 fog = fogIntegratedSampler.SampleLevel(float3(uv, w), 0.0);
+
+    // Depth-aware (bilateral) upsample across XY.
+    //
+    // Biasing w fixes leakage along the view ray, but the far larger leak is SIDEWAYS. Each froxel
+    // column integrates light along its own ray, and neighbouring columns can see completely different
+    // worlds: a column aimed at a cave wall two blocks away and the column beside it aimed out through
+    // the opening both have a prefix "at w", but one is dark cave air and the other is sunlit outdoor
+    // air. A plain bilinear fetch blends them, which paints daylight onto the wall for the ~17 display
+    // pixels one froxel column spans at this grid size. That single artefact is simultaneously the leak
+    // onto lit geometry, the "oversoftened" look, and the jaggies — the transition follows the froxel
+    // lattice rather than the wall edge, so it staircases along the grid.
+    //
+    // Weighting each column by how closely its own surface depth matches this pixel's rejects the
+    // column that sees somewhere else entirely, so the blend happens only across genuinely continuous
+    // regions and the transition lands on the depth discontinuity, i.e. the silhouette itself.
+    float2 gridCoord = uv * float2(grid.dims.xy) - 0.5;
+    int2 base = int2(floor(gridCoord));
+    float2 frac2 = gridCoord - float2(base);
+
+    float4 fog = float4(0.0, 0.0, 0.0, 0.0);
+    float totalWeight = 0.0;
+    // Depth tolerance scales with distance: a half-block disagreement is a hard edge up close and
+    // meaningless at a hundred blocks, so a fixed threshold would either over-reject far away or
+    // under-reject nearby.
+    float tolerance = max(distance * FOG_UPSAMPLE_DEPTH_TOLERANCE, FOG_UPSAMPLE_MIN_TOLERANCE);
+    for (int tap = 0; tap < 4; ++tap) {
+        int2 offset = int2(tap & 1, (tap >> 1) & 1);
+        int2 columnIndex = clamp(base + offset, int2(0, 0), grid.dims.xy - 1);
+        float2 bilinear = abs(float2(1 - offset) - frac2);
+        float weight = bilinear.x * bilinear.y;
+
+        // This column's own surface distance, read from the depth guide at the column's centre.
+        float2 columnUv = (float2(columnIndex) + 0.5) / float2(grid.dims.xy);
+        int2 columnTexel = clamp(int2(columnUv * float2(depthDims)), int2(0, 0), int2(depthDims) - 1);
+        float columnDepth = sceneDepth[columnTexel];
+        float columnDistance = grid.far;
+        if (columnDepth > 0.0) {
+            float2 columnNdc = columnUv * 2.0 - 1.0;
+            float4 columnNear = mul(worldPush.invViewProj, float4(columnNdc.x, columnNdc.y, 1.0, 1.0));
+            float4 columnSurface = mul(worldPush.invViewProj,
+                    float4(columnNdc.x, columnNdc.y, columnDepth, 1.0));
+            if (columnSurface.w > 0.0 && columnNear.w != 0.0) {
+                columnDistance = length(columnSurface.xyz / columnSurface.w
+                        - columnNear.xyz / columnNear.w);
+            }
+        }
+        weight *= exp(-abs(columnDistance - distance) / tolerance);
+
+        fog += fogIntegratedSampler.SampleLevel(float3(columnUv, w), 0.0) * weight;
+        totalWeight += weight;
+    }
+    // Every neighbour rejected (an isolated pixel of very different depth): fall back to the plain
+    // fetch rather than dividing by zero. Bilinear there is the lesser error.
+    fog = totalWeight > 1.0e-4
+            ? fog / totalWeight
+            : fogIntegratedSampler.SampleLevel(float3(uv, w), 0.0);
 
     float4 scene = sceneImage[pixel];
     // PRE-EXPOSURE, load-bearing: sceneImage carries worldPush.preExposure (the display pass divides it
