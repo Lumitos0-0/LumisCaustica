@@ -66,12 +66,21 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 public final class RtVolumetricFog {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/volumetric/";
     private static final int GROUP_SIZE = 8;
-    /** Quality tiers: {screen divisor, slice count}. Index is {@code Rt.Fog.QUALITY}. */
+    /**
+     * Quality tiers: {screen divisor, slice count}. Index is {@code Rt.Fog.QUALITY}.
+     *
+     * <p>The divisor applies to the RENDER resolution, which DLSS-RR has already scaled down from the
+     * display resolution — at Performance that is another 2x on each axis. A divisor of 8 against a
+     * 1080p render therefore yields 240x135 froxels, but against the 960x540 render behind a 1080p
+     * Performance preset it yields only 120x68, which is coarse enough to read as visible blockiness.
+     * These divisors are chosen so the coarsest supported combination still lands near 160 froxels
+     * across, the point at which bilinear reconstruction stops being obvious.
+     */
     private static final int[][] TIERS = {
             {12, 64},   // low
             {8, 96},    // medium
-            {8, 128},   // high (default)
-            {6, 160},   // ultra
+            {6, 128},   // high (default)
+            {4, 160},   // ultra
     };
     /**
      * Slice counts below this band at Minecraft's scale; the plan's measurement is that 64 is visibly

@@ -32,32 +32,27 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
 
     float2 uv = (float2(pixel) + 0.5) / float2(sceneDims);
 
-    // Nearest-depth sample over the 2x2 render-resolution footprint. gDepth is render-res under RR and
-    // reversed-Z, so the NEAREST surface is the LARGEST value; picking it makes the foreground win at a
-    // silhouette, which stops fog computed for the distant background from bleeding over a near object.
-    // That bleed reads as softness even when the volume itself is sharp, so this is part of the
-    // anti-oversoftening story, not just a correctness detail.
+    // This pixel's OWN depth, point sampled.
+    //
+    // It is tempting to take the nearest depth over a 2x2 footprint the way a bilateral upsample of a
+    // half-resolution effect does, but that is wrong here and produces a dark halo along every
+    // silhouette: a background pixel whose footprint clips a foreground object would look the volume up
+    // at the FOREGROUND's short distance and so lose all the in-scatter that belongs between it and the
+    // distant surface it actually sees. Fog depth is a per-pixel quantity; there is no neighbourhood to
+    // choose from.
     uint2 depthDims;
     sceneDepth.GetDimensions(depthDims.x, depthDims.y);
-    float2 depthCoord = uv * float2(depthDims) - 0.5;
-    int2 depthBase = int2(floor(depthCoord));
-    float depth = 0.0;
-    for (int tap = 0; tap < 4; ++tap) {
-        int2 texel = clamp(depthBase + int2(tap & 1, (tap >> 1) & 1),
-                int2(0, 0), int2(depthDims) - 1);
-        depth = max(depth, sceneDepth[texel]);
-    }
+    int2 depthTexel = clamp(int2(uv * float2(depthDims)), int2(0, 0), int2(depthDims) - 1);
+    float depth = sceneDepth[depthTexel];
 
     // Reconstruct the view distance this pixel's surface sits at. Sky pixels have far depth (~0 under
     // reversed-Z), which lands past grid.far and therefore receives the full integrated column — the
     // correct haze attenuation of the sky and the celestial discs, with no special case.
-    float3 origin;
     float distance;
     {
         float2 ndc = uv * 2.0 - 1.0;
         float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
         float3 nearP = nearH.xyz / nearH.w;
-        origin = nearP;
         if (depth > 0.0) {
             float4 surfaceH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, depth, 1.0));
             distance = surfaceH.w > 0.0 ? length(surfaceH.xyz / surfaceH.w - nearP) : grid.far;

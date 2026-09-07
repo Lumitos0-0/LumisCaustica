@@ -30,6 +30,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
 
     float3 jitter = worldPush.fogJitter.xyz;
     FogRay ray = fogColumnRay(worldPush, grid, column, jitter.xy);
+    // The reprojection must describe a fixed world point across frames, so it needs the column ray with
+    // the jitter removed. Reusing the jittered ray would move the "stable" position by up to a froxel
+    // every frame, so the history lookup would chase its own sampling offset and the accumulated result
+    // would never converge — which defeats the entire purpose of jittering.
+    FogRay stableRay = fogColumnRay(worldPush, grid, column, float2(0.0, 0.0));
     bool historyValid = fogHistoryValid(worldPush);
 
     float alphaFloor = worldPush.fogTemporal.x;
@@ -50,10 +55,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
 
         // ---- Temporal accumulation.
         //
-        // Reprojection uses the UNJITTERED froxel centre: the jitter is a sampling offset, not motion,
-        // and carrying it into the reprojection would chase the history around by a froxel each frame
-        // and undo the supersampling it exists to provide.
-        float3 stablePosition = ray.origin + ray.dir * fogSliceDistance(grid, float(slice) + 0.5);
+        // Reprojection uses the UNJITTERED froxel centre on the UNJITTERED ray: the jitter is a
+        // sampling offset, not motion, and carrying it into the reprojection would chase the history
+        // around by a froxel each frame and undo the supersampling it exists to provide.
+        float3 stablePosition = stableRay.origin
+                + stableRay.dir * fogSliceDistance(grid, float(slice) + 0.5);
         float rawLuminance = fogLuminance(raw);
         float4 history = float4(raw, rawLuminance * rawLuminance);
         bool reprojected = false;
@@ -103,14 +109,31 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         // Analytic integration of the constant-medium step, the same closed form
         // sky.slang::integrateScatteredLuminance uses: exact over the step rather than a midpoint
         // sample, which is what lets a modest slice count run without visible banding.
+        //
+        // The step is split at the slice CENTRE and the prefix is stored there, because that is where a
+        // linear sampler reads it: texel s covers w in [s/dims.z, (s+1)/dims.z] and its centre — the
+        // coordinate at which its value is returned unblended — is (s+0.5)/dims.z. Storing the integral
+        // to the slice's far edge instead would bias every fetch half a slice too far, which is
+        // invisible near the camera and grows to metres out at the far plane where slices are longest.
+        float sliceCentre = fogSliceDistance(grid, float(slice) + 0.5);
         float sliceFar = fogSliceDistance(grid, float(slice) + 1.0);
-        float stepLength = max(sliceFar - previousDistance, 0.0);
-        previousDistance = sliceFar;
-        if (extinction > FOG_DENSITY_EPSILON && stepLength > 0.0) {
-            float stepTransmittance = exp(-extinction * stepLength);
-            integrated += transmittance * (blended - blended * stepTransmittance) / extinction;
-            transmittance *= stepTransmittance;
+        if (extinction > FOG_DENSITY_EPSILON) {
+            float toCentre = max(sliceCentre - previousDistance, 0.0);
+            if (toCentre > 0.0) {
+                float stepTransmittance = exp(-extinction * toCentre);
+                integrated += transmittance * (blended - blended * stepTransmittance) / extinction;
+                transmittance *= stepTransmittance;
+            }
         }
         fogIntegrated[index] = float4(clamp(integrated, float3(0.0), float3(HALF_MAX)), transmittance);
+        if (extinction > FOG_DENSITY_EPSILON) {
+            float toFar = max(sliceFar - sliceCentre, 0.0);
+            if (toFar > 0.0) {
+                float stepTransmittance = exp(-extinction * toFar);
+                integrated += transmittance * (blended - blended * stepTransmittance) / extinction;
+                transmittance *= stepTransmittance;
+            }
+        }
+        previousDistance = sliceFar;
     }
 }

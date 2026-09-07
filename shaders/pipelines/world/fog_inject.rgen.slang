@@ -38,16 +38,27 @@ float fogColumnSceneDistance(FogGrid grid, int2 columnIndex, float3 rayOrigin) {
     gDepth.GetDimensions(depthDims.x, depthDims.y);
     float2 scale = float2(depthDims) / float2(grid.dims.xy);
     float2 base = float2(columnIndex) * scale;
-    // Four corners of the footprint, clamped inside the guide image.
     int2 lo = int2(clamp(base, float2(0.0), float2(depthDims) - 1.0));
     int2 hi = int2(clamp(base + scale - 1.0, float2(0.0), float2(depthDims) - 1.0));
+
+    // A froxel column covers a whole tile of screen pixels, and this cull must be conservative across
+    // ALL of them: culling a froxel that any one pixel of the tile can still see through punches a hole
+    // in the fog for that pixel. Sampling only the four corners is not enough — a tile straddling a
+    // silhouette can have every corner on the near object while its interior sees far background, and
+    // the background pixels then lose their fog entirely. That reads exactly as "fog disappears behind
+    // edges". Walk the tile on a fixed grid instead, and treat any sky tap as "cull nothing".
+    const int TAPS = 4;
     float minDepth = 1.0;
-    for (int corner = 0; corner < 4; ++corner) {
-        int2 texel = int2((corner & 1) == 0 ? lo.x : hi.x, (corner & 2) == 0 ? lo.y : hi.y);
-        minDepth = min(minDepth, gDepth[texel]);
-    }
-    if (minDepth <= 0.0) {
-        return 1.0e30; // sky in the footprint: nothing behind it to cull against
+    for (int y = 0; y < TAPS; ++y) {
+        for (int x = 0; x < TAPS; ++x) {
+            float2 t = float2(float(x), float(y)) / float(TAPS - 1);
+            int2 texel = int2(round(lerp(float2(lo), float2(hi), t)));
+            float d = gDepth[clamp(texel, int2(0, 0), int2(depthDims) - 1)];
+            if (d <= 0.0) {
+                return 1.0e30; // sky anywhere in the tile: nothing bounds the column
+            }
+            minDepth = min(minDepth, d);
+        }
     }
     // Reconstruct the far-most hit point from the reversed-Z guide depth. The column's own NDC is not
     // needed to a sub-froxel accuracy here, so the unjittered column centre is used.
