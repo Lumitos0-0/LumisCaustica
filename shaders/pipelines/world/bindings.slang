@@ -25,6 +25,11 @@ import world_common;
 // layout does not change with the setting.
 [[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogScatter;
 
+// NVIDIA spatiotemporal blue-noise mask (vec2, 128x128x64), sampled by fog_inject to place its
+// sun-disc samples. R8G8_UNORM, NEAREST + REPEAT: interpolating would average independent samples and
+// destroy the very spectrum the mask provides, and the mask tiles by construction.
+[[vk::binding(13, 0)]] public Sampler3D blueNoiseTex;
+
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];

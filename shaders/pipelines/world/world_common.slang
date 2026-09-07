@@ -91,7 +91,7 @@ public struct WorldPush {
     // ---- Froxel volumetric fog. See shaders/pipelines/world/fog.slang for the grid parameterisation,
     // the density field and the phase function; every consumer derives all three from these fields, so
     // the grid the shadow rays are traced through and the grid the composite samples cannot diverge.
-    public int4     fogGridDims;    // xyz froxel dimensions, w != 0 enables the system
+    public int4     fogGridDims;    // xyz froxel dimensions, w = shadow samples per froxel (0 disables)
     public float4   fogParams0;     // x near dist, y far dist, z slice-distribution exponent, w base density
     public float4   fogParams1;     // x height falloff, y falloff base Y, z anisotropy, w scattering albedo
     public float4   fogParams2;     // x noise scale, y noise strength, z ambient, w weather multiplier

@@ -173,6 +173,10 @@ public final class RtPipeline {
             binds.get(WORLD_FOG_SCATTER).binding(WORLD_FOG_SCATTER)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            // Blue-noise mask, read only by the fog injection raygen.
+            binds.get(WORLD_BLUE_NOISE).binding(WORLD_BLUE_NOISE)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
             check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout");
@@ -441,6 +445,11 @@ public final class RtPipeline {
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
         }
+    }
+
+    /** Bind the spatiotemporal blue-noise mask into every ring slot. */
+    public void setBlueNoise(long imageView, long sampler) {
+        writeAtlasBinding(WORLD_BLUE_NOISE, imageView, sampler);
     }
 
     /** Bind the block albedo atlas into every ring slot. */

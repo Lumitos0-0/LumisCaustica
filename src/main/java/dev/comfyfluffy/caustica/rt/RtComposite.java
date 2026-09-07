@@ -59,6 +59,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtBlueNoise;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
 import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetricFog;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
@@ -181,6 +182,8 @@ public final class RtComposite {
     // Froxel volumetric fog: the three frustum-aligned volumes plus the integrate/composite compute
     // passes. Injection is a raygen in worldPipeline, not here; this owns the images it writes into.
     private RtVolumetricFog volumetricFog;
+    // NVIDIA STBN vec2 mask, device lifetime. Loaded once; the fog injection raygen samples it.
+    private RtBlueNoise blueNoise;
     // Terrain rebase origin the fog history was accumulated against. A rebase shifts every rebased
     // coordinate at once, so the reprojection would silently read the wrong froxels until it is retired.
     private int fogHistoryRebaseX;
@@ -617,6 +620,9 @@ public final class RtComposite {
             if (volumetricFog == null) {
                 volumetricFog = RtVolumetricFog.create(ctx);
             }
+            if (blueNoise == null) {
+                blueNoise = RtBlueNoise.load(ctx);
+            }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
@@ -897,6 +903,9 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
         if (volumetricFog != null && volumetricFog.ready()) {
             worldPipeline.setFogScatter(volumetricFog.scatterView());
+        }
+        if (blueNoise != null) {
+            worldPipeline.setBlueNoise(blueNoise.view(), blueNoise.sampler());
         }
     }
 
@@ -1470,7 +1479,9 @@ public final class RtComposite {
             flags |= 0b01;
         }
         return new FogPush(
-                new Int4(gridX, gridY, gridZ, on ? 1 : 0),
+                // w carries the shadow-sample count; zero disables the system, so the sample count and
+                // the enable flag cannot contradict each other.
+                new Int4(gridX, gridY, gridZ, on ? RtVolumetricFog.samplesPerFroxel() : 0),
                 // Near is fixed: the first froxel must start in front of the near plane, and anything
                 // closer than a quarter block cannot contain a visible amount of medium anyway.
                 new Float4(0.25f, CausticaConfig.Rt.Fog.MAX_DISTANCE.value(), 2.0f,
@@ -1664,6 +1675,10 @@ public final class RtComposite {
         if (volumetricFog != null) {
             volumetricFog.destroy();
             volumetricFog = null;
+        }
+        if (blueNoise != null) {
+            blueNoise.destroy();
+            blueNoise = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();

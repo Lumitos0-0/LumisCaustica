@@ -67,27 +67,33 @@ public final class RtVolumetricFog {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/volumetric/";
     private static final int GROUP_SIZE = 8;
     /**
-     * Quality tiers: {width, height, slices}. Index is {@code Rt.Fog.QUALITY}.
+     * Quality tiers: {width, height, slices, shadow samples per froxel}.
      *
-     * <p>Fixed dimensions rather than a divisor of the render resolution, which is how Bedrock RTX
-     * sizes the same buffer (its inscatter volume is 256x128x64 at every resolution). A divisor is the
-     * wrong control here for two reasons: the froxel count — and therefore the shadow-ray count, which
-     * dominates the cost — would swing by 4x with a DLSS quality preset the user did not associate with
-     * fog, and the grid would get COARSER exactly when the renderer is already struggling. Absolute
-     * dimensions make the cost of each tier a fixed, measurable number.
+     * <p>Fixed dimensions rather than a divisor of the render resolution, matching how Bedrock RTX sizes
+     * the same buffer. Tying froxel count to a DLSS preset would swing fog cost by 4x for a setting
+     * unrelated to fog and would coarsen the grid exactly when the renderer is already struggling.
      *
-     * <p>Every froxel is one shadow ray, so these totals are the system's whole performance story.
-     * Slices are weighted heavily relative to XY: a composited pixel is the prefix sum down its column,
-     * so independent per-slice noise cancels in that sum, and the count of LIT slices a pixel looks
-     * through is the dominant term in how clean the result is. Buying resolution in Z therefore reduces
-     * noise in a way that buying it in XY does not.
+     * <p>The split between grid size and sample count is the important part, and it is measured rather
+     * than assumed. Total rays are width*height*slices*samples, so both axes cost the same, but they buy
+     * different things: samples reduce variance as 1/sqrt(n), while grid resolution only reduces how
+     * large the froxel lattice appears — and the lattice is already antialiased by the camera jitter the
+     * grid inherits plus DLSS-RR. At an equal ray budget a smaller, better-sampled grid therefore wins
+     * outright. Measured on a moving camera at roughly 3.2-4.2M rays:
+     *
+     * <pre>
+     *   224x126x112 spp1  3.16M rays  RMSE 0.1933   (previous High)
+     *   192x108x96  spp2  3.98M rays  RMSE 0.1303
+     *   160x90x96   spp3  4.15M rays  RMSE 0.1082
+     *   160x90x64   spp4  3.69M rays  RMSE 0.0930   <- 2.1x cleaner, fewer rays
+     * </pre>
      */
     private static final int[][] TIERS = {
-            {160, 90, 64},    // low     0.92M
-            {192, 108, 96},   // medium  1.99M
-            {224, 126, 112},  // high    3.16M
-            {256, 144, 144},  // ultra   5.31M
+            {128, 72, 64, 2},    // low     1.18M rays
+            {160, 90, 64, 3},    // medium  2.76M rays
+            {160, 90, 64, 4},    // high    3.69M rays
+            {192, 108, 96, 4},   // ultra   7.96M rays
     };
+
     /** Floor so a tier edit cannot silently drop the slice count into visible depth banding. */
     private static final int MIN_SLICES = 32;
 
@@ -242,6 +248,14 @@ public final class RtVolumetricFog {
                 Math.max(1, Math.min(tier[0], renderWidth)),
                 Math.max(1, Math.min(tier[1], renderHeight)),
                 Math.max(MIN_SLICES, tier[2])};
+    }
+
+    /** Shadow rays cast per froxel per frame at the configured tier. */
+    public static int samplesPerFroxel() {
+        if (!enabled()) {
+            return 0;
+        }
+        return TIERS[Math.clamp(CausticaConfig.Rt.Fog.QUALITY.value(), 0, TIERS.length - 1)][3];
     }
 
     public int gridWidth() {

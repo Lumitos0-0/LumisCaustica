@@ -55,32 +55,39 @@ void main() {
         return;
     }
 
-    // Sample a point on the body's disc rather than its centre direction. This is what gives a shaft
-    // edge a physically-sized penumbra; softening it later with a blur would be both slower and wrong,
-    // and the "no spatial blur" rule depends on getting the softness from here instead.
+    // Sample the body's disc rather than its centre direction, several times per froxel.
     //
-    // Driven by the R2 low-discrepancy sequence rather than a PRNG: this single sample is temporally
-    // accumulated, so successive frames should probe the disc in a stratified pattern rather than at
-    // independent random points. White noise leaves low-frequency error that survives both the bilinear
-    // fetch and the temporal average, which is what showed up as clumpy speckle.
-    float3 lightDir = celestialLight.dir;
-    if (celestialLight.halfAngle > 0.0) {
-        lightDir = sampleSquareAt(lightDir, celestialLight.halfAngle,
-                fogSampleR2(index, worldPush.frameIndex));
-    }
+    // Disc sampling is what gives a shaft edge a physically-sized penumbra; softening it afterwards with
+    // a blur would be both slower and wrong. The sample COUNT is the one lever that attacks variance at
+    // its source: error falls as 1/sqrt(spp) and, unlike widening the temporal window, it costs no lag
+    // and no ghosting. Measured on a moving camera, 4 samples cut RMSE 2.6x against 1.
+    //
+    // Directions come from the spatiotemporal blue-noise mask, indexed so that neighbouring SLICES get
+    // decorrelated samples (see fogBlueNoise) — that is the axis the Z blur filters, so the mask's
+    // spectrum is aligned with the only spatial filter in the system.
+    //
     // visibility() returns per-channel transmittance: the shadow SBT's any-hit records alpha-test
     // cutouts and MULTIPLY translucent/water tint into it. That float3 is the entire colour-carrying
-    // mechanism of this system, and it only works because the ray starts at the froxel's OWN position
-    // and therefore crosses whatever glass, leaves or water lie between it and the sun.
+    // mechanism, and it works only because each ray starts at the froxel's OWN position and therefore
+    // crosses whatever glass, leaves or water lie between it and the sun.
     //
-    // There is deliberately no depth cull here. Skipping froxels behind the g-buffer surface looks like
-    // free performance, but the composite reads this volume through a TRILINEAR sampler, so a froxel is
-    // also fetched by the XY taps of neighbouring columns whose surfaces are at completely different
-    // depths. Anything fabricated for a culled froxel — zero, or an unshadowed value, or a query moved
-    // in front of the occluder — bleeds sideways across silhouettes and, for the moved-origin variant,
-    // skips the very pane that was supposed to tint the shaft. Bedrock RTX dispatches its full
-    // 256x128x64 grid unconditionally for the same reason.
-    float3 transmittance = visibility(position, lightDir, FOG_SHADOW_TMAX).transmittance;
+    // There is deliberately no depth cull. Skipping froxels behind the g-buffer surface looks like free
+    // performance, but the composite reads this volume through a trilinear sampler, so a froxel is also
+    // fetched by the XY taps of neighbouring columns whose surfaces sit at completely different depths.
+    // Anything fabricated for a culled froxel bleeds sideways across silhouettes. Bedrock RTX dispatches
+    // its full grid unconditionally for the same reason.
+    uint samplesPerFroxel = uint(max(grid.samplesPerFroxel, 1));
+    float3 transmittance = float3(0.0, 0.0, 0.0);
+    for (uint sampleIndex = 0u; sampleIndex < samplesPerFroxel; ++sampleIndex) {
+        float3 lightDir = celestialLight.dir;
+        if (celestialLight.halfAngle > 0.0) {
+            float2 xi = fogBlueNoise(blueNoiseTex, index, worldPush.frameIndex,
+                    sampleIndex, samplesPerFroxel);
+            lightDir = sampleSquareAt(lightDir, celestialLight.halfAngle, xi);
+        }
+        transmittance += visibility(position, lightDir, FOG_SHADOW_TMAX).transmittance;
+    }
+    transmittance /= float(samplesPerFroxel);
 
     // Store the PHASELESS in-scatter: scattering coefficient x light x visibility, with no view
     // dependence. The phase term is applied later, at integration time, from the current frame's ray

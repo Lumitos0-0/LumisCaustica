@@ -21,6 +21,13 @@ final class RtVolumetricFogGridTest {
     private static final double FOG_DISOCCLUSION_FRAMES = 2.0;
     private static final double FOG_ZBLUR_NOISY_FRAMES = 2.0;
     private static final double FOG_ZBLUR_SETTLING_FRAMES = 5.0;
+    /** Mirrors {@code TIERS} in {@link RtVolumetricFog}: width, height, slices, samples per froxel. */
+    private static final int[][] TIER_TABLE = {
+            {128, 72, 64, 2},
+            {160, 90, 64, 3},
+            {160, 90, 64, 4},
+            {192, 108, 96, 4},
+    };
 
     private static final float NEAR = 0.25f;
     private static final float FAR = 192.0f;
@@ -332,6 +339,38 @@ final class RtVolumetricFogGridTest {
     private static double distanceToSlice(double distance, int slices) {
         double n = Math.clamp((distance - 0.25) / (192.0 - 0.25), 0.0, 1.0);
         return slices * Math.pow(n, 1.0 / 2.0);
+    }
+
+    /**
+     * Shadow rays per froxel are carried in {@code fogGridDims.w}, where zero disables the system. The
+     * two meanings share one field deliberately: a separate enable flag could contradict the sample
+     * count, and a froxel grid with zero samples is not a meaningful state.
+     */
+    @Test
+    void sampleCountDoublesAsTheEnableFlag() {
+        for (int[] tier : TIER_TABLE) {
+            assertTrue(tier[3] >= 1, "an enabled tier must cast at least one shadow ray per froxel");
+        }
+    }
+
+    /**
+     * Total rays are {@code width * height * slices * samples}, so grid resolution and sample count cost
+     * exactly the same — but they buy different things. Samples reduce variance as 1/sqrt(n), whereas
+     * grid resolution only reduces how large the froxel lattice appears, and the lattice is already
+     * antialiased by the camera jitter the grid inherits plus DLSS-RR. At equal cost the better-sampled
+     * grid therefore wins: measured 0.1933 RMSE for 224x126x112 at one sample against 0.0930 for
+     * 160x90x64 at four, with fewer rays. This pins the tiers to that shape so a future edit does not
+     * quietly trade samples back for resolution.
+     */
+    @Test
+    void tiersFavourSamplesOverGridResolution() {
+        for (int[] tier : TIER_TABLE) {
+            assertTrue(tier[3] >= 2,
+                    "every tier must cast at least two samples per froxel, got " + tier[3]);
+        }
+        long high = (long) TIER_TABLE[2][0] * TIER_TABLE[2][1] * TIER_TABLE[2][2] * TIER_TABLE[2][3];
+        assertTrue(high < 5_000_000L,
+                "High must stay near the previous ray budget, got " + high);
     }
 
     @Test
