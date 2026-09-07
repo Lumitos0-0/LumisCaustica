@@ -69,6 +69,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetricPipeline;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -174,6 +175,7 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtVolumetricPipeline volumetricPipeline;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -594,6 +596,9 @@ public final class RtComposite {
             if (bloomPipeline == null) {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
+            if (volumetricPipeline == null) {
+                volumetricPipeline = RtVolumetricPipeline.create(ctx);
+            }
             if (skyLut == null) {
                 // Normally already created by ensureWorld before the pipeline exists at all; this only
                 // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
@@ -650,7 +655,8 @@ public final class RtComposite {
             RtToneLut boundLookLut = lookLut;
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
+                    volumetricPipeline.volumetricLutView(), volumetricPipeline.sampler(), gDepth.view);
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -981,7 +987,8 @@ public final class RtComposite {
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler(),
+                volumetricPipeline.volumetricLutView(), volumetricPipeline.sampler(), gDepth.view);
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
@@ -1201,6 +1208,16 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
 
+            if (CausticaConfig.Rt.Volumetrics.ENABLED.value() && volumetricPipeline != null) {
+                volumetricPipeline.setResources(frameTlas.handle, skyLut.skyViewView(), skyLut.sampler(),
+                        skyLut.transmittanceView(), skyLut.sampler());
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
+                    volumetricPipeline.record(cmd, pushBuf.deviceAddress, (int) frameCounter);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // Volumetric LUT writes visible to display pass
+            }
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
@@ -1262,7 +1279,9 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
-                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length);
+                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length,
+                        volumetricPipeline != null && CausticaConfig.Rt.Volumetrics.ENABLED.value(),
+                        pushBuf.deviceAddress);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
@@ -1502,6 +1521,10 @@ public final class RtComposite {
         if (bloomPipeline != null) {
             bloomPipeline.destroy();
             bloomPipeline = null;
+        }
+        if (volumetricPipeline != null) {
+            volumetricPipeline.destroy();
+            volumetricPipeline = null;
         }
         if (skyLut != null) {
             skyLut.destroy();

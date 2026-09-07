@@ -36,7 +36,8 @@ abstract class GenerateRtBindings extends DefaultTask {
                     MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],
             [prefix: "DISPLAY", source: "pipelines/display/main.comp.slang", resources: [
                     OUTPUT: "outputImage", RT_IMAGE: "rtImage", EXPOSURE: "exposureImage", HDR_OUTPUT: "hdrImage",
-                    SDR_TONE_LUT: "toneLut", HDR_TONE_LUT: "hdrToneLut", LOOK_LUT: "lookLut", BLOOM: "bloomImage"]],
+                    SDR_TONE_LUT: "toneLut", HDR_TONE_LUT: "hdrToneLut", LOOK_LUT: "lookLut", BLOOM: "bloomImage",
+                    VOLUMETRIC_LUT: "volumetricLut", G_DEPTH: "gDepth"]],
             [prefix: "DEBUG_PRESENT", source: "pipelines/debug_present/main.comp.slang", resources: [
                     OUTPUT: "outputImage", G_NORMAL: "gNormal", G_ALBEDO: "gAlbedo", G_DEPTH: "gDepth",
                     G_MOTION: "gMotion", G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
@@ -51,6 +52,13 @@ abstract class GenerateRtBindings extends DefaultTask {
                     TRANSMITTANCE_IMAGE: "transmittanceImage", MULTISCATTER_IMAGE: "multiScatterImage",
                     SKY_VIEW_IMAGE: "skyViewImage", TRANSMITTANCE_SAMPLER: "transmittanceLut",
                     MULTISCATTER_SAMPLER: "multiScatterLut"]],
+            [prefix: "VOLUMETRIC_INJECT", source: "pipelines/volumetric/froxel_inject.comp.slang", resources: [
+                    TLAS: "topLevelAS", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut",
+                    PREV_RADIANCE: "prevFroxelRadiance", OUT_RADIANCE: "outFroxelRadiance",
+                    OUT_EXTINCTION: "outFroxelExtinction"]],
+            [prefix: "VOLUMETRIC_ACCUMULATE", source: "pipelines/volumetric/froxel_accumulate.comp.slang", resources: [
+                    IN_RADIANCE: "inFroxelRadiance", IN_EXTINCTION: "inFroxelExtinction",
+                    OUT_SCATTERING: "outAccumulatedFroxels"]],
             [prefix: "PRESENT", source: "pipelines/hdr_composite/main.comp.slang", resources: [
                     OUTPUT: "outputImage", SOURCE: "sourceImage"]],
             [prefix: "OVERLAY_IMAGE", source: "pipelines/overlay_composite/glow.frag.slang", resources: [VALUE: "sourceImage"]],

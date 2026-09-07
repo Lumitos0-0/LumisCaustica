@@ -6,3 +6,5 @@
 [[vk::binding(5, 0)]] public Sampler3D hdrToneLut;
 [[vk::binding(6, 0)]] public Sampler3D lookLut;
 [[vk::binding(7, 0)]] public Sampler2D bloomImage;
+[[vk::binding(8, 0)]] public Sampler3D volumetricLut;
+[[vk::binding(9, 0)]] [format("r32f")] public RWTexture2D<float> gDepth;

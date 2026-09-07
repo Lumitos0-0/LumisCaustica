@@ -33,7 +33,7 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 /** Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/display/";
-    /** Push constants: output/look LUT state plus gamma and HDR peak nits. */
+    /** Push constants: output/look LUT state plus gamma, HDR peak nits, and volumetric fog controls. */
     private static final int PUSH_BYTES = DisplayPushData.BYTE_SIZE;
 
     private final RtContext ctx;
@@ -54,6 +54,9 @@ public final class RtDisplayPipeline {
     private long boundLookLutSampler;
     private long boundBloomView;
     private long boundBloomSampler;
+    private long boundVolumetricView;
+    private long boundVolumetricSampler;
+    private long boundGDepthView;
     private boolean destroyed;
 
     private RtDisplayPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -86,6 +89,10 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(DISPLAY_BLOOM).binding(DISPLAY_BLOOM).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(DISPLAY_VOLUMETRIC_LUT).binding(DISPLAY_VOLUMETRIC_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(DISPLAY_G_DEPTH).binding(DISPLAY_G_DEPTH).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -94,8 +101,8 @@ public final class RtDisplayPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "display descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(4);
-            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(5);
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(5);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt display)");
             long pool = p.get(0);
@@ -133,14 +140,17 @@ public final class RtDisplayPipeline {
     }
 
     public void setImages(long outputImageView, long rtImageView, long exposureImageView, long hdrImageView,
-                           long lutView, long lutSampler, long hdrLutView, long hdrLutSampler,
-                           long lookLutView, long lookLutSampler, long bloomView, long bloomSampler) {
+                          long lutView, long lutSampler, long hdrLutView, long hdrLutSampler,
+                          long lookLutView, long lookLutSampler, long bloomView, long bloomSampler,
+                          long volumetricView, long volumetricSampler, long gDepthView) {
         if (boundOutputView == outputImageView && boundRtView == rtImageView
                 && boundExposureView == exposureImageView && boundHdrView == hdrImageView
                 && boundLutView == lutView && boundLutSampler == lutSampler
                 && boundHdrLutView == hdrLutView && boundHdrLutSampler == hdrLutSampler
                 && boundLookLutView == lookLutView && boundLookLutSampler == lookLutSampler
-                && boundBloomView == bloomView && boundBloomSampler == bloomSampler) {
+                && boundBloomView == bloomView && boundBloomSampler == bloomSampler
+                && boundVolumetricView == volumetricView && boundVolumetricSampler == volumetricSampler
+                && boundGDepthView == gDepthView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -159,8 +169,11 @@ public final class RtDisplayPipeline {
             VkDescriptorImageInfo.Buffer lookLutInfo = VkDescriptorImageInfo.calloc(1, stack);
             lookLutInfo.get(0).imageView(lookLutView).sampler(lookLutSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer bloomInfo = VkDescriptorImageInfo.calloc(1, stack);
-            bloomInfo.get(0).imageView(bloomView).sampler(bloomSampler)
-                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            bloomInfo.get(0).imageView(bloomView).sampler(bloomSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer volumetricInfo = VkDescriptorImageInfo.calloc(1, stack);
+            volumetricInfo.get(0).imageView(volumetricView).sampler(volumetricSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer gDepthInfo = VkDescriptorImageInfo.calloc(1, stack);
+            gDepthInfo.get(0).imageView(gDepthView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(DISPLAY_BINDING_COUNT, stack);
             writes.get(DISPLAY_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_OUTPUT)
@@ -178,8 +191,11 @@ public final class RtDisplayPipeline {
             writes.get(DISPLAY_LOOK_LUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_LOOK_LUT)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(lookLutInfo);
             writes.get(DISPLAY_BLOOM).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_BLOOM)
-                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .pImageInfo(bloomInfo);
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(bloomInfo);
+            writes.get(DISPLAY_VOLUMETRIC_LUT).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_VOLUMETRIC_LUT)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(volumetricInfo);
+            writes.get(DISPLAY_G_DEPTH).sType$Default().dstSet(descriptorSet).dstBinding(DISPLAY_G_DEPTH)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(gDepthInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
@@ -194,23 +210,25 @@ public final class RtDisplayPipeline {
         boundLookLutSampler = lookLutSampler;
         boundBloomView = bloomView;
         boundBloomSampler = bloomSampler;
+        boundVolumetricView = volumetricView;
+        boundVolumetricSampler = volumetricSampler;
+        boundGDepthView = gDepthView;
     }
 
     /**
      * Run the display mapping through the baked ACES 2.0 LUTs: SDR
      * (binding 0) always writes; the PQ-encoded HDR image (binding 3) also writes when
-     * {@code hdrEnabled}. The HDR LUT is baked for a fixed mastering-nits peak (see
-     * {@code CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS}), selected host-side by which LUT resource is bound.
+     * {@code hdrEnabled}. Volumetric fog is composited using depth and camera projection matrices.
      */
     public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, int lutSize,
                          float gamma, float hdrPeakNits, boolean lookEnabled, int lookLutSize,
-                         float bloomStrength) {
+                         float bloomStrength, boolean volumetricEnabled, long worldPushAddress) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(DisplayPushData.BYTE_SIZE);
-            new DisplayPushData(hdrEnabled ? 1 : 0, (float) lutSize, gamma, hdrPeakNits,
-                    lookEnabled ? 1 : 0, (float) lookLutSize, bloomStrength).write(push);
+            new DisplayPushData(worldPushAddress, hdrEnabled ? 1 : 0, (float) lutSize, gamma, hdrPeakNits,
+                    lookEnabled ? 1 : 0, (float) lookLutSize, bloomStrength, volumetricEnabled ? 1 : 0).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.Volumetrics.ENABLED, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -97,6 +97,10 @@ public final class CausticaConfig {
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
+        FILE.setComment("volumetrics",
+                " Controls 3D froxel volumetric fog, sun/moon shafts (god rays), and sky-dome volumetric GI.\n"
+                        + " density sets the base fog extinction; height-falloff sets the exponential vertical scale in blocks.\n"
+                        + " anisotropy (Henyey-Greenstein g) controls forward scattering for sun shafts (0.75 = crisp rays).");
         FILE.setComment("exposure",
                 " Controls automatic exposure. manual-ev sets exposure in manual mode and adjusts it in auto mode.\n"
                         + " adapt-darken and adapt-brighten control adjustment speed in seconds.\n"
@@ -815,6 +819,27 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.tonemap.gamma", "tonemap.gamma", 1.0f, 0.1f, 5.0f);
 
             private Tonemap() {
+            }
+        }
+
+        /** 3D froxel volumetric fog, sun/moon shafts (god rays), and sky-dome volumetric GI. */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.volumetrics.enabled", "volumetrics.enabled", true);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.volumetrics.density", "volumetrics.density", 0.015f, 0.0f, 1.0f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.volumetrics.heightFalloff", "volumetrics.height-falloff", 16.0f, 1.0f, 256.0f);
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.volumetrics.anisotropy", "volumetrics.anisotropy", 0.75f, -0.9f, 0.95f);
+            public static final FloatSetting TEMPORAL_WEIGHT =
+                    clampedFloat("caustica.rt.volumetrics.temporalWeight", "volumetrics.temporal-weight", 0.92f, 0.0f, 0.99f);
+            public static final FloatSetting GI_STRENGTH =
+                    clampedFloat("caustica.rt.volumetrics.giStrength", "volumetrics.gi-strength", 1.0f, 0.0f, 10.0f);
+            public static final FloatSetting DIRECT_STRENGTH =
+                    clampedFloat("caustica.rt.volumetrics.directStrength", "volumetrics.direct-strength", 1.0f, 0.0f, 10.0f);
+
+            private Volumetrics() {
             }
         }
 

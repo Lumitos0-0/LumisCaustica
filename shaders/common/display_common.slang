@@ -67,6 +67,7 @@ public struct ExposureState {
 };
 
 public struct DisplayPush {
+    public uint64_t worldPushAddr;
     public int hdrEnabled;      // 0 = SDR only, 1 = also write the PQ HDR image
     public float lutSize;       // toneLut/hdrToneLut texels per axis; both LUTs share one size (asserted at load)
     public float gamma;         // post-display artistic gamma; below 1 brightens midtones
@@ -77,6 +78,7 @@ public struct DisplayPush {
     // SUM of every band, so RtComposite folds the 1/levelCount normalisation into this value: the authored
     // look-package strength then means the same thing whichever level count the resolution supports.
     public float bloomStrength;
+    public int volumetricEnabled;
 };
 
 public struct BloomPush {
