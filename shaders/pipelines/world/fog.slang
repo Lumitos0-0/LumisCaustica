@@ -18,12 +18,14 @@ import world_common;
 public static const float FOG_PI = 3.14159265359;
 public static const float FOG_INV_4PI = 0.07957747155;
 
-// Depth-similarity tolerance for the composite's bilateral upsample, as a FRACTION of the pixel's own
-// view distance, plus an absolute floor in blocks for the near field. A froxel column whose surface sits
-// further than this from the pixel's is integrating light through a different part of the world and is
-// rejected from the blend.
-public static const float FOG_UPSAMPLE_DEPTH_TOLERANCE = 0.06;
-public static const float FOG_UPSAMPLE_MIN_TOLERANCE   = 0.35;
+// Staleness test for the temporal history (see volumetric/integrate.comp.slang). The local reference is
+// the mean of 2*TAPS+1 slices' current samples along Z; SIGMA is how many standard errors of that mean
+// the history may differ by before it is treated as describing a froxel that no longer exists. Tuned by
+// simulation: sigma 6 with 8 taps either side recovers from a visibility change about 4x faster than no
+// test at all, with slightly LOWER steady-state noise, whereas tighter values over-trigger and bias the
+// converged estimate.
+public static const int   FOG_STALENESS_TAPS  = 8;
+public static const float FOG_STALENESS_SIGMA = 6.0;
 
 // Below this extinction a froxel contributes nothing a half can represent over a whole slice, so the
 // injection pass skips its shadow ray entirely. With the default height falloff this culls most of the

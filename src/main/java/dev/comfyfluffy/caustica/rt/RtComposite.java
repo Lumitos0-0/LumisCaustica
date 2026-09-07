@@ -672,7 +672,11 @@ public final class RtComposite {
             // the enable toggle moves, and neither of those resizes anything ensureOutput watches. The
             // call is a cheap comparison when the grid already matches.
             if (volumetricFog != null) {
-                boolean gridChanged = volumetricFog.ensureResources(renderW, renderH, rrOutput, gDepth);
+                // Render-res pair: the traced colour and the guide depth the primary raygen wrote for
+                // the same pixels. Binding rrOutput here instead would force the composite to display
+                // resolution, where it would have to sample render-res depth for display-res pixels and
+                // would lose fog along every geometry edge.
+                boolean gridChanged = volumetricFog.ensureResources(renderW, renderH, output, gDepth);
                 if (gridChanged) {
                     fogHistoryRebaseValid = false;
                     if (worldPipeline != null) {
@@ -1264,9 +1268,8 @@ public final class RtComposite {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
             // Froxel fog injection: one colour-carrying shadow ray per froxel, reusing this pipeline's
-            // shadow SBT records. Recorded after the primary trace because the depth cull reads gDepth,
-            // and deliberately without a barrier against the indirect pass above -- the two write
-            // disjoint images and can overlap on the GPU.
+            // shadow SBT records. Deliberately recorded without a barrier against the indirect pass
+            // above -- the two write disjoint images and can overlap on the GPU.
             if (fogActive) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog inject");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogInject")) {
@@ -1281,6 +1284,14 @@ public final class RtComposite {
                     volumetricFog.recordIntegrate(cmd, pushBuf.deviceAddress);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // integrated volume visible to composite
+                // Composite into the RENDER-res traced image, before reconstruction. Depth and colour
+                // are the same pixels here, so the fog cannot misalign with geometry; DLSS-RR then
+                // upscales the two together. Safe to feed RR because the volume is already denoised by
+                // its own temporal filter, so RR resamples a converged image rather than a noisy one.
+                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogComposite")) {
+                    volumetricFog.recordComposite(cmd, pushBuf.deviceAddress, renderW, renderH);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog writes visible to DLSS-RR
             }
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
@@ -1304,19 +1315,8 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to fog composite / exposure
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to the exposure histogram
 
-            // Fog composite: in place over rrOutput, AFTER reconstruction and BEFORE exposure metering.
-            // After RR because the volume owns its own temporal history and RR has no valid guide for
-            // in-scatter between the camera and the g-buffer surface; before exposure because the
-            // histogram meters rrOutput and fog outside the meter makes auto-exposure drift as the
-            // player walks into it.
-            if (fogActive) {
-                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogComposite")) {
-                    volumetricFog.recordComposite(cmd, pushBuf.deviceAddress, displayW, displayH);
-                }
-                VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog writes visible to exposure histogram
-            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore

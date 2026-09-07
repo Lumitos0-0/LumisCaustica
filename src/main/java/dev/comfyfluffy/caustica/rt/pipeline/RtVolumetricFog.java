@@ -390,11 +390,12 @@ public final class RtVolumetricFog {
     }
 
     /**
-     * Apply the integrated volume to the reconstructed scene image, in place, at display resolution.
-     * Records after DLSS-RR and before the exposure histogram.
+     * Apply the integrated volume to the traced scene image, in place, at RENDER resolution. Records
+     * after the fog integration and before DLSS-RR, so that reconstruction upscales colour and fog
+     * together and they cannot separate at geometry edges.
      */
-    public void recordComposite(VkCommandBuffer cmd, long worldPushAddress, int displayWidth,
-                                int displayHeight) {
+    public void recordComposite(VkCommandBuffer cmd, long worldPushAddress, int renderWidth,
+                                int renderHeight) {
         if (!ready()) {
             return;
         }
@@ -403,7 +404,7 @@ public final class RtVolumetricFog {
             // Either set works here: the two differ only in which history image is bound for read and
             // write, and the composite touches neither — it reads the integrated volume and the scene.
             bind(cmd, stack, compositePipeline, worldPushAddress);
-            VK10.vkCmdDispatch(cmd, groups(displayWidth), groups(displayHeight), 1);
+            VK10.vkCmdDispatch(cmd, groups(renderWidth), groups(renderHeight), 1);
         }
     }
 

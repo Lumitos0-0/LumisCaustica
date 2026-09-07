@@ -1,12 +1,22 @@
-// Froxel fog: apply the integrated volume to the reconstructed scene image.
+// Froxel fog: apply the integrated volume to the traced scene image.
 //
-// Runs at DISPLAY resolution, after DLSS-RR and before the exposure histogram.
+// Runs at RENDER resolution, BEFORE DLSS-RR.
 //
-//   * After RR because the volume carries its own temporal history and RR has no valid guide for
-//     radiance that lives between the camera and the g-buffer surface — feeding fog in before
-//     reconstruction is what makes it ghost and over-blur.
-//   * Before exposure because the histogram meters this image; fog outside the meter makes
-//     auto-exposure drift as the player walks into it.
+// This placement is the whole reason the fog lines up with geometry. The volume lookup needs the
+// distance to the surface each pixel sees, and the only depth that exists is gDepth, written at render
+// resolution by the primary raygen. Compositing at display resolution after reconstruction means
+// sampling that render-res depth for display-res pixels: at a silhouette the two disagree, so a display
+// pixel showing background can read foreground depth, its distance collapses, and its fog integral
+// collapses with it. The result is a fringe of missing fog along every geometry edge, staircased at
+// render-res granularity — the classic "blocks eating the fog" artefact. No upsampling filter can
+// repair it, because the depth being sampled simply does not describe the pixel being shaded.
+//
+// Here, depth and colour are the same resolution, the same pixels, produced by the same pass, so they
+// cannot disagree. DLSS-RR then upscales colour and fog together and they stay locked.
+//
+// Feeding fog to RR is safe because the volume arrives already denoised by its own temporal filter (see
+// integrate.comp), so RR is resampling a converged image rather than denoising a noisy one. The sky
+// takes the same route: it has no real albedo either and passes through RR on a synthetic guide.
 //
 // Reads and writes sceneImage in place. Safe: each thread touches exactly one texel and reads no
 // neighbour's colour.
@@ -30,101 +40,41 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         return;
     }
 
+    // One depth texel per pixel, exactly. sceneDepth and sceneImage are the same size here, so this is
+    // this pixel's own surface — no footprint, no neighbourhood, no filtering decision to get wrong.
+    float depth = sceneDepth[pixel];
+
     float2 uv = (float2(pixel) + 0.5) / float2(sceneDims);
+    float2 ndc = uv * 2.0 - 1.0;
 
-    // This pixel's OWN depth, point sampled.
-    //
-    // It is tempting to take the nearest depth over a 2x2 footprint the way a bilateral upsample of a
-    // half-resolution effect does, but that is wrong here and produces a dark halo along every
-    // silhouette: a background pixel whose footprint clips a foreground object would look the volume up
-    // at the FOREGROUND's short distance and so lose all the in-scatter that belongs between it and the
-    // distant surface it actually sees. Fog depth is a per-pixel quantity; there is no neighbourhood to
-    // choose from.
-    uint2 depthDims;
-    sceneDepth.GetDimensions(depthDims.x, depthDims.y);
-    int2 depthTexel = clamp(int2(uv * float2(depthDims)), int2(0, 0), int2(depthDims) - 1);
-    float depth = sceneDepth[depthTexel];
-
-    // Reconstruct the view distance this pixel's surface sits at. Sky pixels have far depth (~0 under
-    // reversed-Z), which lands past grid.far and therefore receives the full integrated column — the
+    // Radial distance to the surface, in the same metric the grid slices by. Sky pixels carry far depth
+    // (~0 under reversed-Z) and land past grid.far, so they receive the fully integrated column — the
     // correct haze attenuation of the sky and the celestial discs, with no special case.
-    float distance;
-    {
-        float2 ndc = uv * 2.0 - 1.0;
-        float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
-        float3 nearP = nearH.xyz / nearH.w;
-        if (depth > 0.0) {
-            float4 surfaceH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, depth, 1.0));
-            distance = surfaceH.w > 0.0 ? length(surfaceH.xyz / surfaceH.w - nearP) : grid.far;
-        } else {
-            distance = grid.far;
+    float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
+    float3 nearP = nearH.xyz / nearH.w;
+    float distance = grid.far;
+    if (depth > 0.0) {
+        float4 surfaceH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, depth, 1.0));
+        if (surfaceH.w > 0.0) {
+            distance = length(surfaceH.xyz / surfaceH.w - nearP);
         }
     }
 
-    // Pull the sample back half a slice in W before fetching.
+    // Pull the sample back half a slice in W.
     //
-    // The volume stores each slice's prefix at its CENTRE, so a fetch at the surface's exact w blends
-    // the slice in front of the surface with the one behind it. The slice behind is integrated through
-    // space the surface occludes, so that blend leaks exterior fog through walls — standing in a dark
-    // room with sun outside, up to a third of the fetched value came from beyond the wall.
+    // Each slice stores its prefix at its CENTRE, so a fetch at the surface's exact w would interpolate
+    // between the slice in front of the surface and the one behind it — and the slice behind is
+    // integrated through space the surface occludes, which leaks exterior light through walls. Biasing
+    // back half a slice keeps both taps in front of the surface.
     float surfaceSlice = fogDistanceSlice(grid, distance);
     float w = clamp((surfaceSlice - 0.5) / float(grid.dims.z), 0.0, 1.0);
 
-    // Depth-aware (bilateral) upsample across XY.
-    //
-    // Biasing w fixes leakage along the view ray, but the far larger leak is SIDEWAYS. Each froxel
-    // column integrates light along its own ray, and neighbouring columns can see completely different
-    // worlds: a column aimed at a cave wall two blocks away and the column beside it aimed out through
-    // the opening both have a prefix "at w", but one is dark cave air and the other is sunlit outdoor
-    // air. A plain bilinear fetch blends them, which paints daylight onto the wall for the ~17 display
-    // pixels one froxel column spans at this grid size. That single artefact is simultaneously the leak
-    // onto lit geometry, the "oversoftened" look, and the jaggies — the transition follows the froxel
-    // lattice rather than the wall edge, so it staircases along the grid.
-    //
-    // Weighting each column by how closely its own surface depth matches this pixel's rejects the
-    // column that sees somewhere else entirely, so the blend happens only across genuinely continuous
-    // regions and the transition lands on the depth discontinuity, i.e. the silhouette itself.
-    float2 gridCoord = uv * float2(grid.dims.xy) - 0.5;
-    int2 base = int2(floor(gridCoord));
-    float2 frac2 = gridCoord - float2(base);
-
-    float4 fog = float4(0.0, 0.0, 0.0, 0.0);
-    float totalWeight = 0.0;
-    // Depth tolerance scales with distance: a half-block disagreement is a hard edge up close and
-    // meaningless at a hundred blocks, so a fixed threshold would either over-reject far away or
-    // under-reject nearby.
-    float tolerance = max(distance * FOG_UPSAMPLE_DEPTH_TOLERANCE, FOG_UPSAMPLE_MIN_TOLERANCE);
-    for (int tap = 0; tap < 4; ++tap) {
-        int2 offset = int2(tap & 1, (tap >> 1) & 1);
-        int2 columnIndex = clamp(base + offset, int2(0, 0), grid.dims.xy - 1);
-        float2 bilinear = abs(float2(1 - offset) - frac2);
-        float weight = bilinear.x * bilinear.y;
-
-        // This column's own surface distance, read from the depth guide at the column's centre.
-        float2 columnUv = (float2(columnIndex) + 0.5) / float2(grid.dims.xy);
-        int2 columnTexel = clamp(int2(columnUv * float2(depthDims)), int2(0, 0), int2(depthDims) - 1);
-        float columnDepth = sceneDepth[columnTexel];
-        float columnDistance = grid.far;
-        if (columnDepth > 0.0) {
-            float2 columnNdc = columnUv * 2.0 - 1.0;
-            float4 columnNear = mul(worldPush.invViewProj, float4(columnNdc.x, columnNdc.y, 1.0, 1.0));
-            float4 columnSurface = mul(worldPush.invViewProj,
-                    float4(columnNdc.x, columnNdc.y, columnDepth, 1.0));
-            if (columnSurface.w > 0.0 && columnNear.w != 0.0) {
-                columnDistance = length(columnSurface.xyz / columnSurface.w
-                        - columnNear.xyz / columnNear.w);
-            }
-        }
-        weight *= exp(-abs(columnDistance - distance) / tolerance);
-
-        fog += fogIntegratedSampler.SampleLevel(float3(columnUv, w), 0.0) * weight;
-        totalWeight += weight;
-    }
-    // Every neighbour rejected (an isolated pixel of very different depth): fall back to the plain
-    // fetch rather than dividing by zero. Bilinear there is the lesser error.
-    fog = totalWeight > 1.0e-4
-            ? fog / totalWeight
-            : fogIntegratedSampler.SampleLevel(float3(uv, w), 0.0);
+    // Plain trilinear. Correct here precisely because depth is exact per pixel: there is no
+    // misalignment left for a bilateral weight to compensate for, and a depth-weighted variant would be
+    // actively harmful — rejecting neighbours at a silhouette degenerates the fetch to a point sample of
+    // one froxel column, which stamps hard froxel-sized blocks along exactly the edges it was meant to
+    // protect.
+    float4 fog = fogIntegratedSampler.SampleLevel(float3(uv, w), 0.0);
 
     float4 scene = sceneImage[pixel];
     // PRE-EXPOSURE, load-bearing: sceneImage carries worldPush.preExposure (the display pass divides it
