@@ -28,8 +28,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         return;
     }
 
-    float3 jitter = worldPush.fogJitter.xyz;
-    FogRay ray = fogColumnRay(worldPush, grid, column, jitter.xy);
+    // Column-constant part of the sampling offset; the Z component varies per slice below. Must match
+    // fog_inject exactly or density would be evaluated at a different point than the ray was traced.
+    float3 columnJitter = fogJitter(worldPush, column, 0);
+    FogRay ray = fogColumnRay(worldPush, grid, column, columnJitter.xy);
     // The reprojection must describe a fixed world point across frames, so it needs the column ray with
     // the jitter removed. Reusing the jittered ray would move the "stable" position by up to a froxel
     // every frame, so the history lookup would chase its own sampling offset and the accumulated result
@@ -37,9 +39,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     FogRay stableRay = fogColumnRay(worldPush, grid, column, float2(0.0, 0.0));
     bool historyValid = fogHistoryValid(worldPush);
 
+    // Blend weight for this frame's sample against the accumulated history. Fixed, not adaptive --
+    // see the note at the blend below. fogTemporal.yz are unused by the current filter.
     float alphaFloor = worldPush.fogTemporal.x;
-    float changeSensitivity = worldPush.fogTemporal.y;
-    float varianceWeight = worldPush.fogTemporal.z;
 
     float3 integrated = float3(0.0, 0.0, 0.0);
     float transmittance = 1.0;
@@ -49,7 +51,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         int3 index = int3(column, slice);
         float3 raw = fogScatter[index].rgb;
 
-        float sliceDistance = fogSliceDistance(grid, float(slice) + 0.5 + jitter.z);
+        float sliceDistance = fogSliceDistance(grid, float(slice) + 0.5 + fogJitter(worldPush, column, slice).z);
         float3 position = ray.origin + ray.dir * sliceDistance;
         float extinction = fogDensity(worldPush, position);
 
@@ -60,8 +62,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         // around by a froxel each frame and undo the supersampling it exists to provide.
         float3 stablePosition = stableRay.origin
                 + stableRay.dir * fogSliceDistance(grid, float(slice) + 0.5);
-        float rawLuminance = fogLuminance(raw);
-        float4 history = float4(raw, rawLuminance * rawLuminance);
+        // Fallback when reprojection fails: this frame's sample, with a history length of one.
+        float4 history = float4(raw, 1.0);
         bool reprojected = false;
         if (historyValid) {
             // Camera-relative -> previous clip. camDelta moves the point into the previous frame's
@@ -85,24 +87,38 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
             }
         }
 
-        float historyMean = fogLuminance(history.rgb);
-        float historySecondMoment = history.a;
-        float variance = max(0.0, historySecondMoment - historyMean * historyMean);
-
-        // Converged froxels keep a long history and go clean; froxels whose radiance is actually
-        // changing snap toward the new value instead of smearing, which is what preserves shaft shape
-        // when a door opens or the sun moves. A fixed alpha can only pick one of those behaviours.
-        float alpha = 1.0;
-        if (reprojected) {
-            float change = abs(rawLuminance - historyMean) / (historyMean + 1.0e-4);
-            alpha = clamp(alphaFloor + change * changeSensitivity + sqrt(variance) * varianceWeight,
-                    alphaFloor, 1.0);
-        }
+        // Fixed-rate exponential moving average, as Frostbite and UE use for exactly this buffer.
+        //
+        // An alpha driven by |raw - history| cannot work here and was the cause of the speckle: this
+        // froxel is a ONE-SAMPLE Monte Carlo estimate, so consecutive raw values differ enormously by
+        // design wherever the sun disc is partly occluded — the shaft edges and cave mouths where the
+        // artefact was worst. Reacting to that difference pins alpha near 1, which is the same as
+        // having no temporal filter at all, and the estimator never converges. The relative form made
+        // it worse still: dividing by a near-zero mean makes dark froxels the most reactive of all,
+        // which is why an unlit cave was the noisiest thing on screen.
+        //
+        // A neighbourhood colour clamp — the usual TAA companion to a fixed EMA — is deliberately NOT
+        // applied. It assumes neighbours are a better estimate of the truth than the history, which
+        // holds for a resolved TAA colour buffer but not here: every neighbour is itself a one-sample
+        // estimate drawn from the same binary visibility distribution, so the clamp bound is the full
+        // sample range and clamping into it just re-injects the noise the average removed. Measured, it
+        // widened the steady-state spread from 3.0 to 10.0 on a half-occluded froxel.
+        //
+        // Genuine lighting changes are instead handled by the EMA's own time constant. At alpha 0.04
+        // that is a ~25 frame tail, which for a low-frequency medium reads as fog settling rather than
+        // as smearing.
+        //
+        // The alpha channel carries the froxel's history LENGTH in frames rather than a second moment
+        // (which only the discarded adaptive rule consumed). It lets a young froxel average as 1/n --
+        // the unbiased mean of the samples it has actually seen -- instead of crawling from black at a
+        // fixed 4% per frame. Without it, every froxel that fails reprojection (screen edges, anything
+        // newly disoccluded, the first frame after a rebase) spends ~25 frames visibly filling in.
+        float historyLength = reprojected ? min(history.a + 1.0, 1.0 / max(alphaFloor, 1.0e-3)) : 1.0;
+        float alpha = max(1.0 / historyLength, alphaFloor);
 
         float3 blended = lerp(history.rgb, raw, alpha);
-        float blendedSecondMoment = lerp(historySecondMoment, rawLuminance * rawLuminance, alpha);
         blended = clamp(blended, float3(0.0), float3(HALF_MAX));
-        fogHistory[index] = float4(blended, min(blendedSecondMoment, HALF_MAX));
+        fogHistory[index] = float4(blended, historyLength);
 
         // ---- Depth integration.
         //

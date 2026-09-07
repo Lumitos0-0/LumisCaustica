@@ -87,7 +87,8 @@ void main() {
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
 
-    float3 jitter = worldPush.fogJitter.xyz;
+    // Shared with the integration pass so both agree on exactly where this froxel was sampled.
+    float3 jitter = fogJitter(worldPush, index.xy, index.z);
     FogRay ray = fogColumnRay(worldPush, grid, index.xy, jitter.xy);
     float distance = fogSliceDistance(grid, float(index.z) + 0.5 + jitter.z);
     float3 position = ray.origin + ray.dir * distance;

@@ -612,19 +612,14 @@ public final class CausticaConfig {
             public static final FloatSetting RAIN_BOOST =
                     clampedFloat("caustica.rt.fogRainBoost", "fog.rain-boost", 4.0f, 1.0f, 32.0f);
             public static final BooleanSetting TEMPORAL = bool("caustica.rt.fogTemporal", "fog.temporal", true);
-            /** Blend floor: the smallest weight a converged froxel gives this frame's new sample. */
+            /**
+             * Blend weight a fully converged froxel gives this frame's new sample; its reciprocal is the
+             * effective sample count the temporal average settles at. 0.04 is ~25 frames, matching the
+             * 5% exponential blend Frostbite uses for the same buffer. Lower is cleaner but slower to
+             * react to lighting changes.
+             */
             public static final FloatSetting TEMPORAL_ALPHA_MIN =
                     clampedFloat("caustica.rt.fogTemporalAlphaMin", "fog.temporal-alpha-min", 0.04f, 0.005f, 1.0f);
-            /**
-             * How hard a froxel snaps to a changed sample. The grid jitter makes consecutive raw samples
-             * differ by design, so this must stay low enough that ordinary jitter noise is averaged
-             * rather than chased — chasing it would keep alpha pinned high, prevent convergence, and
-             * leave the froxel grid visible as blockiness.
-             */
-            public static final FloatSetting TEMPORAL_SENSITIVITY =
-                    clampedFloat("caustica.rt.fogTemporalSensitivity", "fog.temporal-sensitivity", 0.25f, 0.0f, 8.0f);
-            public static final FloatSetting TEMPORAL_VARIANCE =
-                    clampedFloat("caustica.rt.fogTemporalVariance", "fog.temporal-variance", 0.05f, 0.0f, 8.0f);
             public static final BooleanSetting DEPTH_CULL =
                     bool("caustica.rt.fogDepthCull", "fog.depth-cull", true);
 

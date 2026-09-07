@@ -120,7 +120,7 @@ public float3 fogFroxelPosition(WorldPush push, FogGrid g, int3 index, float3 ji
 // weather multiplier, and world-anchored animated value noise for shape. Without the noise a shaft
 // reads as a clean geometric cone; a little low-frequency variance is what sells it as air.
 
-float fogHash13(float3 p) {
+public float fogHash13(float3 p) {
     p = frac(p * 0.1031);
     p += dot(p, p.zyx + 31.32);
     return frac((p.x + p.y) * p.z);
@@ -169,6 +169,36 @@ public float fogDensity(WorldPush push, float3 rebasedPos) {
     }
     float weather = push.fogParams2.w;
     return max(0.0, baseDensity * weather * height * shape);
+}
+
+// ---- Sampling offsets ----------------------------------------------------------------------------
+
+/**
+ * Per-froxel sub-cell sampling offset, in froxel units, zero-mean on every axis.
+ *
+ * The injection raygen and the integration pass MUST derive this identically — the integration
+ * recomputes the froxel's world position to evaluate density, and if it disagreed with where the
+ * raygen actually traced, extinction and in-scatter would describe different points.
+ *
+ * A single global per-frame offset (what the frame's Halton value alone gives) translates the entire
+ * grid as one rigid block, so the froxel lattice stays perfectly correlated across neighbours and the
+ * eye keeps reading it as blockiness no matter how long it accumulates. Adding a per-column
+ * Cranley-Patterson rotation decorrelates adjacent columns: each samples an independent sub-position
+ * inside its own footprint, so the error becomes high-frequency noise that bilinear filtering and the
+ * temporal average both remove, instead of a coherent grid that neither can.
+ *
+ * XY is shared by every froxel in a column because the whole system is built on one ray per column;
+ * only Z varies per slice.
+ */
+public float3 fogJitter(WorldPush push, int2 column, int slice) {
+    float3 frameOffset = push.fogJitter.xyz;
+    float2 columnRotation = float2(
+            fogHash13(float3(float(column.x), float(column.y), 0.0)),
+            fogHash13(float3(float(column.x), float(column.y), 17.0)));
+    float2 xy = frac(frameOffset.xy + 0.5 + columnRotation) - 0.5;
+    float sliceRotation = fogHash13(float3(float(column.x), float(column.y), float(slice) * 0.3719 + 5.0));
+    float z = frac(frameOffset.z + 0.5 + sliceRotation) - 0.5;
+    return float3(xy, z);
 }
 
 // ---- Phase ---------------------------------------------------------------------------------------

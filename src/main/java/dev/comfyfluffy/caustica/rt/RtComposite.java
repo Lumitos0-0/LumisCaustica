@@ -1489,9 +1489,9 @@ public final class RtComposite {
                 new Float4(CausticaConfig.Rt.Fog.NOISE_SCALE.value(),
                         CausticaConfig.Rt.Fog.NOISE_STRENGTH.value(),
                         CausticaConfig.Rt.Fog.AMBIENT.value(), weather),
-                new Float4(CausticaConfig.Rt.Fog.TEMPORAL_ALPHA_MIN.value(),
-                        CausticaConfig.Rt.Fog.TEMPORAL_SENSITIVITY.value(),
-                        CausticaConfig.Rt.Fog.TEMPORAL_VARIANCE.value(), 0f),
+                // yzw unused: the temporal filter is a fixed-rate EMA with a 1/n warmup, so alpha is
+                // the only knob it takes.
+                new Float4(CausticaConfig.Rt.Fog.TEMPORAL_ALPHA_MIN.value(), 0f, 0f, 0f),
                 jitter, anchor, flags);
     }
 
