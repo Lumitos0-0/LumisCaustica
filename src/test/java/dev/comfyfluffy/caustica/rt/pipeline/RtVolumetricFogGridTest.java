@@ -284,8 +284,9 @@ final class RtVolumetricFogGridTest {
      * bound is therefore defined once in {@code fog.slang} and every reader is held to it, rather than
      * each filter re-deriving it and one of them getting it wrong.
      *
-     * <p>A slice qualifies only if it STARTS in front of the surface. The slice containing the surface
-     * straddles it and its sample position can sit beyond, so it does not count.
+     * <p>A slice qualifies only if its stored CENTRE is in front of the surface — that is the point the
+     * prefix is written at, and therefore the value a fetch actually reads. Testing the near edge
+     * instead admits the slice straddling the surface, whose centre can sit well beyond it.
      */
     @Test
     void visibleSliceLimitNeverReachesPastTheSurface() {
@@ -300,21 +301,19 @@ final class RtVolumetricFogGridTest {
     }
 
     /**
-     * The composite must clamp its own W coordinate to that same bound. Its linear filter reaches half
-     * a slice past the coordinate it is given, so an unclamped fetch would be the one remaining reader
-     * able to sample occluded space — measured as a 160x overshoot on interior fog before the clamp.
+     * The stored centre of the limit slice must be in front of the surface, which is the property the
+     * frozen prefix relies on: everything past it repeats that slice's value, so if its centre were
+     * beyond the surface the frozen value would itself be exterior radiance.
      */
     @Test
-    void compositeClampsItsFetchToTheVisibleSpan() {
+    void limitSliceCentreIsInFrontOfTheSurface() {
         final int slices = 112;
-        for (double wall : new double[]{1.0, 2.0, 3.0, 6.0, 30.0}) {
+        for (double wall : new double[]{1.0, 2.0, 3.0, 6.0, 12.0, 30.0, 80.0, 150.0}) {
             int limit = visibleSliceLimit(wall, slices);
-            double requested = distanceToSlice(wall, slices) - 0.5;
-            double clamped = Math.min(requested, limit);
-            assertTrue(clamped <= limit + 1.0e-6,
-                    "clamped fetch must not exceed the visible span at wall " + wall);
-            assertTrue(clamped <= requested + 1.0e-6,
-                    "the clamp must never push the fetch further from the camera at wall " + wall);
+            double centre = 0.5 * (sliceDistance(limit, slices) + sliceDistance(limit + 1, slices));
+            assertTrue(centre <= wall,
+                    "limit slice centre must be in front of the surface at wall " + wall
+                            + ", got " + centre);
         }
     }
 
@@ -322,8 +321,15 @@ final class RtVolumetricFogGridTest {
     private static int visibleSliceLimit(double distance, int slices) {
         int slice = (int) Math.floor(distanceToSlice(distance, slices));
         slice = Math.clamp(slice, 0, slices - 1);
-        for (int i = 0; i < 3; i++) {
-            if (slice <= 0 || sliceDistance(slice, slices) <= distance) {
+        // Walk back on the slice's stored CENTRE, matching fogVisibleSliceLimit. Testing the near edge
+        // instead admits the slice straddling the surface, whose centre — the point the prefix is
+        // actually stored at — can sit well beyond it.
+        for (int i = 0; i < 4; i++) {
+            if (slice <= 0) {
+                break;
+            }
+            double centre = 0.5 * (sliceDistance(slice, slices) + sliceDistance(slice + 1, slices));
+            if (centre <= distance) {
                 break;
             }
             slice--;
