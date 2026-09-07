@@ -67,26 +67,25 @@ public final class RtVolumetricFog {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/volumetric/";
     private static final int GROUP_SIZE = 8;
     /**
-     * Quality tiers: {screen divisor, slice count}. Index is {@code Rt.Fog.QUALITY}.
+     * Quality tiers: {width, height, slices}. Index is {@code Rt.Fog.QUALITY}.
      *
-     * <p>The divisor applies to the RENDER resolution, which DLSS-RR has already scaled down from the
-     * display resolution — at Performance that is another 2x on each axis. A divisor of 8 against a
-     * 1080p render therefore yields 240x135 froxels, but against the 960x540 render behind a 1080p
-     * Performance preset it yields only 120x68, which is coarse enough to read as visible blockiness.
-     * These divisors are chosen so the coarsest supported combination still lands near 160 froxels
-     * across, the point at which bilinear reconstruction stops being obvious.
+     * <p>Fixed dimensions rather than a divisor of the render resolution, which is how Bedrock RTX
+     * sizes the same buffer (its inscatter volume is 256x128x64 at every resolution). A divisor is the
+     * wrong control here for two reasons: the froxel count — and therefore the shadow-ray count, which
+     * dominates the cost — would swing by 4x with a DLSS quality preset the user did not associate with
+     * fog, and the grid would get COARSER exactly when the renderer is already struggling. Absolute
+     * dimensions make the cost of each tier a fixed, measurable number.
+     *
+     * <p>High is deliberately near the 2.1M froxels MCRTX ships. Every froxel is one shadow ray, so
+     * these totals are the system's whole performance story: 0.6M / 1.7M / 2.4M / 5.9M.
      */
     private static final int[][] TIERS = {
-            {12, 64},   // low
-            {8, 96},    // medium
-            {6, 128},   // high (default)
-            {4, 160},   // ultra
+            {160, 90, 40},    // low     0.58M
+            {224, 126, 60},   // medium  1.69M
+            {256, 144, 64},   // high    2.36M  (MCRTX parity)
+            {320, 180, 102},  // ultra   5.88M
     };
-    /**
-     * Slice counts below this band at Minecraft's scale; the plan's measurement is that 64 is visibly
-     * ringed along the sun direction and 128 is clean. Kept as a floor so a tier edit cannot silently
-     * reintroduce banding.
-     */
+    /** Floor so a tier edit cannot silently drop the slice count into visible depth banding. */
     private static final int MIN_SLICES = 32;
 
     private final RtContext ctx;
@@ -234,11 +233,12 @@ public final class RtVolumetricFog {
             return new int[]{1, 1, 1};
         }
         int[] tier = TIERS[Math.clamp(CausticaConfig.Rt.Fog.QUALITY.value(), 0, TIERS.length - 1)];
-        int divisor = Math.max(1, tier[0]);
+        // Never exceed the render resolution: a grid finer than the pixels it is sampled at spends rays
+        // on detail the composite cannot resolve. Only relevant on very small windows.
         return new int[]{
-                Math.max(1, (renderWidth + divisor - 1) / divisor),
-                Math.max(1, (renderHeight + divisor - 1) / divisor),
-                Math.max(MIN_SLICES, tier[1])};
+                Math.max(1, Math.min(tier[0], renderWidth)),
+                Math.max(1, Math.min(tier[1], renderHeight)),
+                Math.max(MIN_SLICES, tier[2])};
     }
 
     public int gridWidth() {

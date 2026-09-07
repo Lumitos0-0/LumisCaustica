@@ -27,6 +27,10 @@ public static const float FOG_DENSITY_EPSILON = 1.0e-5;
 // this many slices of margin beyond the farthest depth in the froxel's screen footprint.
 public static const float FOG_DEPTH_CULL_MARGIN_SLICES = 2.0;
 
+// How far in front of the occluding surface a culled froxel's shared shadow-ray origin sits, in blocks.
+// Just enough to avoid self-intersecting the surface it was culled against.
+public static const float FOG_CULL_SHADOW_BACKOFF = 0.1;
+
 // Must match ACESCG_LUMA in world_core. Duplicated because world_core pulls in the world descriptor
 // set, which the volumetric compute passes do not have.
 public static const float3 FOG_ACESCG_LUMA = float3(0.2722287168, 0.6740817658, 0.0536895174);

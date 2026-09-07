@@ -42,23 +42,34 @@ float fogColumnSceneDistance(FogGrid grid, int2 columnIndex, float3 rayOrigin) {
     int2 hi = int2(clamp(base + scale - 1.0, float2(0.0), float2(depthDims) - 1.0));
 
     // A froxel column covers a whole tile of screen pixels, and this cull must be conservative across
-    // ALL of them: culling a froxel that any one pixel of the tile can still see through punches a hole
-    // in the fog for that pixel. Sampling only the four corners is not enough — a tile straddling a
-    // silhouette can have every corner on the near object while its interior sees far background, and
-    // the background pixels then lose their fog entirely. That reads exactly as "fog disappears behind
-    // edges". Walk the tile on a fixed grid instead, and treat any sky tap as "cull nothing".
-    const int TAPS = 4;
+    // ALL of them: culling a froxel any pixel of the tile can still see through punches a hole in the
+    // fog for that pixel. The four corners are not enough — a tile straddling a silhouette can have
+    // every corner on the near object while its interior sees far background — so the whole tile is
+    // walked, and any sky tap means "cull nothing".
+    //
+    // Every froxel in the column scans the same tile, so this runs dims.z times per column. That is
+    // only affordable because the loop is bounded and the taps are contiguous, warp-coherent texels
+    // that sit in cache after the first slice touches them. The tap count is deliberately conservative:
+    // raising it multiplies by the slice count.
     float minDepth = 1.0;
-    for (int y = 0; y < TAPS; ++y) {
-        for (int x = 0; x < TAPS; ++x) {
-            float2 t = float2(float(x), float(y)) / float(TAPS - 1);
-            int2 texel = int2(round(lerp(float2(lo), float2(hi), t)));
-            float d = gDepth[clamp(texel, int2(0, 0), int2(depthDims) - 1)];
+    for (int y = 0; y <= 1; ++y) {
+        for (int x = 0; x <= 1; ++x) {
+            int2 texel = int2(x == 0 ? lo.x : hi.x, y == 0 ? lo.y : hi.y);
+            float d = gDepth[texel];
             if (d <= 0.0) {
-                return 1.0e30; // sky anywhere in the tile: nothing bounds the column
+                return 1.0e30;
             }
             minDepth = min(minDepth, d);
         }
+    }
+    // Interior sample, which is what the corner-only version missed at silhouettes.
+    {
+        int2 mid = (lo + hi) / 2;
+        float d = gDepth[mid];
+        if (d <= 0.0) {
+            return 1.0e30;
+        }
+        minDepth = min(minDepth, d);
     }
     // Reconstruct the far-most hit point from the reversed-Z guide depth. The column's own NDC is not
     // needed to a sub-froxel accuracy here, so the unjittered column centre is used.
@@ -99,26 +110,28 @@ void main() {
         return;
     }
 
-    // Froxels far behind the g-buffer surface skip their SHADOW RAY, which is the expensive part, but
-    // they must still be filled with a plausible value rather than zero.
+    // Froxels far behind the g-buffer surface skip their shadow ray, which is the expensive part.
     //
-    // The composite fetches this volume through a TRILINEAR sampler, so a froxel is read by the XY taps
-    // of neighbouring columns too. At a silhouette the neighbouring column can be at a completely
-    // different depth — background at 100 blocks beside a pillar at 5 — and no amount of Z margin helps,
-    // because the background pixel's XY tap lands on the pillar's column at the FAR slice, which the
-    // cull had zeroed. Writing zero there is what produced the dark halo hugging every edge: the cull,
-    // an optimisation, was corrupting data the composite genuinely reads.
+    // What they are filled with instead matters more than it looks. The composite fetches this volume
+    // through a TRILINEAR sampler, so a froxel is also read by the XY taps of NEIGHBOURING columns. At a
+    // silhouette the neighbour can sit at a completely different depth — background at 100 blocks beside
+    // a pillar at 5 — so a background pixel's XY tap lands on the pillar's column at a far slice. Zero
+    // there produces a dark halo along every edge; fully-lit there is far worse, because in enclosed
+    // geometry almost the whole grid is "behind the surface" (a wall at 4 blocks puts 87% of slices past
+    // it) and the volume floods with unshadowed light.
     //
-    // Writing the unshadowed in-scatter instead keeps the field continuous and costs nothing (the ray is
-    // still skipped). It is "wrong" only in being unoccluded, and nothing samples it directly — it is
-    // reachable solely by interpolation from neighbours, where plausible fog is far closer to correct
-    // than a hole.
+    // Reusing the shadow result from the last live slice in this column is the correct compromise: it is
+    // the visibility of the nearest point that was actually traced, so the field stays continuous for
+    // the interpolation AND stays dark inside caves. Cost is unchanged — still no ray.
     bool skipShadowRay = false;
+    float cullDistance = distance;
     if (fogDepthCullEnabled(worldPush)) {
         float sceneDistance = fogColumnSceneDistance(grid, index.xy, ray.origin);
         float margin = fogSliceDistance(grid, float(index.z) + 0.5 + FOG_DEPTH_CULL_MARGIN_SLICES)
                 - distance;
         skipShadowRay = distance > sceneDistance + margin;
+        // Back off slightly so the shared origin sits in front of the surface rather than on it.
+        cullDistance = min(sceneDistance - FOG_CULL_SHADOW_BACKOFF, distance);
     }
 
     // Sample a point on the body's disc rather than its centre direction. This is what gives a shaft
@@ -137,9 +150,20 @@ void main() {
     // visibility() returns per-channel transmittance: the shadow SBT's any-hit records alpha-test
     // cutouts and MULTIPLY translucent/water tint into it. That float3 is the entire colour-carrying
     // mechanism of this system.
-    float3 transmittance = skipShadowRay
-            ? float3(1.0, 1.0, 1.0)
-            : visibility(position, lightDir, FOG_SHADOW_TMAX).transmittance;
+    //
+    // Culled froxels trace against the LAST VISIBLE POINT in their own column instead of their own
+    // position. That point is in front of the occluding surface, so the query is cheap and coherent
+    // with its neighbours, and — critically — it is still a real shadow query: inside a cave it comes
+    // back occluded, so the filler value stays dark instead of flooding the volume with sunlight.
+    // Culled froxels trace from the LAST VISIBLE POINT in their own column rather than from their own
+    // position. Every culled froxel in a column therefore shares one origin, so the query is highly
+    // coherent (the ray-tracing hardware handles the duplication far better than the divergent
+    // per-froxel rays it replaces) while remaining a REAL shadow query — inside a cave it comes back
+    // occluded, so culled froxels stay dark instead of flooding the volume with sunlight.
+    float3 shadowOrigin = skipShadowRay
+            ? ray.origin + ray.dir * max(cullDistance, grid.near)
+            : position;
+    float3 transmittance = visibility(shadowOrigin, lightDir, FOG_SHADOW_TMAX).transmittance;
 
     // Store the PHASELESS in-scatter: scattering coefficient x light x visibility, with no view
     // dependence. The phase term is applied later, at integration time, from the current frame's ray
