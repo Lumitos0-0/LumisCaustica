@@ -1213,9 +1213,7 @@ public final class RtComposite {
                         skyLut.transmittanceView(), skyLut.sampler());
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volumetric fog");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.volumetrics")) {
-                    volumetricPipeline.record(cmd, pushBuf.deviceAddress, terrain.lightBufferAddress(),
-                            terrain.lightGridCellBufferAddress(), terrain.lightGridSpanBufferAddress(),
-                            (int) frameCounter);
+                    volumetricPipeline.record(cmd, pushBuf.deviceAddress, (int) frameCounter);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // Volumetric LUT writes visible to display pass
             }

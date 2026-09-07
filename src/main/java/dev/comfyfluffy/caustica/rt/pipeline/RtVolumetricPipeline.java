@@ -327,8 +327,7 @@ public final class RtVolumetricPipeline {
         boundTransmittanceSampler = transmittanceSampler;
     }
 
-    public void record(VkCommandBuffer cmd, long worldPushAddress, long lightBufAddr,
-                       long lightGridCellAddr, long lightGridSpanAddr, int frameIndex) {
+    public void record(VkCommandBuffer cmd, long worldPushAddress, int frameIndex) {
         if (boundTlas == 0L || boundSkyView == 0L) {
             return;
         }
@@ -343,7 +342,7 @@ public final class RtVolumetricPipeline {
                     injectPipelineLayout, 0, stack.longs(injectDescriptorSets[currentSlot]), null);
 
             ByteBuffer push = stack.malloc(VolumetricPushData.BYTE_SIZE);
-            new VolumetricPushData(worldPushAddress, lightBufAddr, lightGridCellAddr, lightGridSpanAddr,
+            new VolumetricPushData(worldPushAddress,
                     CausticaConfig.Rt.Volumetrics.DENSITY.value(),
                     CausticaConfig.Rt.Volumetrics.HEIGHT_FALLOFF.value(),
                     64.0f,
@@ -351,8 +350,8 @@ public final class RtVolumetricPipeline {
                     CausticaConfig.Rt.Volumetrics.TEMPORAL_WEIGHT.value(),
                     CausticaConfig.Rt.Volumetrics.GI_STRENGTH.value(),
                     CausticaConfig.Rt.Volumetrics.DIRECT_STRENGTH.value(),
-                    CausticaConfig.Rt.Volumetrics.EMISSIVE_STRENGTH.value(),
                     CausticaConfig.Rt.Volumetrics.DITHER_STRENGTH.value(),
+                    CausticaConfig.Rt.Volumetrics.QUALITY.value(),
                     frameIndex).write(push);
             VK10.vkCmdPushConstants(cmd, injectPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
 

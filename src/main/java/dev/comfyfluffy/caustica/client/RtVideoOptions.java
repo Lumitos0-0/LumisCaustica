@@ -46,6 +46,9 @@ public final class RtVideoOptions {
             gamma(),
             spp(),
             maxBounces(),
+            volumetrics(),
+            volumetricQuality(),
+            volumetricDensity(),
             entities(),
             particles(),
             waterWaves(),
@@ -121,6 +124,36 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(2, 8),
             Math.clamp(setting.value(), 2, 8),
             setting::set);
+    }
+
+    private static OptionInstance<Boolean> volumetrics() {
+        return bool("caustica.options.rt.volumetrics", CausticaConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    private static OptionInstance<Integer> volumetricQuality() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
+        List<Integer> steps = CausticaConfig.Rt.Volumetrics.QUALITY_STEPS;
+        int initialQuality = steps.contains(setting.value()) ? setting.value() : 1;
+        int initialPosition = steps.indexOf(initialQuality);
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricQuality.tooltip")),
+            (caption, position) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.volumetricQuality." + steps.get(position))),
+            new OptionInstance.IntRange(0, steps.size() - 1),
+            initialPosition,
+            position -> setting.set(steps.get(position)));
+    }
+
+    private static OptionInstance<Integer> volumetricDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricDensity.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 300),
+            Math.clamp(Math.round(setting.value() * 100.0f / 0.012f), 0, 300),
+            percent -> setting.set(percent * 0.012f / 100.0f));
     }
 
     private static OptionInstance<Boolean> entities() {

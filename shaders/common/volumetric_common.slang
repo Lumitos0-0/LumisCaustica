@@ -10,18 +10,15 @@ public static const float FROXEL_FAR = 192.0;
 
 public struct VolumetricPush {
     public uint64_t worldPushAddr;
-    public uint64_t lightBufAddr;
-    public uint64_t lightGridCellAddr;
-    public uint64_t lightGridSpanAddr;
     public float fogDensity;        // Base density (default ~0.012)
     public float fogHeightFalloff;   // Height falloff scale in blocks (default 16.0)
     public float fogHeightBaseline;  // Ground height anchor (default 64.0)
     public float anisotropy;         // Henyey-Greenstein g (default 0.80 for forward god rays)
-    public float temporalWeight;     // Temporal history weight (default 0.95)
+    public float temporalWeight;     // Temporal history weight (default 0.82)
     public float giStrength;         // Multiplier for sky/indirect volumetric light
     public float directStrength;     // Multiplier for direct sun/moon shafts
-    public float emissiveStrength;   // Multiplier for local emitter lights (lava, torches, lanterns)
     public float ditherStrength;     // Screen-space dither strength (default 1.0)
+    public uint qualityMode;        // 0 = High, 1 = Very High, 2 = Ultra
     public uint frameIndex;
 };
 

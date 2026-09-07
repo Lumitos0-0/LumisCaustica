@@ -58,8 +58,9 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.Volumetrics.ENABLED, Rt.Volumetrics.DITHER_STRENGTH,
-            Rt.FrameStats.ENABLED, Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.Volumetrics.ENABLED, Rt.Volumetrics.QUALITY,
+            Rt.Volumetrics.DENSITY, Rt.Volumetrics.DITHER_STRENGTH, Rt.FrameStats.ENABLED, Rt.Screenshots.EXR_ENABLED,
+            Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
 
@@ -826,20 +827,21 @@ public final class CausticaConfig {
         public static final class Volumetrics {
             public static final BooleanSetting ENABLED =
                     bool("caustica.rt.volumetrics.enabled", "volumetrics.enabled", true);
+            public static final List<Integer> QUALITY_STEPS = List.of(0, 1, 2);
+            public static final IntSetting QUALITY =
+                    intChoice("caustica.rt.volumetrics.quality", "volumetrics.quality", 1, QUALITY_STEPS);
             public static final FloatSetting DENSITY =
-                    clampedFloat("caustica.rt.volumetrics.density", "volumetrics.density", 0.015f, 0.0f, 1.0f);
+                    clampedFloat("caustica.rt.volumetrics.density", "volumetrics.density", 0.012f, 0.0f, 0.1f);
             public static final FloatSetting HEIGHT_FALLOFF =
                     clampedFloat("caustica.rt.volumetrics.heightFalloff", "volumetrics.height-falloff", 16.0f, 1.0f, 256.0f);
             public static final FloatSetting ANISOTROPY =
                     clampedFloat("caustica.rt.volumetrics.anisotropy", "volumetrics.anisotropy", 0.80f, -0.9f, 0.95f);
             public static final FloatSetting TEMPORAL_WEIGHT =
-                    clampedFloat("caustica.rt.volumetrics.temporalWeight", "volumetrics.temporal-weight", 0.95f, 0.0f, 0.99f);
+                    clampedFloat("caustica.rt.volumetrics.temporalWeight", "volumetrics.temporal-weight", 0.82f, 0.0f, 0.99f);
             public static final FloatSetting GI_STRENGTH =
                     clampedFloat("caustica.rt.volumetrics.giStrength", "volumetrics.gi-strength", 1.0f, 0.0f, 10.0f);
             public static final FloatSetting DIRECT_STRENGTH =
                     clampedFloat("caustica.rt.volumetrics.directStrength", "volumetrics.direct-strength", 1.0f, 0.0f, 10.0f);
-            public static final FloatSetting EMISSIVE_STRENGTH =
-                    clampedFloat("caustica.rt.volumetrics.emissiveStrength", "volumetrics.emissive-strength", 2.5f, 0.0f, 50.0f);
             public static final FloatSetting DITHER_STRENGTH =
                     clampedFloat("caustica.rt.volumetrics.ditherStrength", "volumetrics.dither-strength", 1.0f, 0.0f, 2.0f);
 

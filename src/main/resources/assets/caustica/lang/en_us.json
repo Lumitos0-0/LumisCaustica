@@ -18,6 +18,18 @@
 	"caustica.options.rt.maxBounces": "Path Bounces",
 	"caustica.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
 
+	"caustica.options.rt.volumetrics": "Volumetric Fog",
+	"caustica.options.rt.volumetrics.tooltip": "3D froxel atmospheric volumetric fog, ray-traced sun/moon light shafts (god rays), and true volumetric indirect GI.",
+
+	"caustica.options.rt.volumetricQuality": "Volumetric Fog Quality",
+	"caustica.options.rt.volumetricQuality.tooltip": "Froxel volumetric indirect GI sampling density and ray budget. Ultra provides the cleanest multi-directional room radiosity.",
+	"caustica.options.rt.volumetricQuality.0": "High",
+	"caustica.options.rt.volumetricQuality.1": "Very High",
+	"caustica.options.rt.volumetricQuality.2": "Ultra",
+
+	"caustica.options.rt.volumetricDensity": "Volumetric Fog Density",
+	"caustica.options.rt.volumetricDensity.tooltip": "Atmospheric aerosol density scaling. Lower values produce lighter mist; higher values produce dense, dramatic atmospheric haze.",
+
 	"caustica.options.rt.entities": "Ray-Traced Entities",
 	"caustica.options.rt.entities.tooltip": "Include entities and block entities in the ray-traced scene.",
 
