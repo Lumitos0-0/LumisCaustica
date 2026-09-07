@@ -831,13 +831,15 @@ public final class CausticaConfig {
             public static final FloatSetting HEIGHT_FALLOFF =
                     clampedFloat("caustica.rt.volumetrics.heightFalloff", "volumetrics.height-falloff", 16.0f, 1.0f, 256.0f);
             public static final FloatSetting ANISOTROPY =
-                    clampedFloat("caustica.rt.volumetrics.anisotropy", "volumetrics.anisotropy", 0.75f, -0.9f, 0.95f);
+                    clampedFloat("caustica.rt.volumetrics.anisotropy", "volumetrics.anisotropy", 0.80f, -0.9f, 0.95f);
             public static final FloatSetting TEMPORAL_WEIGHT =
-                    clampedFloat("caustica.rt.volumetrics.temporalWeight", "volumetrics.temporal-weight", 0.92f, 0.0f, 0.99f);
+                    clampedFloat("caustica.rt.volumetrics.temporalWeight", "volumetrics.temporal-weight", 0.95f, 0.0f, 0.99f);
             public static final FloatSetting GI_STRENGTH =
                     clampedFloat("caustica.rt.volumetrics.giStrength", "volumetrics.gi-strength", 1.0f, 0.0f, 10.0f);
             public static final FloatSetting DIRECT_STRENGTH =
                     clampedFloat("caustica.rt.volumetrics.directStrength", "volumetrics.direct-strength", 1.0f, 0.0f, 10.0f);
+            public static final FloatSetting EMISSIVE_STRENGTH =
+                    clampedFloat("caustica.rt.volumetrics.emissiveStrength", "volumetrics.emissive-strength", 2.5f, 0.0f, 50.0f);
 
             private Volumetrics() {
             }

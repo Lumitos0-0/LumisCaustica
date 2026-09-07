@@ -143,6 +143,32 @@ float3 tonemapHdr(float3 lookedAcesCg) {
     return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);
 }
 
+float sampleDepthBilateral(float2 uv) {
+    uint depthW, depthH;
+    gDepth.GetDimensions(depthW, depthH);
+    float2 texelPos = uv * float2(depthW, depthH) - 0.5;
+    int2 base = int2(floor(texelPos));
+    float2 f = frac(texelPos);
+
+    int2 p00 = clamp(base + int2(0, 0), int2(0), int2(depthW - 1, depthH - 1));
+    int2 p10 = clamp(base + int2(1, 0), int2(0), int2(depthW - 1, depthH - 1));
+    int2 p01 = clamp(base + int2(0, 1), int2(0), int2(depthW - 1, depthH - 1));
+    int2 p11 = clamp(base + int2(1, 1), int2(0), int2(depthW - 1, depthH - 1));
+
+    float d00 = gDepth[p00];
+    float d10 = gDepth[p10];
+    float d01 = gDepth[p01];
+    float d11 = gDepth[p11];
+
+    // Detect silhouette edge discontinuities
+    float minD = min(min(d00, d10), min(d01, d11));
+    float maxD = max(max(d00, d10), max(d01, d11));
+    if (maxD - minD > 0.01) {
+        return (f.x < 0.5) ? ((f.y < 0.5) ? d00 : d01) : ((f.y < 0.5) ? d10 : d11);
+    }
+    return lerp(lerp(d00, d10, f.x), lerp(d01, d11, f.x), f.y);
+}
+
 float getLinearDepth(float depthHardware, float2 uv, float4x4 invViewProj) {
     if (depthHardware <= 1.0e-6) {
         return FROXEL_FAR;
@@ -152,12 +178,14 @@ float getLinearDepth(float depthHardware, float2 uv, float4x4 invViewProj) {
     float4 clip = mul(invViewProj, float4(ndc.x, ndc.y, depthHardware, 1.0));
     if (clip.w <= 0.0) return FROXEL_FAR;
     float3 camRel = clip.xyz / clip.w;
-    return length(camRel);
+    return clamp(length(camRel), FROXEL_NEAR, FROXEL_FAR);
 }
 
-float4 sampleVolumetricFog(float2 uv, float hardwareDepth, float4x4 invViewProj) {
+float4 sampleVolumetricFog(int2 pix, float2 uv, float hardwareDepth, float4x4 invViewProj) {
     float linearDepth = getLinearDepth(hardwareDepth, uv, invViewProj);
-    float slice = depthToFroxelSlice(linearDepth, FROXEL_DIMS.z);
+    // Screen-space dither on slice depth breaks discrete concentric banding
+    float dither = interleavedGradientNoise(float2(pix), 0u) - 0.5;
+    float slice = depthToFroxelSlice(linearDepth, FROXEL_DIMS.z) + dither * 0.75;
     float3 uvw = float3(uv, (slice + 0.5) / float(FROXEL_DIMS.z));
     return volumetricLut.SampleLevel(clamp(uvw, float3(0.0), float3(1.0)), 0.0);
 }
@@ -179,12 +207,9 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     if (pc.volumetricEnabled != 0 && pc.worldPushAddr != 0) {
         float2 uv = (float2(pix) + 0.5) / float2(w, h);
-        uint depthW, depthH;
-        gDepth.GetDimensions(depthW, depthH);
-        int2 depthPix = min(int2(uv * float2(depthW, depthH)), int2(depthW, depthH) - 1);
-        float depth = gDepth[depthPix];
+        float depth = sampleDepthBilateral(uv);
         WorldPush wp = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-        float4 fog = sampleVolumetricFog(uv, depth, wp.invViewProj);
+        float4 fog = sampleVolumetricFog(pix, uv, depth, wp.invViewProj);
         exposedAcesCg = exposedAcesCg * clamp(fog.a, 0.0, 1.0) + max(fog.rgb, float3(0.0)) * exposure;
     }
 

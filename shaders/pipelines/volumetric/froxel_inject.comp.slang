@@ -6,6 +6,41 @@ import sky;
 
 static const uint CULL_SECONDARY = 0x01u;
 
+float unpackUnsignedFloat(uint bits, uint mantissaBits) {
+    uint mantissaMask = (1u << mantissaBits) - 1u;
+    uint mantissa = bits & mantissaMask;
+    uint exponent = (bits >> mantissaBits) & 31u;
+    if (exponent == 0u) {
+        return float(mantissa) * exp2(float(1 - 15 - int(mantissaBits)));
+    }
+    return (1.0 + float(mantissa) / float(1u << mantissaBits))
+            * exp2(float(int(exponent) - 15));
+}
+
+float3 lightRadiance(Light light) {
+    uint packed = light.le;
+    return float3(unpackUnsignedFloat(packed & 0x7ffu, 6u),
+            unpackUnsignedFloat((packed >> 11u) & 0x7ffu, 6u),
+            unpackUnsignedFloat((packed >> 22u) & 0x3ffu, 5u));
+}
+
+float3 lightHalfU(Light light) {
+    return float3(unpackHalf2(light.halfUxy), unpackHalf2(light.halfUzVx).x);
+}
+
+float3 lightHalfV(Light light) {
+    return float3(unpackHalf2(light.halfUzVx).y, unpackHalf2(light.halfVyz));
+}
+
+float3 lightGeometricNormal(Light light) {
+    float3 normal = normalize(cross(lightHalfU(light), lightHalfV(light)));
+    return (light.section & 0x40000000u) != 0u ? -normal : normal;
+}
+
+float lightArea(Light light) {
+    return 4.0 * length(cross(lightHalfU(light), lightHalfV(light)));
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -14,6 +49,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
 
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+
+    // Sub-voxel temporal blue-noise jittering along view ray to eliminate slicing bands
+    float jitter = interleavedGradientNoise(float2(dispatchId.xy), pc.frameIndex) - 0.5;
+    float continuousSlice = float(dispatchId.z) + jitter;
 
     // UV in [0, 1] for current froxel column
     float2 uv = (float2(dispatchId.xy) + 0.5) / float2(FROXEL_DIMS.xy);
@@ -26,8 +65,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 farP = farH.xyz / farH.w;
     float3 rayDir = normalize(farP - nearP);
 
-    // Froxel slice depth
-    float linearDepth = froxelSliceToDepth(float(dispatchId.z), FROXEL_DIMS.z);
+    // Froxel slice depth with continuous jitter
+    float linearDepth = froxelSliceToDepth(continuousSlice, FROXEL_DIMS.z);
     float3 hitCamRel = rayDir * linearDepth;
     float3 hitPos = hitCamRel + worldPush.camOffset;
 
@@ -42,7 +81,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float absorptionCoeff = baseDensity * 0.1;
     float extinction = scatteringCoeff + absorptionCoeff;
 
-    // Direct sun/moon directional light and shadow ray query
+    // 1. Direct sun/moon directional light and shadow ray query
     SkyState sky = skyState(worldPush);
     CelestialLight celLight = dominantCelestialLight(sky, transmittanceLut);
     float3 sunIllumAces = bt709ToAcesCg(celLight.illuminance);
@@ -67,16 +106,94 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         }
     }
 
-    // Sky dome / indirect volumetric inscatter sampled from Hillaire Sky-View LUT
-    float2 sunSkyUv = skyViewLutUv(sky.viewerRadiusKm, rayDir.y, lightViewCosine(rayDir, sky.sunDir), SKY_VIEW_BODY_SUN);
-    float2 moonSkyUv = skyViewLutUv(sky.viewerRadiusKm, rayDir.y, lightViewCosine(rayDir, sky.moonDir), SKY_VIEW_BODY_MOON);
-    float3 skyLuminance709 = skyViewLut.SampleLevel(sunSkyUv, 0.0).rgb + skyViewLut.SampleLevel(moonSkyUv, 0.0).rgb;
-    float3 skyLuminanceAces = bt709ToAcesCg(skyLuminance709);
-    float isotropicPhase = 1.0 / (4.0 * 3.14159265359);
-    float3 skyInscatter = skyLuminanceAces * (isotropicPhase * scatteringCoeff * max(pc.giStrength, 0.0));
+    // 2. Sky Dome / Ambient Volumetric GI:
+    // Sample Zenith (+Y) diffuse irradiance so horizontal sunset colors do not bleed into near froxels.
+    // Gate with vertical sky occlusion ray to prevent ambient sky light inside caves or underground rooms.
+    float skyOcclusion = 1.0;
+    if (scatteringCoeff > 1.0e-7) {
+        RayDesc skyOcclusionRay;
+        skyOcclusionRay.Origin = hitPos;
+        skyOcclusionRay.Direction = float3(0.0, 1.0, 0.0);
+        skyOcclusionRay.TMin = 0.05;
+        skyOcclusionRay.TMax = 96.0;
 
-    // Pre-expose current sample radiance into stored photometric domain
-    float3 currentRadiance = (sunRadiance + skyInscatter) * worldPush.preExposure;
+        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> skyQ;
+        skyQ.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, skyOcclusionRay);
+        while (skyQ.Proceed()) {}
+        if (skyQ.CommittedStatus() != COMMITTED_NOTHING) {
+            skyOcclusion = 0.0; // Occluded by terrain/roof: cave or interior room
+        }
+    }
+
+    float2 sunZenithUv = skyViewLutUv(sky.viewerRadiusKm, 0.99, lightViewCosine(float3(0.0, 1.0, 0.0), sky.sunDir), SKY_VIEW_BODY_SUN);
+    float2 moonZenithUv = skyViewLutUv(sky.viewerRadiusKm, 0.99, lightViewCosine(float3(0.0, 1.0, 0.0), sky.moonDir), SKY_VIEW_BODY_MOON);
+    float3 zenithSkyLuminance709 = skyViewLut.SampleLevel(sunZenithUv, 0.0).rgb + skyViewLut.SampleLevel(moonZenithUv, 0.0).rgb;
+    float3 skyLuminanceAces = bt709ToAcesCg(zenithSkyLuminance709);
+    float isotropicPhase = 1.0 / (4.0 * 3.14159265359);
+    float3 skyInscatter = skyLuminanceAces * (skyOcclusion * isotropicPhase * scatteringCoeff * max(pc.giStrength, 0.0));
+
+    // 3. Local Emissive Light Sampling (Torches, Lava, Lanterns, Glowing Blocks)
+    float3 localInscatter = float3(0.0);
+    if (pc.lightGridCellAddr != 0 && pc.lightBufAddr != 0 && pc.lightGridSpanAddr != 0
+            && worldPush.lightCount > 0 && scatteringCoeff > 1.0e-7 && pc.emissiveStrength > 0.0) {
+        float3 cellLocal = (hitPos - worldPush.lightGridOrigin.xyz) / max(worldPush.lightGridOrigin.w, 1.0);
+        int3 cellCoord = int3(floor(cellLocal));
+        if (cellCoord.x >= 0 && cellCoord.y >= 0 && cellCoord.z >= 0
+                && cellCoord.x < worldPush.lightGridDims.x
+                && cellCoord.y < worldPush.lightGridDims.y
+                && cellCoord.z < worldPush.lightGridDims.z) {
+            uint linearCell = (uint(cellCoord.z) * uint(worldPush.lightGridDims.y) + uint(cellCoord.y))
+                    * uint(worldPush.lightGridDims.x) + uint(cellCoord.x);
+            LightGridCell cell = ConstPtr<LightGridCell>(pc.lightGridCellAddr)[linearCell];
+            if (cell.spanCount > 0u) {
+                ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(pc.lightGridSpanAddr);
+                ConstPtr<Light> lights = ConstPtr<Light>(pc.lightBufAddr);
+                uint sampleSpans = min(cell.spanCount, 4u);
+                for (uint s = 0; s < sampleSpans; s++) {
+                    LightGridSpan span = spans[cell.spanOffset + s];
+                    uint firstLight = span.firstLight;
+                    uint count = span.packedLightCounts & 0xffffu;
+                    uint maxFetch = min(count, 3u);
+                    for (uint l = 0; l < maxFetch; l++) {
+                        Light light = lights[firstLight + l];
+                        float3 lightPos = light.pos;
+                        float3 toLight = lightPos - hitPos;
+                        float dist2 = dot(toLight, toLight);
+                        if (dist2 > 0.04 && dist2 < 576.0) { // Up to 24 blocks radius
+                            float dist = sqrt(dist2);
+                            float3 emitterDir = toLight / dist;
+                            float3 emitterNrm = lightGeometricNormal(light);
+                            float cosL = max(0.0, dot(emitterNrm, -emitterDir));
+                            if (cosL > 0.0) {
+                                float area = lightArea(light);
+                                float3 le = lightRadiance(light);
+                                float geom = (area * cosL) / (dist2 + 0.15);
+
+                                // Fast shadow ray to check emitter visibility
+                                RayDesc localRay;
+                                localRay.Origin = hitPos;
+                                localRay.Direction = emitterDir;
+                                localRay.TMin = 0.05;
+                                localRay.TMax = max(dist - 0.1, 0.05);
+
+                                RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> lq;
+                                lq.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, localRay);
+                                while (lq.Proceed()) {}
+                                if (lq.CommittedStatus() == COMMITTED_NOTHING) {
+                                    float cosTheta = dot(rayDir, emitterDir);
+                                    float localPhase = henyeyGreenstein(cosTheta, 0.25);
+                                    localInscatter += le * (geom * localPhase * scatteringCoeff * pc.emissiveStrength);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pre-expose combined radiance into stored photometric domain
+    float3 currentRadiance = (sunRadiance + skyInscatter + localInscatter) * worldPush.preExposure;
 
     // Temporal Reprojection across camera movement
     float3 prevCamRel = hitCamRel + worldPush.camDelta;
