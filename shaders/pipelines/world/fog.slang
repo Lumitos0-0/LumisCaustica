@@ -18,14 +18,22 @@ import world_common;
 public static const float FOG_PI = 3.14159265359;
 public static const float FOG_INV_4PI = 0.07957747155;
 
-// Staleness test for the temporal history (see volumetric/integrate.comp.slang). The local reference is
-// the mean of 2*TAPS+1 slices' current samples along Z; SIGMA is how many standard errors of that mean
-// the history may differ by before it is treated as describing a froxel that no longer exists. Tuned by
-// simulation: sigma 6 with 8 taps either side recovers from a visibility change about 4x faster than no
-// test at all, with slightly LOWER steady-state noise, whereas tighter values over-trigger and bias the
-// converged estimate.
-public static const int   FOG_STALENESS_TAPS  = 8;
-public static const float FOG_STALENESS_SIGMA = 6.0;
+// Temporal-history bounds (see volumetric/integrate.comp.slang). The reference is the mean of
+// 2*TAPS+1 of a column's slices in the current frame; the medium is smooth along Z, so that mean is a
+// low-variance measurement of the region while a single slice is not.
+//
+// SIGMA is how many standard errors of that mean the history may drift before it is pulled back.
+// MIN_ERROR floors the interval so a near-black region cannot make the test infinitely strict — that
+// floor is what stops dim fog from having its history rejected every frame and never converging.
+public static const int   FOG_STALENESS_TAPS        = 8;
+public static const float FOG_STALENESS_SIGMA       = 6.0;
+public static const float FOG_STALENESS_MIN_ERROR   = 0.02;
+
+// Effective sample count retained when a history is clamped (drifted but probably still informative)
+// and when a froxel is disoccluded and reseeded from its neighbours. Both keep partial credit rather
+// than restarting at one sample, which would put a raw binary visibility estimate straight on screen.
+public static const float FOG_STALENESS_RETAINED_FRAMES = 3.0;
+public static const float FOG_DISOCCLUSION_FRAMES       = 2.0;
 
 // Below this extinction a froxel contributes nothing a half can represent over a whole slice, so the
 // injection pass skips its shadow ray entirely. With the default height falloff this culls most of the

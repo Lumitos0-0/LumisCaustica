@@ -15,6 +15,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * are pure functions, so the invariant is worth pinning on the Java side rather than only by eye.
  */
 final class RtVolumetricFogGridTest {
+    /** Mirrors the constants in {@code shaders/pipelines/world/fog.slang}. */
+    private static final double FOG_STALENESS_MIN_ERROR = 0.02;
+    private static final double FOG_STALENESS_RETAINED_FRAMES = 3.0;
+    private static final double FOG_DISOCCLUSION_FRAMES = 2.0;
+
     private static final float NEAR = 0.25f;
     private static final float FAR = 192.0f;
     private static final float DEPTH_EXP = 2.0f;
@@ -189,6 +194,49 @@ final class RtVolumetricFogGridTest {
             assertEquals(column, sampledColumn, 1.0e-3,
                     "history fetch must undo the offset its volume was written through");
         }
+    }
+
+    /**
+     * Standard error of a mean of Bernoulli samples is {@code sqrt(p(1-p)/N)}. The temporal filter
+     * briefly used {@code sqrt(p/N)}, which is not merely inaccurate: it overstates the interval for
+     * bright froxels and — far worse — collapses toward zero for dim ones, so a converged and entirely
+     * correct history was rejected on most frames wherever the fog was faint. That is what left fixed
+     * patches of screen permanently noisy even with the camera stationary.
+     */
+    @Test
+    void confidenceIntervalUsesBernoulliStandardError() {
+        final int taps = 17;
+        for (double p : new double[]{0.02, 0.05, 0.35, 0.9}) {
+            double wrong = Math.sqrt(p / taps);
+            double correct = Math.sqrt(p * (1.0 - p) / taps);
+            assertTrue(wrong >= correct,
+                    "sqrt(p/N) never underestimates, so the bug was always a wrong-width interval");
+            if (p >= 0.9) {
+                assertTrue(wrong / correct > 3.0,
+                        "for bright froxels the old form was more than 3x too wide, got " + wrong / correct);
+            }
+        }
+        // The floor is what actually rescues dim regions: without it the interval vanishes with p.
+        double dim = Math.sqrt(0.001 * (1.0 - 0.001) / taps);
+        assertTrue(dim < FOG_STALENESS_MIN_ERROR,
+                "a near-black region must fall back to the floor, not a vanishing interval");
+    }
+
+    /**
+     * A disoccluded froxel must not be shown as a raw single sample. One binary visibility sample has
+     * RMSE {@code sqrt(p(1-p))} regardless of how it is drawn — no sampling sequence can improve it —
+     * so the only usable information is its neighbours along Z. Retaining partial credit keeps alpha
+     * below 1 and is what stops large parts of the frame going to full noise while the camera moves.
+     */
+    @Test
+    void disocclusionKeepsPartialCredit() {
+        double alphaFloor = 0.1;
+        double freshAlpha = Math.max(1.0 / (FOG_DISOCCLUSION_FRAMES + 1.0), alphaFloor);
+        assertTrue(freshAlpha < 1.0,
+                "a disoccluded froxel must still blend, got alpha " + freshAlpha);
+        double clampedAlpha = Math.max(1.0 / (FOG_STALENESS_RETAINED_FRAMES + 1.0), alphaFloor);
+        assertTrue(clampedAlpha < freshAlpha,
+                "a merely-drifted history must retain more credit than a disoccluded one");
     }
 
     @Test

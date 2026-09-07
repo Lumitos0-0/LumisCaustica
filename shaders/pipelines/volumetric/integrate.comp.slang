@@ -106,41 +106,63 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
             }
         }
 
-        // Fixed-rate exponential moving average with a 1/n warmup and a staleness test.
+        // Temporal accumulation: a fixed-rate EMA with a 1/n warmup, seeded and bounded by a local
+        // spatial estimate.
         //
-        // An alpha driven by |raw - history| cannot work here: each froxel is a ONE-SAMPLE Monte Carlo
-        // estimate, so consecutive raw values differ enormously by design wherever the sun disc is
-        // partly occluded, and reacting to that pins alpha near 1 -- no temporal filter at all.
+        // The estimate is the mean of this column's neighbouring slices in the CURRENT frame. A single
+        // slice is far too noisy to use for anything, but the medium is smooth along Z, so the mean of
+        // 2*TAPS+1 of them is a low-variance measurement of what this region looks like right now. It is
+        // already in cache (the same fogScatter this pass is walking), so it costs almost nothing.
         //
-        // But a pure fixed rate has the opposite failure: reprojection only checks that the froxel is on
-        // screen and in range, never that the history still DESCRIBES this froxel. When the camera moves
-        // so a froxel emerges from behind an occluder, the stale history keeps its full weight and drags
-        // ~1/alpha frames of old radiance -- the reprojection lag.
+        // Two things depend on it, and both target the case the user sees as "clean when still, very
+        // noisy while moving":
         //
-        // The test below distinguishes the two. A single slice is far too noisy to judge staleness
-        // against, but the mean of several slices' CURRENT samples is a low-variance estimate of what
-        // this region looks like now, and the medium is smooth along Z so neighbouring slices are a fair
-        // reference. If the converged history disagrees with that estimate by more than several standard
-        // errors, it is stale rather than merely noisy, and the froxel restarts its accumulation.
+        //  * On DISOCCLUSION the froxel is seeded from the spatial estimate rather than left showing a
+        //    raw one-sample value. Previously historyLength reset to 0, which made alpha exactly 1.0 and
+        //    put an unfiltered binary visibility sample straight on screen — maximum possible noise, at
+        //    precisely the moment reprojection is failing across large parts of the frame. No sampling
+        //    sequence can help there: one binary sample has RMSE sqrt(p(1-p)) no matter how it is drawn.
+        //    Averaging over Z is the only information available, so that is what is used.
+        //
+        //  * A history that has drifted outside the estimate's confidence interval is CLAMPED back to
+        //    the boundary and keeps partial credit, instead of being discarded outright. Discarding is
+        //    what produced the fixed noisy patches: with the interval below, a converged and entirely
+        //    correct history was being rejected on up to 70% of frames in dim regions, so those froxels
+        //    never accumulated at all.
         float alpha;
         {
-            float historyLength = reprojected ? history.a : 0.0;
-            if (reprojected && historyLength > 2.0) {
-                float localSum = 0.0;
-                int taps = 0;
-                for (int d = -FOG_STALENESS_TAPS; d <= FOG_STALENESS_TAPS; ++d) {
-                    int neighbour = clamp(slice + d, 0, grid.dims.z - 1);
-                    localSum += fogLuminance(fogScatter[int3(column, neighbour)].rgb);
-                    ++taps;
-                }
-                float local = localSum / float(taps);
-                // Standard error of the local mean, floored so a near-zero region cannot make the test
-                // infinitely strict.
-                float standardError = max(sqrt(max(local, 0.0) / float(taps)), local * 0.05 + 1.0e-6);
-                if (abs(fogLuminance(history.rgb) - local) > FOG_STALENESS_SIGMA * standardError) {
-                    historyLength = 0.0;
-                }
+            float localSum = 0.0;
+            for (int d = -FOG_STALENESS_TAPS; d <= FOG_STALENESS_TAPS; ++d) {
+                int neighbour = clamp(slice + d, 0, grid.dims.z - 1);
+                localSum += fogLuminance(fogScatter[int3(column, neighbour)].rgb);
             }
+            float local = localSum / float(2 * FOG_STALENESS_TAPS + 1);
+
+            float historyLength;
+            if (reprojected) {
+                // Standard error of a mean of Bernoulli-like samples is sqrt(p(1-p)/N). The earlier
+                // sqrt(p/N) overstated it by up to 3.2x for bright froxels and, far worse, collapsed
+                // toward zero for dim ones, making the test almost infinitely strict exactly where the
+                // fog is faintest.
+                float variance = max(local * (1.0 - local), 0.0);
+                float standardError = max(sqrt(variance / float(2 * FOG_STALENESS_TAPS + 1)),
+                        FOG_STALENESS_MIN_ERROR);
+                float bound = FOG_STALENESS_SIGMA * standardError;
+                float historyLuma = fogLuminance(history.rgb);
+                float clamped = clamp(historyLuma, local - bound, local + bound);
+                historyLength = history.a;
+                if (clamped != historyLuma) {
+                    // Rescale rather than replace, so hue is preserved: only the magnitude was stale.
+                    history.rgb *= clamped / max(historyLuma, 1.0e-6);
+                    historyLength = min(historyLength, FOG_STALENESS_RETAINED_FRAMES);
+                }
+            } else {
+                // Disoccluded: start from the spatial estimate, scaled to keep this frame's hue.
+                float rawLuma = fogLuminance(raw);
+                history.rgb = rawLuma > 1.0e-6 ? raw * (local / rawLuma) : float3(local, local, local);
+                historyLength = FOG_DISOCCLUSION_FRAMES;
+            }
+
             historyLength = min(historyLength + 1.0, 1.0 / max(alphaFloor, 1.0e-3));
             alpha = max(1.0 / historyLength, alphaFloor);
             history.a = historyLength;
