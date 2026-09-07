@@ -102,6 +102,9 @@ public struct WorldPush {
     // xyz rebase origin modulo 4096 (added to a rebased position to recover a world-pinned coordinate
     // small enough for fp32, exactly as waterAnchor does), w noise animation phase.
     public float4   fogAnchor;
+    // x sun-disc widening multiplier for the fog only (softens shaft edges to what the grid can
+    // represent), yzw reserved.
+    public float4   fogParams3;
     public uint     fogFlags;       // bit0 history valid, bit1 depth cull enabled
 };
 

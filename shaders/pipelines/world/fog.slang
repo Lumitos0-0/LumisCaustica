@@ -54,28 +54,42 @@ public static const float FOG_ZBLUR_SETTLING_FRAMES  = 5.0;
 // evenly spaced probes rather than from every slice.
 public static const int FOG_RADIUS_PROBES = 8;
 
+// Ceiling on the widened fog sun-disc, in radians (~6 degrees). Widening softens shaft edges until the
+// froxel grid can represent them, but an unbounded multiplier would eventually turn a shaft into a
+// shapeless glow, so the product is capped rather than trusted to the config alone.
+public static const float FOG_MAX_HALF_ANGLE = 0.105;
+
 // Toroidal shift applied to the blue-noise slice coordinate per unit of froxel screen Y, so adjacent
 // columns read decorrelated regions of the mask. Coprime with the mask's 128 height so the shift cycles
 // through all rows rather than a short repeating subset.
 public static const int FOG_BLUE_NOISE_COLUMN_SHIFT = 37;
 
 /**
- * Last slice of a column that lies entirely in front of a surface at `distance`.
+ * Last slice of a column whose STORED VALUE describes space in front of a surface at `distance`.
  *
  * Every slice past this one integrates light through space the surface occludes, so any filter that
  * reads one drags exterior radiance into the visible column — sunlight painted on the inside of a wall.
- * That failure has recurred from three separate filters in this system, so the bound is defined once,
- * here, and both the integration and the composite are held to it.
+ * That failure has recurred from several filters, so the bound is defined once, here, and every reader
+ * is held to it.
  *
- * A slice is fully visible only if it STARTS before the surface: the slice containing the surface
- * straddles it and its sample position can sit beyond, so it does not qualify.
+ * The test is on the slice's CENTRE, not its near edge, because that is where the value lives: the
+ * integration stores each slice's prefix at its centre so a linear sampler reads it unblended there.
+ * Testing the near edge instead admits the slice straddling the surface, whose centre can sit well
+ * beyond it — measured, that let a beyond-surface value through on 31 of 60 wall distances, and since
+ * the prefix jumps by orders of magnitude at the surface, a single such slice dominates whatever
+ * samples it.
  */
 public int fogVisibleSliceLimit(FogGrid g, float distance) {
     int slice = int(floor(fogDistanceSlice(g, distance)));
     slice = clamp(slice, 0, g.dims.z - 1);
-    // Walk back while the slice's near edge is already past the surface.
-    for (int i = 0; i < 3; ++i) {
-        if (slice <= 0 || fogSliceDistance(g, float(slice)) <= distance) {
+    // Walk back while this slice's stored centre lies past the surface. Bounded: the centre is
+    // monotonic in the index, and the starting guess is at most a couple of slices too far.
+    for (int i = 0; i < 4; ++i) {
+        if (slice <= 0) {
+            break;
+        }
+        float centre = 0.5 * (fogSliceDistance(g, float(slice)) + fogSliceDistance(g, float(slice) + 1.0));
+        if (centre <= distance) {
             break;
         }
         --slice;

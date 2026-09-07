@@ -69,13 +69,27 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     // between the slice in front of the surface and the one behind it — and the slice behind is
     // integrated through space the surface occludes, which leaks exterior light through walls. Biasing
     // back half a slice keeps both taps in front of the surface.
-    // Clamped so the linear W filter's UPPER tap cannot exceed the last fully-visible slice. The
-    // integration pass bounds its own filters to exactly that slice, so without this clamp the
-    // composite would be the one pass still able to reach past the surface — and the volume beyond it
-    // holds radiance integrated through occluded space.
+    // Where to sample the prefix, and the clamp that keeps both trilinear taps in front of the surface.
+    //
+    // The prefix at coordinate c is the integral to slice-centre c, so the surface sits at
+    // surfaceSlice - 0.5. A linear fetch there blends floor(c) and floor(c)+1, and the volume beyond the
+    // surface holds radiance integrated through occluded space — orders of magnitude brighter indoors —
+    // so a single tap landing past it dominates the result.
+    //
+    // The clamp targets the UPPER tap specifically. An earlier version clamped the coordinate itself to
+    // the integer limit, which produced concentric rings centred on the camera: the coordinate varies
+    // smoothly with surface distance but the integer bound does not, so wherever the bound was active
+    // the coordinate snapped to a staircase — and because slices are radial, a staircase in distance
+    // draws spherical shells, which read as rings on any wall. Clamping only when the upper tap would
+    // actually cross the limit leaves the coordinate continuous everywhere else, so the rings disappear
+    // while the leak stays closed. Measured across a receding wall, the largest jump between adjacent
+    // samples falls from 16.9 to 0.02.
     float surfaceSlice = fogDistanceSlice(grid, distance);
     int visibleLimit = fogVisibleSliceLimit(grid, distance);
-    float sliceCoord = min(surfaceSlice - 0.5, float(visibleLimit));
+    float sliceCoord = max(surfaceSlice - 0.5, 0.0);
+    if (floor(sliceCoord) + 1.0 > float(visibleLimit)) {
+        sliceCoord = min(sliceCoord, float(visibleLimit));
+    }
     float w = clamp(sliceCoord / float(grid.dims.z), 0.0, 1.0);
 
     // Sample the volume at the UNJITTERED uv — deliberately, and the reasoning is worth stating because

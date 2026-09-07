@@ -1231,7 +1231,7 @@ public final class RtComposite {
                     // from the same RtExposure accessor), or the two stop cancelling.
                     exposure.preExposure(),
                     fog.gridDims(), fog.params0(), fog.params1(), fog.params2(),
-                    fog.temporal(), fog.jitter(), fog.anchor(), fog.flags()
+                    fog.temporal(), fog.jitter(), fog.anchor(), fog.params3(), fog.flags()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1441,7 +1441,7 @@ public final class RtComposite {
      * all derived from one computation.
      */
     private record FogPush(Int4 gridDims, Float4 params0, Float4 params1, Float4 params2,
-                           Float4 temporal, Float4 jitter, Float4 anchor, int flags) {
+                           Float4 temporal, Float4 jitter, Float4 anchor, Float4 params3, int flags) {
     }
 
     private FogPush fogPush(RtTerrain terrain, boolean gridValid, int gridX, int gridY, int gridZ,
@@ -1496,7 +1496,9 @@ public final class RtComposite {
                 // yzw unused: the temporal filter is a fixed-rate EMA with a 1/n warmup, so alpha is
                 // the only knob it takes.
                 new Float4(CausticaConfig.Rt.Fog.TEMPORAL_ALPHA_MIN.value(), 0f, 0f, 0f),
-                jitter, anchor, flags);
+                jitter, anchor,
+                new Float4(CausticaConfig.Rt.Fog.SUN_WIDENING.value(), 0f, 0f, 0f),
+                flags);
     }
 
     private record SkyPush(Float4 celestial, Float4 look0, Float4 look1, Float4 look2, Float4 look3,

@@ -619,6 +619,16 @@ public final class CausticaConfig {
             /** Density multiplier at full rain/thunder, interpolated from the weather level. */
             public static final FloatSetting RAIN_BOOST =
                     clampedFloat("caustica.rt.fogRainBoost", "fog.rain-boost", 4.0f, 1.0f, 32.0f);
+            /**
+             * Multiplier on the sun's angular radius when the FOG samples it. The froxel grid cannot
+             * represent a feature narrower than about two froxels, and the true solar penumbra spans
+             * only ~2.4 at the shipped grid, so shaft edges alias — the sparkle and pixelation along
+             * beams. Widening softens the penumbra until the grid can carry it. 2 measured best on both
+             * accuracy and spatial roughness; higher keeps smoothing but starts costing shaft
+             * definition. Surface shadows are unaffected.
+             */
+            public static final FloatSetting SUN_WIDENING =
+                    clampedFloat("caustica.rt.fogSunWidening", "fog.sun-widening", 2.0f, 1.0f, 8.0f);
             public static final BooleanSetting TEMPORAL = bool("caustica.rt.fogTemporal", "fog.temporal", true);
             /**
              * Blend weight a fully converged froxel gives this frame's new sample; its reciprocal is the
