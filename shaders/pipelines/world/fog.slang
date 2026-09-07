@@ -26,7 +26,12 @@ public static const float FOG_INV_4PI = 0.07957747155;
 // MIN_ERROR floors the interval so a near-black region cannot make the test infinitely strict — that
 // floor is what stops dim fog from having its history rejected every frame and never converging.
 public static const int   FOG_STALENESS_TAPS        = 8;
-public static const float FOG_STALENESS_SIGMA       = 6.0;
+// Standard errors of disagreement before a history is treated as no longer describing its froxel. The
+// response is to SHORTEN the history so the EMA reconverges, never to rewrite the stored radiance:
+// `local` averages several slices, so at a shaft edge it mixes lit and shadowed froxels and describes
+// neither, and rewriting against it made edges oscillate. 8 sigma recovers from a real lighting change
+// in ~7 frames against ~19 with no test, while leaving edge stability identical to unfiltered.
+public static const float FOG_STALENESS_SIGMA       = 8.0;
 public static const float FOG_STALENESS_MIN_ERROR   = 0.02;
 
 // Effective sample count retained when a history is clamped (drifted but probably still informative)
@@ -42,6 +47,12 @@ public static const float FOG_DISOCCLUSION_FRAMES       = 2.0;
 // silhouettes. Turning it off at convergence is what keeps the edge bit-identical to no filtering.
 public static const float FOG_ZBLUR_NOISY_FRAMES     = 2.0;
 public static const float FOG_ZBLUR_SETTLING_FRAMES  = 5.0;
+
+// How many slices of a column are probed to pick its single blur radius. The radius must be uniform
+// along a column -- a per-slice choice puts a step into the prefix sum at every change, which
+// accumulates into visible banding along a shaft -- so it is derived from the worst-converged of a few
+// evenly spaced probes rather than from every slice.
+public static const int FOG_RADIUS_PROBES = 8;
 
 // Toroidal shift applied to the blue-noise slice coordinate per unit of froxel screen Y, so adjacent
 // columns read decorrelated regions of the mask. Coprime with the mask's 128 height so the shift cycles

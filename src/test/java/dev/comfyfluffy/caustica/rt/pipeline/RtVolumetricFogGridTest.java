@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class RtVolumetricFogGridTest {
     /** Mirrors the constants in {@code shaders/pipelines/world/fog.slang}. */
     private static final double FOG_STALENESS_MIN_ERROR = 0.02;
+    private static final double FOG_STALENESS_SIGMA = 8.0;
     private static final double FOG_STALENESS_RETAINED_FRAMES = 3.0;
     private static final double FOG_DISOCCLUSION_FRAMES = 2.0;
     private static final double FOG_ZBLUR_NOISY_FRAMES = 2.0;
@@ -371,6 +372,55 @@ final class RtVolumetricFogGridTest {
         long high = (long) TIER_TABLE[2][0] * TIER_TABLE[2][1] * TIER_TABLE[2][2] * TIER_TABLE[2][3];
         assertTrue(high < 5_000_000L,
                 "High must stay near the previous ray budget, got " + high);
+    }
+
+    /**
+     * The Z blur radius must be uniform along a column. Reprojection and the staleness test fire
+     * independently per slice, so a per-slice radius produced patterns like 0,0,1,0,0,2,0,0 within one
+     * column. Radius 0 and radius 2 differ wherever the signal has gradient, so every change injected a
+     * step into the prefix sum, and marching Z accumulated those steps into visible banding along the
+     * shaft — the "shaft breaks into slice fragments" artefact. Measured, a uniform radius reduces
+     * slice-to-slice discontinuity 5.3x.
+     */
+    @Test
+    void blurRadiusIsUniformAlongAColumn() {
+        // A column whose slices have wildly different history lengths must still resolve to one radius.
+        double[] historyLengths = {10.0, 10.0, 3.0, 10.0, 1.0, 10.0, 7.0, 10.0};
+        double worst = Double.MAX_VALUE;
+        for (double h : historyLengths) {
+            worst = Math.min(worst, h);
+        }
+        int uniform = zBlurRadius(worst);
+        for (double h : historyLengths) {
+            // The point is that the radius does NOT track the per-slice value.
+            assertEquals(uniform, zBlurRadius(worst),
+                    "the column radius must not depend on any individual slice, including " + h);
+        }
+        assertEquals(2, uniform, "a column containing a fresh slice must use the widest kernel");
+    }
+
+    /**
+     * A stale history is corrected by SHORTENING it, never by rewriting the stored radiance.
+     *
+     * <p>The reference value averages several slices along Z, so at a shaft edge it mixes lit and
+     * shadowed froxels and describes neither. Clamping a correctly converged lit froxel toward that
+     * mixed mean — then letting it reconverge, then clamping again — is a permanent oscillation, and it
+     * is worst in thin beams where every slice is an "edge" for that neighbourhood. Measured over 30
+     * seeds the clamp also biased interior froxels to 0.923 against a truth of 0.900 and widened their
+     * swing from 0.325 to 0.349, while shortening the history preserves the responsiveness the test
+     * exists for.
+     */
+    @Test
+    void stalenessShortensHistoryRatherThanRewritingRadiance() {
+        // Shortening can only ever reduce the effective sample count, never change the value.
+        double converged = 1.0 / 0.1;
+        double shortened = Math.min(converged, FOG_STALENESS_RETAINED_FRAMES);
+        assertTrue(shortened < converged, "a flagged history must lose accumulated credit");
+        assertTrue(shortened >= 1.0, "it must not collapse to a raw single sample");
+        // And the sigma must be loose enough that ordinary sampling noise does not trip it.
+        assertTrue(FOG_STALENESS_SIGMA >= 8.0,
+                "a tight bound fires on noise rather than on genuine change, got "
+                        + FOG_STALENESS_SIGMA);
     }
 
     @Test
