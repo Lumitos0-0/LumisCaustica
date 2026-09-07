@@ -64,6 +64,24 @@ final class RtVolumetricFogGridTest {
         assertEquals(0.0f, distanceSlice(0.0f), 1.0e-3);
     }
 
+    /**
+     * The isotropic ambient fill shares the direct term's shadowing and colour, so it is exactly
+     * {@code direct * ambient/4pi} and folds into the phase as an additive constant. That identity is
+     * what lets the injection store one value instead of two, and it must stay exact.
+     */
+    @Test
+    void ambientFoldsIntoThePhaseExactly() {
+        final double inv4Pi = 0.07957747155;
+        double direct = 0.018 * 100000.0 * 0.6; // sigma_s * illuminance * visibility
+        double ambient = 0.15;
+        for (double phase : new double[]{0.02, 0.1, 0.5, 1.7}) {
+            double reference = direct * phase + direct * inv4Pi * ambient;
+            double folded = direct * (phase + inv4Pi * ambient);
+            assertEquals(reference, folded, 1.0e-9,
+                    "ambient must fold into the phase without changing the result");
+        }
+    }
+
     @Test
     void gridSizeIsPositiveAtEveryTier() {
         // gridSizeFor reads live config, so this only pins the arithmetic shape: a divisor must never

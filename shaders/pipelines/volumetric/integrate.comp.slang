@@ -51,6 +51,13 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     SkyState sky = skyState(worldPush);
     float3 lightDir = sky.sunIlluminance >= sky.moonIlluminance ? sky.sunDir : sky.moonDir;
     float anisotropy = worldPush.fogParams1.z;
+    // The isotropic ambient fill shares the direct term's shadowing and colour, differing only in its
+    // phase (the constant 1/4pi). It is therefore exactly `direct * ambient/4pi`, which folds into the
+    // phase as an additive constant rather than needing its own channel or its own volume.
+    //
+    // Note this makes the fill OCCLUDED, unlike the earlier unshadowed version: it no longer glows
+    // inside caves, so it is safe to raise above zero.
+    float ambientPhase = FOG_INV_4PI * worldPush.fogParams2.z;
 
     float3 integrated = float3(0.0, 0.0, 0.0);
     float transmittance = 1.0;
@@ -60,11 +67,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         int3 index = int3(column, slice);
         float4 scatterSample = fogScatter[index];
         float3 raw = scatterSample.rgb;
-        float rawAmbient = scatterSample.a;
-
-        float sliceDistance = fogSliceDistance(grid, float(slice) + 0.5 + fogJitter(worldPush, column, slice).z);
-        float3 position = ray.origin + ray.dir * sliceDistance;
-        float extinction = fogDensity(worldPush, position);
+        // Extinction comes from the injection pass rather than being recomputed here, so both passes
+        // are guaranteed to describe the same point of the density field, and the field is evaluated
+        // once per froxel per frame instead of twice.
+        float extinction = scatterSample.a;
 
         // ---- Temporal accumulation.
         //
@@ -131,13 +137,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         blended = clamp(blended, float3(0.0), float3(HALF_MAX));
         fogHistory[index] = float4(blended, historyLength);
         // Apply this frame's phase to the accumulated, view-INDEPENDENT scattering.
-        //
-        // The ambient fill is isotropic and unshadowed, so it carries no Monte Carlo noise and needs no
-        // temporal accumulation at all — this frame's value is already exact. It is taken straight from
-        // the raw sample (where it was stored pre-scaled by 1/4pi) rather than blended, which also keeps
-        // it out of the history and leaves the alpha channel free for the history length.
-        float phase = fogPhase(dot(ray.dir, lightDir), anisotropy);
-        float3 lit = blended * phase + rawAmbient;
+        float phase = fogPhase(dot(ray.dir, lightDir), anisotropy) + ambientPhase;
+        float3 lit = blended * phase;
 
         // ---- Depth integration.
         //

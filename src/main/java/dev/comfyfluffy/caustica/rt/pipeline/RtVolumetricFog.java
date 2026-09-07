@@ -76,14 +76,17 @@ public final class RtVolumetricFog {
      * fog, and the grid would get COARSER exactly when the renderer is already struggling. Absolute
      * dimensions make the cost of each tier a fixed, measurable number.
      *
-     * <p>High is deliberately near the 2.1M froxels MCRTX ships. Every froxel is one shadow ray, so
-     * these totals are the system's whole performance story: 0.6M / 1.7M / 2.4M / 5.9M.
+     * <p>Every froxel is one shadow ray, so these totals are the system's whole performance story.
+     * Slices are weighted heavily relative to XY: a composited pixel is the prefix sum down its column,
+     * so independent per-slice noise cancels in that sum, and the count of LIT slices a pixel looks
+     * through is the dominant term in how clean the result is. Buying resolution in Z therefore reduces
+     * noise in a way that buying it in XY does not.
      */
     private static final int[][] TIERS = {
-            {160, 90, 40},    // low     0.58M
-            {224, 126, 60},   // medium  1.69M
-            {256, 144, 64},   // high    2.36M  (MCRTX parity)
-            {320, 180, 102},  // ultra   5.88M
+            {160, 90, 64},    // low     0.92M
+            {192, 108, 96},   // medium  1.99M
+            {224, 126, 112},  // high    3.16M
+            {256, 144, 144},  // ultra   5.31M
     };
     /** Floor so a tier edit cannot silently drop the slice count into visible depth banding. */
     private static final int MIN_SLICES = 32;

@@ -23,14 +23,6 @@ public static const float FOG_INV_4PI = 0.07957747155;
 // grid in clear weather, which is the single largest performance lever in the system.
 public static const float FOG_DENSITY_EPSILON = 1.0e-5;
 
-// Trilinear taps near the g-buffer surface must still land on live froxels, so the depth cull keeps
-// this many slices of margin beyond the farthest depth in the froxel's screen footprint.
-public static const float FOG_DEPTH_CULL_MARGIN_SLICES = 2.0;
-
-// How far in front of the occluding surface a culled froxel's shared shadow-ray origin sits, in blocks.
-// Just enough to avoid self-intersecting the surface it was culled against.
-public static const float FOG_CULL_SHADOW_BACKOFF = 0.1;
-
 // Must match ACESCG_LUMA in world_core. Duplicated because world_core pulls in the world descriptor
 // set, which the volumetric compute passes do not have.
 public static const float3 FOG_ACESCG_LUMA = float3(0.2722287168, 0.6740817658, 0.0536895174);
@@ -245,12 +237,7 @@ public float fogPhase(float cosTheta, float anisotropy) {
 // ---- Flag bits carried in WorldPush.fogFlags -----------------------------------------------------
 
 public static const uint FOG_FLAG_HISTORY_VALID = 1u;
-public static const uint FOG_FLAG_DEPTH_CULL    = 2u;
 
 public bool fogHistoryValid(WorldPush push) {
     return (push.fogFlags & FOG_FLAG_HISTORY_VALID) != 0u;
-}
-
-public bool fogDepthCullEnabled(WorldPush push) {
-    return (push.fogFlags & FOG_FLAG_DEPTH_CULL) != 0u;
 }

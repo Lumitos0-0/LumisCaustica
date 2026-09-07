@@ -599,15 +599,15 @@ public final class CausticaConfig {
             public static final FloatSetting SCATTER_ALBEDO =
                     clampedFloat("caustica.rt.fogScatterAlbedo", "fog.scatter-albedo", 0.9f, 0.0f, 1.0f);
             /**
-             * Isotropic fill added to every lit froxel. Zero by default and deliberately so: the term is
-             * unoccluded, so any non-zero value also glows inside caves.
+             * Isotropic fill, as a fraction of the direct term. It shares the direct term's shadowing,
+             * so unlike an unoccluded fill it does not glow inside caves and is safe to raise.
              */
             public static final FloatSetting AMBIENT =
                     clampedFloat("caustica.rt.fogAmbient", "fog.ambient", 0.0f, 0.0f, 1.0f);
             public static final FloatSetting NOISE_SCALE =
                     clampedFloat("caustica.rt.fogNoiseScale", "fog.noise-scale", 0.05f, 0.0f, 2.0f);
             public static final FloatSetting NOISE_STRENGTH =
-                    clampedFloat("caustica.rt.fogNoiseStrength", "fog.noise-strength", 0.4f, 0.0f, 1.0f);
+                    clampedFloat("caustica.rt.fogNoiseStrength", "fog.noise-strength", 0.12f, 0.0f, 1.0f);
             /** Density multiplier at full rain/thunder, interpolated from the weather level. */
             public static final FloatSetting RAIN_BOOST =
                     clampedFloat("caustica.rt.fogRainBoost", "fog.rain-boost", 4.0f, 1.0f, 32.0f);
@@ -624,8 +624,6 @@ public final class CausticaConfig {
              */
             public static final FloatSetting TEMPORAL_ALPHA_MIN =
                     clampedFloat("caustica.rt.fogTemporalAlphaMin", "fog.temporal-alpha-min", 0.1f, 0.005f, 1.0f);
-            public static final BooleanSetting DEPTH_CULL =
-                    bool("caustica.rt.fogDepthCull", "fog.depth-cull", true);
 
             private Fog() {
             }

@@ -1473,9 +1473,6 @@ public final class RtComposite {
         if (historyValid && CausticaConfig.Rt.Fog.TEMPORAL.value()) {
             flags |= 0b01;
         }
-        if (CausticaConfig.Rt.Fog.DEPTH_CULL.value()) {
-            flags |= 0b10;
-        }
         return new FogPush(
                 new Int4(gridX, gridY, gridZ, on ? 1 : 0),
                 // Near is fixed: the first froxel must start in front of the near plane, and anything
