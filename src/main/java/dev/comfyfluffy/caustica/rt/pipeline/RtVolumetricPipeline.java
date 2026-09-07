@@ -352,6 +352,7 @@ public final class RtVolumetricPipeline {
                     CausticaConfig.Rt.Volumetrics.GI_STRENGTH.value(),
                     CausticaConfig.Rt.Volumetrics.DIRECT_STRENGTH.value(),
                     CausticaConfig.Rt.Volumetrics.EMISSIVE_STRENGTH.value(),
+                    CausticaConfig.Rt.Volumetrics.DITHER_STRENGTH.value(),
                     frameIndex).write(push);
             VK10.vkCmdPushConstants(cmd, injectPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
 

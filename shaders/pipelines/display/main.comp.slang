@@ -181,10 +181,10 @@ float getLinearDepth(float depthHardware, float2 uv, float4x4 invViewProj) {
     return clamp(length(camRel), FROXEL_NEAR, FROXEL_FAR);
 }
 
-float4 sampleVolumetricFog(int2 pix, float2 uv, float hardwareDepth, float4x4 invViewProj) {
+float4 sampleVolumetricFog(int2 pix, float2 uv, float hardwareDepth, float4x4 invViewProj, float ditherStrength) {
     float linearDepth = getLinearDepth(hardwareDepth, uv, invViewProj);
     // Screen-space dither on slice depth breaks discrete concentric banding
-    float dither = interleavedGradientNoise(float2(pix), 0u) - 0.5;
+    float dither = (interleavedGradientNoise(float2(pix), 0u) - 0.5) * max(ditherStrength, 0.0);
     float slice = depthToFroxelSlice(linearDepth, FROXEL_DIMS.z) + dither * 0.75;
     float3 uvw = float3(uv, (slice + 0.5) / float(FROXEL_DIMS.z));
     return volumetricLut.SampleLevel(clamp(uvw, float3(0.0), float3(1.0)), 0.0);
@@ -209,7 +209,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float2 uv = (float2(pix) + 0.5) / float2(w, h);
         float depth = sampleDepthBilateral(uv);
         WorldPush wp = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-        float4 fog = sampleVolumetricFog(pix, uv, depth, wp.invViewProj);
+        float4 fog = sampleVolumetricFog(pix, uv, depth, wp.invViewProj, pc.ditherStrength);
         exposedAcesCg = exposedAcesCg * clamp(fog.a, 0.0, 1.0) + max(fog.rgb, float3(0.0)) * exposure;
     }
 

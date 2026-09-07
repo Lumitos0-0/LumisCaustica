@@ -1283,6 +1283,7 @@ public final class RtComposite {
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
                         true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length,
                         volumetricPipeline != null && CausticaConfig.Rt.Volumetrics.ENABLED.value(),
+                        CausticaConfig.Rt.Volumetrics.DITHER_STRENGTH.value(),
                         pushBuf.deviceAddress);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();

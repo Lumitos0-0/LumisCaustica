@@ -58,8 +58,8 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.Volumetrics.ENABLED, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.Volumetrics.ENABLED, Rt.Volumetrics.DITHER_STRENGTH,
+            Rt.FrameStats.ENABLED, Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
 
@@ -840,6 +840,8 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.volumetrics.directStrength", "volumetrics.direct-strength", 1.0f, 0.0f, 10.0f);
             public static final FloatSetting EMISSIVE_STRENGTH =
                     clampedFloat("caustica.rt.volumetrics.emissiveStrength", "volumetrics.emissive-strength", 2.5f, 0.0f, 50.0f);
+            public static final FloatSetting DITHER_STRENGTH =
+                    clampedFloat("caustica.rt.volumetrics.ditherStrength", "volumetrics.dither-strength", 1.0f, 0.0f, 2.0f);
 
             private Volumetrics() {
             }

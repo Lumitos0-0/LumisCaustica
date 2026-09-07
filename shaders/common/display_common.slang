@@ -79,6 +79,7 @@ public struct DisplayPush {
     // look-package strength then means the same thing whichever level count the resolution supports.
     public float bloomStrength;
     public int volumetricEnabled;
+    public float ditherStrength;
 };
 
 public struct BloomPush {

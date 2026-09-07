@@ -81,7 +81,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float absorptionCoeff = baseDensity * 0.1;
     float extinction = scatteringCoeff + absorptionCoeff;
 
-    // 1. Direct sun/moon directional light and shadow ray query
+    // 1. Direct sun/moon directional light and shadow ray query (RAY_FLAG_FORCE_OPAQUE ensures walls block light)
     SkyState sky = skyState(worldPush);
     CelestialLight celLight = dominantCelestialLight(sky, transmittanceLut);
     float3 sunIllumAces = bt709ToAcesCg(celLight.illuminance);
@@ -95,7 +95,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         ray.TMin = 0.05;
         ray.TMax = 250.0;
 
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
         q.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, ray);
         while (q.Proceed()) {
         }
@@ -108,7 +108,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     // 2. Sky Dome / Ambient Volumetric GI:
     // Sample Zenith (+Y) diffuse irradiance so horizontal sunset colors do not bleed into near froxels.
-    // Gate with vertical sky occlusion ray to prevent ambient sky light inside caves or underground rooms.
+    // Gate with vertical sky occlusion ray (RAY_FLAG_FORCE_OPAQUE) to prevent ambient sky light inside caves or rooms.
     float skyOcclusion = 1.0;
     if (scatteringCoeff > 1.0e-7) {
         RayDesc skyOcclusionRay;
@@ -117,11 +117,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         skyOcclusionRay.TMin = 0.05;
         skyOcclusionRay.TMax = 96.0;
 
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> skyQ;
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> skyQ;
         skyQ.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, skyOcclusionRay);
         while (skyQ.Proceed()) {}
         if (skyQ.CommittedStatus() != COMMITTED_NOTHING) {
-            skyOcclusion = 0.0; // Occluded by terrain/roof: cave or interior room
+            skyOcclusion = 0.0; // Fully occluded by terrain or roof: cave/interior
         }
     }
 
@@ -132,7 +132,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float isotropicPhase = 1.0 / (4.0 * 3.14159265359);
     float3 skyInscatter = skyLuminanceAces * (skyOcclusion * isotropicPhase * scatteringCoeff * max(pc.giStrength, 0.0));
 
-    // 3. Local Emissive Light Sampling (Torches, Lava, Lanterns, Glowing Blocks)
+    // 3. Continuous Volumetric GI from Local Emitters (Torches, Lava, Lanterns - MCRTX Style)
     float3 localInscatter = float3(0.0);
     if (pc.lightGridCellAddr != 0 && pc.lightBufAddr != 0 && pc.lightGridSpanAddr != 0
             && worldPush.lightCount > 0 && scatteringCoeff > 1.0e-7 && pc.emissiveStrength > 0.0) {
@@ -153,13 +153,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                     LightGridSpan span = spans[cell.spanOffset + s];
                     uint firstLight = span.firstLight;
                     uint count = span.packedLightCounts & 0xffffu;
-                    uint maxFetch = min(count, 3u);
+                    uint maxFetch = min(count, 4u);
                     for (uint l = 0; l < maxFetch; l++) {
                         Light light = lights[firstLight + l];
                         float3 lightPos = light.pos;
                         float3 toLight = lightPos - hitPos;
                         float dist2 = dot(toLight, toLight);
-                        if (dist2 > 0.04 && dist2 < 576.0) { // Up to 24 blocks radius
+                        const float maxRadius = 24.0;
+                        const float maxRadius2 = maxRadius * maxRadius;
+                        if (dist2 > 0.04 && dist2 < maxRadius2) {
                             float dist = sqrt(dist2);
                             float3 emitterDir = toLight / dist;
                             float3 emitterNrm = lightGeometricNormal(light);
@@ -167,16 +169,20 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
                             if (cosL > 0.0) {
                                 float area = lightArea(light);
                                 float3 le = lightRadiance(light);
-                                float geom = (area * cosL) / (dist2 + 0.15);
+                                // Smooth cubic distance attenuation window to avoid popping
+                                float normDist = dist / maxRadius;
+                                float window = max(0.0, 1.0 - normDist * normDist);
+                                float smoothAtten = (window * window) / (dist2 + 0.25);
+                                float geom = area * cosL * smoothAtten;
 
-                                // Fast shadow ray to check emitter visibility
+                                // Fast shadow ray to check emitter visibility (FORCE_OPAQUE)
                                 RayDesc localRay;
                                 localRay.Origin = hitPos;
                                 localRay.Direction = emitterDir;
                                 localRay.TMin = 0.05;
                                 localRay.TMax = max(dist - 0.1, 0.05);
 
-                                RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> lq;
+                                RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> lq;
                                 lq.TraceRayInline(topLevelAS, RAY_FLAG_NONE, CULL_SECONDARY, localRay);
                                 while (lq.Proceed()) {}
                                 if (lq.CommittedStatus() == COMMITTED_NOTHING) {
@@ -214,7 +220,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         }
     }
 
-    float alpha = historyValid ? clamp(1.0 - pc.temporalWeight, 0.02, 1.0) : 1.0;
+    float alpha = historyValid ? clamp(1.0 - pc.temporalWeight, 0.01, 1.0) : 1.0;
     float3 filteredRadiance = lerp(historyRadiance, currentRadiance, alpha);
 
     outFroxelRadiance[dispatchId] = float4(filteredRadiance, 1.0);
