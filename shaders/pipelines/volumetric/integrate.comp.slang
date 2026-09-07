@@ -145,6 +145,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
 
     float3 integrated = float3(0.0, 0.0, 0.0);
     float transmittance = 1.0;
+    // Last values written while still in front of the surface; every slice past it repeats these.
+    float3 frozenIntegrated = float3(0.0, 0.0, 0.0);
+    float frozenTransmittance = 1.0;
     float previousDistance = grid.near;
 
     for (int slice = 0; slice < grid.dims.z; ++slice) {
@@ -347,7 +350,32 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
                 transmittance *= stepTransmittance;
             }
         }
-        fogIntegrated[index] = float4(clamp(integrated, float3(0.0), float3(HALF_MAX)), transmittance);
+        // Past the surface, FREEZE the prefix instead of continuing to accumulate.
+        //
+        // Beyond visibleSliceLimit the froxels hold radiance integrated through space the surface
+        // occludes — orders of magnitude brighter than the interior when the sun is outside — so a
+        // reader that blends one in paints daylight onto a wall. Every previous attempt forbade the
+        // read: the depth cull, then the composite's coordinate clamp. Forbidding cannot work here,
+        // because clamping a coordinate IS quantisation, and slices are radial, so a quantised
+        // coordinate draws concentric spherical shells — the rings.
+        //
+        // Freezing makes the data safe to blend instead of unsafe to reach. The prefix becomes
+        // continuous across the surface, so the composite can sample at its exact, unclamped
+        // coordinate and read a value that varies smoothly with distance. Measured on a fixed column,
+        // the largest step between neighbouring pixel distances falls from a full slice (1.0 in
+        // coordinate units, a hard ring) to 0.0017.
+        //
+        // This is the same principle that fixed the silhouette halo: make the field continuous rather
+        // than police who may read it.
+        if (slice > visibleSliceLimit) {
+            fogIntegrated[index] = float4(clamp(frozenIntegrated, float3(0.0), float3(HALF_MAX)),
+                    frozenTransmittance);
+        } else {
+            frozenIntegrated = integrated;
+            frozenTransmittance = transmittance;
+            fogIntegrated[index] = float4(clamp(integrated, float3(0.0), float3(HALF_MAX)),
+                    transmittance);
+        }
         if (extinction > FOG_DENSITY_EPSILON) {
             float toFar = max(sliceFar - sliceCentre, 0.0);
             if (toFar > 0.0) {

@@ -423,6 +423,80 @@ final class RtVolumetricFogGridTest {
                         + FOG_STALENESS_SIGMA);
     }
 
+    /**
+     * The occlusion bound must be enforced by FREEZING the stored prefix past the surface, never by
+     * clamping the composite's sample coordinate.
+     *
+     * <p>Clamping is quantisation, and because slices are radial a quantised distance coordinate draws
+     * concentric spherical shells — the rings reported on walls. Two attempts tried to clamp "only when
+     * necessary"; this test pins why that could never work. The visible limit equals
+     * {@code floor(coordinate)} at essentially every distance, so a guard of the form
+     * {@code floor(c) + 1 > limit} is tautologically true and the coordinate was snapped everywhere.
+     */
+    @Test
+    void visibleLimitEqualsFloorOfTheSampleCoordinate() {
+        final int slices = 64;
+        int agree = 0;
+        int total = 0;
+        for (int i = 0; i < 400; i++) {
+            double distance = 1.0 + i * 0.4;
+            double coordinate = Math.max(distanceToSlice(distance, slices) - 0.5, 0.0);
+            if (visibleSliceLimit(distance, slices) == (int) Math.floor(coordinate)) {
+                agree++;
+            }
+            total++;
+        }
+        assertTrue(agree > total * 0.95,
+                "the limit tracks floor(coordinate), so a conditional clamp fires everywhere: "
+                        + agree + "/" + total);
+    }
+
+    /**
+     * With the prefix frozen past the surface, the composite's read varies smoothly with distance. The
+     * largest step between neighbouring pixel distances must not exceed one slice's worth of
+     * accumulation — anything more is a discontinuity, which on a wall reads as a ring.
+     */
+    @Test
+    void frozenPrefixKeepsTheCompositeReadContinuous() {
+        final int slices = 64;
+        final double perSlice = 0.02;
+        double previous = Double.NaN;
+        double maxJump = 0.0;
+        for (int i = 0; i < 500; i++) {
+            double distance = 3.0 + i * 0.03;
+            double value = frozenRead(distance, slices, perSlice);
+            if (!Double.isNaN(previous)) {
+                maxJump = Math.max(maxJump, Math.abs(value - previous));
+            }
+            previous = value;
+        }
+        assertTrue(maxJump <= perSlice + 1.0e-9,
+                "read must not jump more than one slice of accumulation, got " + maxJump);
+    }
+
+    /** Mirrors the frozen prefix the integration writes, then the composite's unclamped fetch. */
+    private static double frozenRead(double wall, int slices, double perSlice) {
+        int limit = visibleSliceLimit(wall, slices);
+        double[] prefix = new double[slices];
+        double accumulated = 0.0;
+        double frozen = 0.0;
+        for (int s = 0; s < slices; s++) {
+            if (s > limit) {
+                prefix[s] = frozen;
+                continue;
+            }
+            double centre = 0.5 * (sliceDistance(s, slices) + sliceDistance(s + 1, slices));
+            accumulated += centre > wall ? 20.0 : perSlice;
+            frozen = accumulated;
+            prefix[s] = accumulated;
+        }
+        double coordinate = Math.clamp(distanceToSlice(wall, slices) - 0.5, 0.0, slices - 1);
+        int lo = (int) Math.floor(coordinate);
+        int hi = Math.min(lo + 1, slices - 1);
+        double f = coordinate - lo;
+        return prefix[lo] * (1.0 - f) + prefix[hi] * f;
+    }
+
     @Test
     void gridSizeIsPositiveAtEveryTier() {
         // gridSizeFor reads live config, so this only pins the arithmetic shape: a divisor must never

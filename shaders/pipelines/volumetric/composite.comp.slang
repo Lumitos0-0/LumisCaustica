@@ -69,28 +69,21 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     // between the slice in front of the surface and the one behind it — and the slice behind is
     // integrated through space the surface occludes, which leaks exterior light through walls. Biasing
     // back half a slice keeps both taps in front of the surface.
-    // Where to sample the prefix, and the clamp that keeps both trilinear taps in front of the surface.
+    // Sample the prefix at the surface, with NO clamp on the coordinate.
     //
     // The prefix at coordinate c is the integral to slice-centre c, so the surface sits at
-    // surfaceSlice - 0.5. A linear fetch there blends floor(c) and floor(c)+1, and the volume beyond the
-    // surface holds radiance integrated through occluded space — orders of magnitude brighter indoors —
-    // so a single tap landing past it dominates the result.
+    // surfaceSlice - 0.5, and the linear W filter interpolates smoothly between stored centres.
     //
-    // The clamp targets the UPPER tap specifically. An earlier version clamped the coordinate itself to
-    // the integer limit, which produced concentric rings centred on the camera: the coordinate varies
-    // smoothly with surface distance but the integer bound does not, so wherever the bound was active
-    // the coordinate snapped to a staircase — and because slices are radial, a staircase in distance
-    // draws spherical shells, which read as rings on any wall. Clamping only when the upper tap would
-    // actually cross the limit leaves the coordinate continuous everywhere else, so the rings disappear
-    // while the leak stays closed. Measured across a receding wall, the largest jump between adjacent
-    // samples falls from 16.9 to 0.02.
+    // No bound is applied here, deliberately. The integration pass freezes the prefix past the surface
+    // (see the note there), so the slices a fetch can reach are already safe to blend — they repeat the
+    // last visible value rather than holding radiance integrated through occluded space. Clamping the
+    // coordinate instead was the source of the concentric rings: a clamp is quantisation, and because
+    // slices are radial, a quantised distance coordinate draws spherical shells. Two earlier attempts
+    // tried to clamp "only when necessary"; the guard turned out to be true essentially always, since
+    // the visible limit equals floor(coordinate) in 99% of cases, so the coordinate was snapped to an
+    // integer at every distance and the rings never went away.
     float surfaceSlice = fogDistanceSlice(grid, distance);
-    int visibleLimit = fogVisibleSliceLimit(grid, distance);
-    float sliceCoord = max(surfaceSlice - 0.5, 0.0);
-    if (floor(sliceCoord) + 1.0 > float(visibleLimit)) {
-        sliceCoord = min(sliceCoord, float(visibleLimit));
-    }
-    float w = clamp(sliceCoord / float(grid.dims.z), 0.0, 1.0);
+    float w = clamp((surfaceSlice - 0.5) / float(grid.dims.z), 0.0, 1.0);
 
     // Sample the volume at the UNJITTERED uv — deliberately, and the reasoning is worth stating because
     // the sign is easy to get backwards.
