@@ -69,8 +69,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     // between the slice in front of the surface and the one behind it — and the slice behind is
     // integrated through space the surface occludes, which leaks exterior light through walls. Biasing
     // back half a slice keeps both taps in front of the surface.
+    // Clamped so the linear W filter's UPPER tap cannot exceed the last fully-visible slice. The
+    // integration pass bounds its own filters to exactly that slice, so without this clamp the
+    // composite would be the one pass still able to reach past the surface — and the volume beyond it
+    // holds radiance integrated through occluded space.
     float surfaceSlice = fogDistanceSlice(grid, distance);
-    float w = clamp((surfaceSlice - 0.5) / float(grid.dims.z), 0.0, 1.0);
+    int visibleLimit = fogVisibleSliceLimit(grid, distance);
+    float sliceCoord = min(surfaceSlice - 0.5, float(visibleLimit));
+    float w = clamp(sliceCoord / float(grid.dims.z), 0.0, 1.0);
 
     // Sample the volume at the UNJITTERED uv — deliberately, and the reasoning is worth stating because
     // the sign is easy to get backwards.

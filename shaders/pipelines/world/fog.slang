@@ -43,6 +43,30 @@ public static const float FOG_DISOCCLUSION_FRAMES       = 2.0;
 public static const float FOG_ZBLUR_NOISY_FRAMES     = 2.0;
 public static const float FOG_ZBLUR_SETTLING_FRAMES  = 5.0;
 
+/**
+ * Last slice of a column that lies entirely in front of a surface at `distance`.
+ *
+ * Every slice past this one integrates light through space the surface occludes, so any filter that
+ * reads one drags exterior radiance into the visible column — sunlight painted on the inside of a wall.
+ * That failure has recurred from three separate filters in this system, so the bound is defined once,
+ * here, and both the integration and the composite are held to it.
+ *
+ * A slice is fully visible only if it STARTS before the surface: the slice containing the surface
+ * straddles it and its sample position can sit beyond, so it does not qualify.
+ */
+public int fogVisibleSliceLimit(FogGrid g, float distance) {
+    int slice = int(floor(fogDistanceSlice(g, distance)));
+    slice = clamp(slice, 0, g.dims.z - 1);
+    // Walk back while the slice's near edge is already past the surface.
+    for (int i = 0; i < 3; ++i) {
+        if (slice <= 0 || fogSliceDistance(g, float(slice)) <= distance) {
+            break;
+        }
+        --slice;
+    }
+    return slice;
+}
+
 // Below this extinction a froxel contributes nothing a half can represent over a whole slice, so the
 // injection pass skips its shadow ray entirely. With the default height falloff this culls most of the
 // grid in clear weather, which is the single largest performance lever in the system.

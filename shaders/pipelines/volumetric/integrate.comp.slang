@@ -40,6 +40,58 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
     // see the note at the blend below. fogTemporal.yz are unused by the current filter.
     float alphaFloor = worldPush.fogTemporal.x;
 
+    // Last slice of this column that any pixel can actually see through.
+    //
+    // Every froxel past the g-buffer surface is integrating light through space that surface occludes.
+    // The composite already stops there, but ANY filter that reaches beyond it drags exterior radiance
+    // back into the visible part of the column — sunlight painted on the inside of a wall. That failure
+    // has now recurred three times in this system, from three different filters, so the boundary is
+    // computed once here and every filter below is clamped to it rather than each re-deriving it.
+    //
+    // Conservative across the column's whole screen footprint: the FARTHEST surface any pixel in the
+    // tile sees, so a tile straddling a silhouette keeps the slices its background pixels still need.
+    // Reversed-Z, so the farthest surface is the SMALLEST depth value.
+    int visibleSliceLimit = grid.dims.z - 1;
+    {
+        uint2 depthDims;
+        sceneDepth.GetDimensions(depthDims.x, depthDims.y);
+        float2 scale = float2(depthDims) / float2(grid.dims.xy);
+        float2 base = float2(column) * scale;
+        int2 lo = int2(clamp(base, float2(0.0), float2(depthDims) - 1.0));
+        int2 hi = int2(clamp(base + scale - 1.0, float2(0.0), float2(depthDims) - 1.0));
+        float minDepth = 1.0;
+        bool sawSky = false;
+        for (int ty = 0; ty <= 1; ++ty) {
+            for (int tx = 0; tx <= 1; ++tx) {
+                float d = sceneDepth[int2(tx == 0 ? lo.x : hi.x, ty == 0 ? lo.y : hi.y)];
+                if (d <= 0.0) {
+                    sawSky = true;
+                } else {
+                    minDepth = min(minDepth, d);
+                }
+            }
+        }
+        int2 mid = (lo + hi) / 2;
+        float dm = sceneDepth[mid];
+        if (dm <= 0.0) {
+            sawSky = true;
+        } else {
+            minDepth = min(minDepth, dm);
+        }
+        // Sky anywhere in the tile means nothing bounds this column.
+        if (!sawSky && minDepth < 1.0) {
+            float2 uv = (float2(column) + 0.5) / float2(grid.dims.xy) + gridJitter;
+            float2 ndc = uv * 2.0 - 1.0;
+            float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
+            float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, minDepth, 1.0));
+            if (nearH.w != 0.0 && farH.w > 0.0) {
+                float surfaceDistance = length(farH.xyz / farH.w - nearH.xyz / nearH.w);
+                visibleSliceLimit = fogVisibleSliceLimit(grid, surfaceDistance);
+                visibleSliceLimit = clamp(visibleSliceLimit, 0, grid.dims.z - 1);
+            }
+        }
+    }
+
     // The phase is applied HERE, per frame, from the current ray direction — the injection stores a
     // phaseless value precisely so that camera rotation cannot leave a tail of stale phase in the
     // history. Only the direction is needed, and skyState is a pure function of the push block, so no
@@ -137,12 +189,20 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
         //    never accumulated at all.
         float alpha;
         {
+            // Clamped to the visible span for the same reason as the blur below: averaging across the
+            // surface would let exterior radiance set the confidence interval, which both corrupts the
+            // seed value and makes the staleness test judge interior froxels against outdoor light.
             float localSum = 0.0;
+            float localCount = 0.0;
             for (int d = -FOG_STALENESS_TAPS; d <= FOG_STALENESS_TAPS; ++d) {
-                int neighbour = clamp(slice + d, 0, grid.dims.z - 1);
+                int neighbour = slice + d;
+                if (neighbour < 0 || neighbour > visibleSliceLimit) {
+                    continue;
+                }
                 localSum += fogLuminance(fogScatter[int3(column, neighbour)].rgb);
+                localCount += 1.0;
             }
-            float local = localSum / float(2 * FOG_STALENESS_TAPS + 1);
+            float local = localCount > 0.0 ? localSum / localCount : fogLuminance(raw);
 
             float historyLength;
             if (reprojected) {
@@ -151,7 +211,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
                 // toward zero for dim ones, making the test almost infinitely strict exactly where the
                 // fog is faintest.
                 float variance = max(local * (1.0 - local), 0.0);
-                float standardError = max(sqrt(variance / float(2 * FOG_STALENESS_TAPS + 1)),
+                float standardError = max(sqrt(variance / max(localCount, 1.0)),
                         FOG_STALENESS_MIN_ERROR);
                 float bound = FOG_STALENESS_SIGMA * standardError;
                 float historyLuma = fogLuminance(history.rgb);
@@ -207,7 +267,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID) {
                     continue;
                 }
                 int neighbour = slice + d;
-                if (neighbour < 0 || neighbour >= grid.dims.z) {
+                if (neighbour < 0 || neighbour > visibleSliceLimit) {
                     continue;
                 }
                 // Trailing taps come from this frame's already-blended results, held in a small

@@ -266,6 +266,74 @@ final class RtVolumetricFogGridTest {
         return historyLength <= FOG_ZBLUR_SETTLING_FRAMES ? 1 : 0;
     }
 
+    /**
+     * No filter inside a froxel column may read past the g-buffer surface. Every slice beyond it
+     * integrates light through space that surface occludes, so averaging one in paints exterior
+     * radiance onto interior geometry — sunlight glowing on the inside of a wall.
+     *
+     * <p>This failure recurred three times from three different filters: a depth cull writing
+     * fabricated values, a composite fetch straddling the surface, and a Z blur reaching past it. The
+     * bound is therefore defined once in {@code fog.slang} and every reader is held to it, rather than
+     * each filter re-deriving it and one of them getting it wrong.
+     *
+     * <p>A slice qualifies only if it STARTS in front of the surface. The slice containing the surface
+     * straddles it and its sample position can sit beyond, so it does not count.
+     */
+    @Test
+    void visibleSliceLimitNeverReachesPastTheSurface() {
+        final int slices = 112;
+        for (double wall : new double[]{1.0, 2.0, 3.0, 6.0, 12.0, 30.0, 80.0, 150.0}) {
+            int limit = visibleSliceLimit(wall, slices);
+            assertTrue(sliceDistance(limit, slices) <= wall,
+                    "limit slice must start in front of the surface at wall " + wall
+                            + ", got slice " + limit + " starting at " + sliceDistance(limit, slices));
+            assertTrue(limit >= 0 && limit < slices, "limit must stay in range at wall " + wall);
+        }
+    }
+
+    /**
+     * The composite must clamp its own W coordinate to that same bound. Its linear filter reaches half
+     * a slice past the coordinate it is given, so an unclamped fetch would be the one remaining reader
+     * able to sample occluded space — measured as a 160x overshoot on interior fog before the clamp.
+     */
+    @Test
+    void compositeClampsItsFetchToTheVisibleSpan() {
+        final int slices = 112;
+        for (double wall : new double[]{1.0, 2.0, 3.0, 6.0, 30.0}) {
+            int limit = visibleSliceLimit(wall, slices);
+            double requested = distanceToSlice(wall, slices) - 0.5;
+            double clamped = Math.min(requested, limit);
+            assertTrue(clamped <= limit + 1.0e-6,
+                    "clamped fetch must not exceed the visible span at wall " + wall);
+            assertTrue(clamped <= requested + 1.0e-6,
+                    "the clamp must never push the fetch further from the camera at wall " + wall);
+        }
+    }
+
+    /** Mirrors {@code fogVisibleSliceLimit} in {@code shaders/pipelines/world/fog.slang}. */
+    private static int visibleSliceLimit(double distance, int slices) {
+        int slice = (int) Math.floor(distanceToSlice(distance, slices));
+        slice = Math.clamp(slice, 0, slices - 1);
+        for (int i = 0; i < 3; i++) {
+            if (slice <= 0 || sliceDistance(slice, slices) <= distance) {
+                break;
+            }
+            slice--;
+        }
+        return slice;
+    }
+
+    /** Mirrors {@code fogSliceDistance} / {@code fogDistanceSlice} for the default grid. */
+    private static double sliceDistance(int slice, int slices) {
+        double n = Math.clamp((double) slice / slices, 0.0, 1.0);
+        return 0.25 + (192.0 - 0.25) * Math.pow(n, 2.0);
+    }
+
+    private static double distanceToSlice(double distance, int slices) {
+        double n = Math.clamp((distance - 0.25) / (192.0 - 0.25), 0.0, 1.0);
+        return slices * Math.pow(n, 1.0 / 2.0);
+    }
+
     @Test
     void gridSizeIsPositiveAtEveryTier() {
         // gridSizeFor reads live config, so this only pins the arithmetic shape: a divisor must never
