@@ -60,7 +60,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     volumeCameraRay(push.invViewProj, uv, origin, dir);
 
     float surfaceT = volumeSurfaceDistance(push.invViewProj, uv, depthImage[pixel], m.maxDistance);
-    float segment = min(surfaceT, m.maxDistance);
+    float segment = volumeSanitizeScalar(min(surfaceT, m.maxDistance), m.maxDistance);
 
     float originDensity = volumeDensity(m, origin.y, push.camOffset.y);
     float sigmaBar = volumeMeanExtinction(m);
@@ -74,7 +74,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // would be as noisy as the signal itself.
     float meanDistance = volumeDistanceForOpticalDepth(m, originDensity, dir.y,
             volumeMeanOpticalDepth(sigmaBar, tauMax));
-    meanDistance = clamp(meanDistance, 0.0, segment);
+    meanDistance = volumeSanitizeScalar(min(meanDistance, segment), m.maxDistance);
 
     CelestialLight light = dominantCelestialLight(sky, transmittanceLut);
     if (tauMax <= 1.0e-7 || !any(light.illuminance > float3(0.0, 0.0, 0.0))) {
@@ -87,7 +87,10 @@ void main(uint3 tid : SV_DispatchThreadID) {
     uint seed = volumeSeed(pixel, push.frameIndex, 7u);
     float range = 1.0 - exp(-sigmaBar * tauMax);
     float tau = -log(max(1.0 - volumeRandom(seed) * range, 1.0e-8)) / sigmaBar;
-    float pdf = sigmaBar * exp(-sigmaBar * tau) / max(range, 1.0e-8);
+    // The pdf floor bounds the estimator's weight. Far out along the segment exp(-sigmaBar*tau)
+    // underflows, and the transmittance factor in the numerator that would otherwise cancel it is
+    // evaluated per channel, so the two do not vanish together.
+    float pdf = max(sigmaBar * exp(-sigmaBar * tau) / max(range, 1.0e-8), 1.0e-12);
     float t = min(volumeDistanceForOpticalDepth(m, originDensity, dir.y, tau), segment);
     float3 cameraRelative = origin + dir * t;
 
@@ -103,9 +106,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
         // cos(theta) between the light's arrival direction and the view ray, in the convention
         // volumeHgPhase is written for: g > 0 brightens the halo when looking toward the body.
         float phase = volumeHgPhase(m.anisotropy, dot(toLight, dir));
-        inScatter = volumeScattering(m) * light.illuminance * phase
-                * volumeTransmittance(m, tau) * m.shaftIntensity / pdf;
+        // Clamped before it is stored: this buffer is rgba16f and the value is absolute radiance, so
+        // the phase function's forward peak under a strong anisotropy setting reaches half-float's
+        // limit, and the temporal resolve downstream would keep the resulting infinity alive forever.
+        inScatter = volumeSanitize(volumeScattering(m) * light.illuminance * phase
+                * volumeTransmittance(m, tau) * m.shaftIntensity / pdf);
     }
 
-    shaftRawImage[pixel] = float4(inScatter, meanDistance);
+    shaftRawImage[pixel] = float4(inScatter, volumeSanitizeScalar(meanDistance, m.maxDistance));
 }

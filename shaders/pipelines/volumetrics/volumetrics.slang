@@ -32,6 +32,25 @@ public static const float VOLUME_DEPTH_EXPONENT = 2.0;
 // by the density at the ray origin, and a camera far above the fog layer drives that to zero.
 public static const float VOLUME_MIN_DENSITY = 1.0e-6;
 
+// Ceiling on any radiance stored in a volumetric buffer, in cd/m^2.
+//
+// These buffers are rgba16f and hold radiance BEFORE the pre-exposure scale, so the numbers in them are
+// absolute: at noon a shaft's in-scatter is tens of thousands, and the phase function's forward peak
+// multiplies that by another order of magnitude as anisotropy approaches 1. Half-float saturates to
+// infinity at 65504, and an infinity here does not stay local — see volumeSanitize. The ceiling is set
+// far enough below the format's limit that no product of a clamped value can reach it either.
+public static const float VOLUME_MAX_RADIANCE = 16384.0;
+
+// Ceiling for the composite's write into the display image. That image is also rgba16f, but it carries
+// PRE-EXPOSED values whose scale is chosen so the scene sits near the exposure key, so a fog-specific
+// ceiling would clip the scene itself. This bounds only the format.
+public static const float VOLUME_MAX_STORED = 60000.0;
+
+// Ceiling on a stored optical depth. A downward ray through an exponential layer accumulates
+// density faster than distance, so this is far above any transmittance that resolves to a visible
+// value; it exists to keep the exponential's argument finite, not to shape the fog.
+public static const float VOLUME_MAX_OPTICAL_DEPTH = 1.0e4;
+
 // How far a froxel's sky-visibility ray looks before giving up and calling the sky unoccluded. Sized
 // for Minecraft interiors: it has to clear a tall cave or a deep shaft, but every extra block is paid
 // on every froxel. Past this the fog under a very large overhang reads slightly too bright.
@@ -53,6 +72,43 @@ public static const uint VOLUME_DEBUG_SHAFT_RAW = 2u;
 public static const uint VOLUME_DEBUG_SHAFT_FILTERED = 3u;
 public static const uint VOLUME_DEBUG_TRANSMITTANCE = 4u;
 public static const uint VOLUME_DEBUG_HISTORY = 5u;
+
+// ---- Numerical guards ---------------------------------------------------------------------------
+//
+// Every value that enters or leaves a temporal buffer passes through one of these.
+//
+// A single infinity or NaN in a volumetric buffer is not a local defect the next frame overwrites. The
+// temporal passes blend history forward unconditionally, so a poisoned texel survives for as long as
+// its history lives; the reprojected fetch is filtered and the neighbourhood statistics in the shaft
+// resolve read a 3x3 window, so each frame hands the value to every neighbour. The corruption therefore
+// grows across the screen instead of decaying. It also escapes the system: the composite writes into
+// the image auto-exposure meters, so one bad pixel drags the exposure of the entire frame.
+//
+// Infinities arise here for an ordinary reason rather than a pathological one. These buffers are
+// rgba16f and hold absolute radiance, and a forward-scattering phase function aimed at the sun produces
+// values within one order of magnitude of half-float's limit at default settings. Clamping is what
+// keeps a legitimate bright sample from becoming a permanent one.
+
+/** Clamps a radiance into `ceiling`, mapping every non-finite component to zero. */
+public float3 volumeSanitizeTo(float3 v, float ceiling) {
+    float3 result;
+    [unroll]
+    for (int c = 0; c < 3; c++) {
+        float x = v[c];
+        result[c] = isfinite(x) ? clamp(x, 0.0, ceiling) : 0.0;
+    }
+    return result;
+}
+
+/** Clamps a radiance destined for one of the volumetric buffers. */
+public float3 volumeSanitize(float3 v) {
+    return volumeSanitizeTo(v, VOLUME_MAX_RADIANCE);
+}
+
+/** Scalar form, for the distance and frame-count channels the colour buffers carry alongside rgb. */
+public float volumeSanitizeScalar(float v, float ceiling) {
+    return isfinite(v) ? clamp(v, 0.0, ceiling) : 0.0;
+}
 
 // ---- Hashing ------------------------------------------------------------------------------------
 //

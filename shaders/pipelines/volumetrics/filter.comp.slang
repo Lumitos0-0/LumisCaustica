@@ -45,11 +45,11 @@ void main(uint3 tid : SV_DispatchThreadID) {
             float spatial = (dx == 0 && dy == 0) ? 1.0 : ((dx == 0 || dy == 0) ? 0.5 : 0.25);
             float depth = exp(-abs(tap.a - centreDistance) / tolerance);
             float weight = spatial * depth;
-            sum += tap.rgb * weight;
+            sum += volumeSanitize(tap.rgb) * weight;
             weightSum += weight;
         }
     }
 
     float3 filtered = weightSum > 0.0 ? sum / weightSum : centre.rgb;
-    shaftFilteredImage[pixel] = float4(filtered, centreDistance);
+    shaftFilteredImage[pixel] = float4(volumeSanitize(filtered), centreDistance);
 }

@@ -44,15 +44,17 @@ void main(uint3 tid : SV_DispatchThreadID) {
     for (uint z = 0u; z < pc.gridZ; z++) {
         float farW = float(z + 1u) / float(pc.gridZ);
         float farT = volumeSliceDistance(m, farW);
-        float tau = volumeOpticalDepth(m, originDensity, dir.y, farT);
+        float tau = volumeSanitizeScalar(volumeOpticalDepth(m, originDensity, dir.y, farT),
+                VOLUME_MAX_OPTICAL_DEPTH);
         float deltaTau = max(tau - previousTau, 0.0);
         float sliceLength = max(farT - previousT, 0.0);
 
         float centreW = (float(z) + 0.5) / float(pc.gridZ);
-        float3 scatter = volumeAccumCur.SampleLevel(float3(uv, centreW), 0.0).rgb;
+        float3 scatter = volumeSanitize(volumeAccumCur.SampleLevel(float3(uv, centreW), 0.0).rgb);
 
         accumulated += volumeTransmittance(m, previousTau)
                 * volumeSliceIntegral(m, scatter, deltaTau, sliceLength);
+        accumulated = volumeSanitize(accumulated);
 
         volumeIntegratedImage[uint3(tid.xy, z)] = float4(accumulated, tau);
 

@@ -80,7 +80,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     for (int i = 0; i < 4; i++) {
         float weight = bilinear[i] * exp(-abs(distances[i] - reference) / tolerance);
         uint2 tap = uint2(clamp(base + offsets[i], int2(0, 0), int2(renderSize) - 1));
-        shaft += shaftFilteredImage[tap].rgb * weight;
+        shaft += volumeSanitize(shaftFilteredImage[tap].rgb) * weight;
         shaftWeight += weight;
     }
     shaft = shaftWeight > 0.0 ? shaft / shaftWeight : float3(0.0, 0.0, 0.0);
@@ -94,17 +94,21 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // is centimetres; in the outermost ones, where the w^2 distribution has stretched a slice to ten
     // blocks or more, it is a visible thickening of distant fog.
     float slice = saturate(volumeSliceCoord(m, reference) - 0.5 / float(pc.gridZ));
-    float3 ambient = volumeIntegratedLut.SampleLevel(float3(uv, slice), 0.0).rgb;
+    float3 ambient = volumeSanitize(volumeIntegratedLut.SampleLevel(float3(uv, slice), 0.0).rgb);
 
     // Transmittance is evaluated analytically per display pixel rather than read from the volume: it is
     // exact, it costs less than the fetch, and it carries no grid-resolution blur into the one term
     // that multiplies the whole rendered image.
     float originDensity = volumeDensity(m, origin.y, push.camOffset.y);
-    float tau = volumeOpticalDepth(m, originDensity, dir.y, reference);
+    float tau = volumeSanitizeScalar(volumeOpticalDepth(m, originDensity, dir.y, reference),
+            VOLUME_MAX_OPTICAL_DEPTH);
     float3 transmittance = volumeTransmittance(m, tau);
 
+    // In-scatter is absolute cd/m^2 and the scene is pre-exposed, so the added term is scaled to match.
+    // At night the pre-exposure that centres a dim scene is large, and it multiplies a shaft computed in
+    // absolute units, so the product is bounded here as well as at the source.
     float4 scene = sceneImage[pixel];
-    float3 inScatter = (ambient + shaft) * push.preExposure;
+    float3 inScatter = volumeSanitizeTo((ambient + shaft) * push.preExposure, VOLUME_MAX_STORED);
     float3 result = scene.rgb * transmittance + inScatter;
 
     switch (pc.debugView) {
@@ -131,5 +135,9 @@ void main(uint3 tid : SV_DispatchThreadID) {
             break;
     }
 
-    sceneImage[pixel] = float4(result, scene.a);
+    // Last gate before the image leaves this pass. Auto-exposure meters this same target and bloom
+    // downsamples it, so a single non-finite pixel here does not stay a single pixel: it poisons the
+    // frame's exposure and smears through the bloom pyramid. The ceiling is the storage format's, not a
+    // fog-specific one, so nothing the scene already carried can be clipped by it.
+    sceneImage[pixel] = float4(volumeSanitizeTo(result, VOLUME_MAX_STORED), scene.a);
 }

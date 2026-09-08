@@ -24,9 +24,11 @@ import org.lwjgl.vulkan.VkCommandPoolCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkFenceCreateInfo;
 import org.lwjgl.vulkan.VkFormatProperties;
+import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkImageCreateInfo;
 import org.lwjgl.vulkan.VkImageFormatProperties;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkImageViewCreateInfo;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkPhysicalDeviceAccelerationStructurePropertiesKHR;
@@ -406,6 +408,16 @@ public final class RtContext {
                 b.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
                 VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                         0, null, null, b);
+                // Zero the contents. A freshly allocated image holds whatever was last in that memory,
+                // and for a float format those bit patterns are frequently infinities or NaNs. Any pass
+                // that accumulates into its own previous result would trap one of those permanently, so
+                // "the first read happens before the first write" has to be true by construction rather
+                // than by inspection of each consumer.
+                VkClearColorValue clear = VkClearColorValue.calloc(stack);
+                VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+                VK10.vkCmdClearColorImage(cmd, imageFinal, VK10.VK_IMAGE_LAYOUT_GENERAL, clear, range);
             }
         });
         return new RtImage(vma, vk, image, allocation, view, width, height, depth);

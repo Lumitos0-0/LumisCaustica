@@ -38,10 +38,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
     WorldPush push = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
 
     float4 raw = shaftRawImage[pixel];
-    float3 current = raw.rgb;
-    float meanDistance = raw.a;
+    float3 current = volumeSanitize(raw.rgb);
+    float meanDistance = volumeSanitizeScalar(raw.a, VOLUME_MAX_RADIANCE);
 
-    // Colour moments of the raw 3x3, for the clamp below.
+    // Colour moments of the raw 3x3, for the clamp below. Every tap is sanitised first: the second
+    // moment squares its input, so one non-finite neighbour would turn the variance into a NaN and the
+    // clamp below would then write that NaN into the history for every pixel in this window.
     float3 sum = float3(0.0, 0.0, 0.0);
     float3 sumSquares = float3(0.0, 0.0, 0.0);
     int taps = 0;
@@ -52,7 +54,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
                     || neighbour.x >= int(pc.renderW) || neighbour.y >= int(pc.renderH)) {
                 continue;
             }
-            float3 value = shaftRawImage[uint2(neighbour)].rgb;
+            float3 value = volumeSanitize(shaftRawImage[uint2(neighbour)].rgb);
             sum += value;
             sumSquares += value * value;
             taps++;
@@ -78,19 +80,25 @@ void main(uint3 tid : SV_DispatchThreadID) {
             // Nearest fetch for the age: it is a counter, and interpolating it across a disocclusion
             // boundary would hand a freshly-revealed pixel a long history it never had.
             uint2 historyPixel = uint2(clamp(reprojected.xy * size, float2(0.0, 0.0), size - 1.0));
-            float historyAge = shaftAgePrev[historyPixel];
+            float historyAge = volumeSanitizeScalar(shaftAgePrev[historyPixel],
+                    float(max(pc.maxAccumFrames, 1u)));
+            // Sanitising history on READ is what lets a corrupted texel heal. Every other path here
+            // blends the previous value forward unconditionally, so without this one bad frame is
+            // permanent and the neighbourhood statistics above spread it a pixel further each frame.
+            float3 historyColor = volumeSanitize(history.rgb);
+            float historyDistance = volumeSanitizeScalar(history.a, VOLUME_MAX_RADIANCE);
 
-            float distanceDelta = abs(history.a - meanDistance);
+            float distanceDelta = abs(historyDistance - meanDistance);
             bool consistent = distanceDelta
-                    <= DISTANCE_REJECT_FRACTION * max(meanDistance, 1.0) && historyAge > 0.0;
+                    <= DISTANCE_REJECT_FRACTION * max(meanDistance, 1.0) && historyAge >= 1.0;
             if (consistent) {
-                float3 clamped = clamp(history.rgb, mean - deviation, mean + deviation);
+                float3 clamped = clamp(historyColor, mean - deviation, mean + deviation);
                 frames = min(historyAge + 1.0, float(max(pc.maxAccumFrames, 1u)));
                 resolved = lerp(clamped, current, 1.0 / max(frames, 1.0));
             }
         }
     }
 
-    shaftAccumImage[pixel] = float4(resolved, meanDistance);
+    shaftAccumImage[pixel] = float4(volumeSanitize(resolved), meanDistance);
     shaftAgeImage[pixel] = frames;
 }

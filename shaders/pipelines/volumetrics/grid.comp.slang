@@ -52,7 +52,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
     // Phase-importance-sampled sky direction, then the sky radiance arriving from it.
     float3 omega = volumeSampleHg(m.anisotropy, dir, volumeRandom2(seed));
-    float3 radiance = volumeSkyRadiance(skyViewLut, sky, omega);
+    float3 radiance = volumeSanitize(volumeSkyRadiance(skyViewLut, sky, omega));
 
     // Sky visibility. Without it the fog inside a cave is lit by the full open sky and the cave fills
     // with glowing soup; this single ray, accumulated, is the difference between fog and that.
@@ -62,7 +62,9 @@ void main(uint3 tid : SV_DispatchThreadID) {
         }
     }
 
-    float3 inScatter = volumeScattering(m) * density * radiance * m.ambientIntensity;
+    // Sanitised before the luminance is taken: the clamp scales by FIREFLY/luminance, and on an
+    // infinite input that factor is zero, so the product would be a NaN rather than the clamped value.
+    float3 inScatter = volumeSanitize(volumeScattering(m) * density * radiance * m.ambientIntensity);
     float luminance = dot(inScatter, float3(0.2126, 0.7152, 0.0722));
     if (luminance > FIREFLY_LUMINANCE_CLAMP) {
         inScatter *= FIREFLY_LUMINANCE_CLAMP / luminance;
@@ -83,10 +85,16 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float prevW = volumeSliceCoord(m, length(cameraRelative + push.camDelta));
         if (reprojected.z > 0.0 && prevW > 0.0 && prevW < 1.0) {
             float4 history = volumeAccumPrev.SampleLevel(float3(reprojected.xy, prevW), 0.0);
-            frames = min(history.a + 1.0, float(max(pc.maxAccumFrames, 1u)));
-            accumulated = lerp(history.rgb, inScatter, 1.0 / max(frames, 1.0));
+            // Sanitised on READ, which is what lets a corrupted froxel heal: the blend below carries
+            // history forward for as long as it lives, and the fetch is trilinear, so an unchecked
+            // non-finite texel would reach all eight of its neighbours every frame.
+            float historyFrames = volumeSanitizeScalar(history.a, float(max(pc.maxAccumFrames, 1u)));
+            if (historyFrames >= 1.0) {
+                frames = min(historyFrames + 1.0, float(max(pc.maxAccumFrames, 1u)));
+                accumulated = lerp(volumeSanitize(history.rgb), inScatter, 1.0 / max(frames, 1.0));
+            }
         }
     }
 
-    volumeAccumImage[tid] = float4(accumulated, frames);
+    volumeAccumImage[tid] = float4(volumeSanitize(accumulated), frames);
 }

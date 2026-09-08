@@ -721,10 +721,16 @@ public final class CausticaConfig {
              * base — about 4x at bedrock with the default. That is intentional (deep caves read as murky
              * rather than crystalline) but it is the reason to raise this value cautiously: the growth is
              * exponential in the depth below sea level, not in the height above it.
+             *
+             * <p>The upper bound exists because that growth has to stay representable. Optical depth is
+             * integrated analytically and stored in half-float buffers, and the exponent runs over the
+             * 126 blocks from sea level to bedrock, so a large falloff overflows the format long before
+             * it produces anything an artist would want. At the maximum the density already halves every
+             * 14 blocks, which is a fog that ends at knee height.
              */
             public static final FloatSetting HEIGHT_FALLOFF =
                     clampedFloat("caustica.rt.volumetrics.heightFalloff",
-                            "volumetrics.height-falloff", 0.012f, 0.0f, 1.0f);
+                            "volumetrics.height-falloff", 0.012f, 0.0f, 0.05f);
             /** Absolute world Y the configured transmittance is measured at. Sea level by default. */
             public static final FloatSetting HEIGHT_BASE =
                     finiteFloat("caustica.rt.volumetrics.heightBase", "volumetrics.height-base", 62.0f);
