@@ -49,6 +49,10 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricFog(),
+            volumetricQuality(),
+            volumetricDensity(),
+            volumetricAnisotropy(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -133,6 +137,56 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    private static OptionInstance<Boolean> volumetricFog() {
+        return bool("caustica.options.rt.volumetrics", CausticaConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    /**
+     * Froxel-grid resolution preset. Changing it resizes the froxel volume, which goes through the same
+     * wait-idle rebuild as a window resize (see {@code RtComposite.ensureOutput}) rather than taking
+     * effect mid-frame.
+     */
+    private static OptionInstance<Integer> volumetricQuality() {
+        IntSetting setting = CausticaConfig.Rt.Volumetrics.QUALITY;
+        List<String> names = List.of("low", "medium", "high", "ultra");
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricQuality.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.translatable("caustica.options.rt.volumetricQuality." + names.get(value))),
+            new OptionInstance.IntRange(0, names.size() - 1),
+            Math.clamp(setting.value(), 0, names.size() - 1),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> volumetricDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricDensity.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 400),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
+            percent -> setting.set(percent / 100.0f));
+    }
+
+    /**
+     * Henyey-Greenstein g. Positive values scatter forward, which is what puts the bright halo around a
+     * low sun; the slider runs to both signs because the backscattering half is what a thin ground mist
+     * lit from behind the camera looks like.
+     */
+    private static OptionInstance<Integer> volumetricAnisotropy() {
+        FloatSetting setting = CausticaConfig.Rt.Volumetrics.ANISOTROPY;
+        return new OptionInstance<>(
+            "caustica.options.rt.volumetricAnisotropy",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.volumetricAnisotropy.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
+            new OptionInstance.IntRange(-90, 90),
+            Math.clamp(Math.round(setting.value() * 100.0f), -90, 90),
+            hundredths -> setting.set(hundredths / 100.0f));
     }
 
     private static OptionInstance<Integer> dlssQuality() {

@@ -60,6 +60,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtVolumetrics;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -177,6 +178,13 @@ public final class RtComposite {
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
+    // Zero extinction, which every volumetric formula reduces to a vacuum: transmittance exp(-0) = 1 and
+    // scattering 0. Used for the frames the fog is off, so WorldPush.fog is always a valid medium.
+    private static final WorldPushData.VolumetricMedium NO_FOG = new WorldPushData.VolumetricMedium(
+            new Float3(0f, 0f, 0f), 0f, new Float3(0f, 0f, 0f), 0f, 0f, 1f, 0f, 0f);
+    // Volumetric fog. Owns the froxel volumes, the shaft buffers and the six passes that fill them; its
+    // sized resources follow render/display resolution and the quality preset.
+    private RtVolumetrics volumetrics;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -258,6 +266,9 @@ public final class RtComposite {
     // toggled) at a fixed window size is noticed even though displayW/displayH didn't change.
     private boolean renderSizeRrEnabled;
     private int renderSizeRrQuality = Integer.MIN_VALUE;
+    // Volumetric quality changes the froxel volume's dimensions, so it goes through the same
+    // wait-idle rebuild every other sized resource does rather than being re-read per frame.
+    private int volumeQuality = Integer.MIN_VALUE;
 
     // Motion-vector reprojection state: the previous frame's camera-relative view-projection and
     // camera position, read into the push constant each frame then advanced at frame end.
@@ -603,6 +614,11 @@ public final class RtComposite {
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
+            if (volumetrics == null) {
+                // After skyLut: the volumetric passes sample its sky-view and transmittance LUTs, and
+                // ensureResources writes those views into both descriptor sets.
+                volumetrics = RtVolumetrics.create(ctx);
+            }
             if (sdrToneLut == null) {
                 sdrToneLut = RtToneLut.load(ctx, "sdr_aces2_rec709.bin");
             }
@@ -896,13 +912,16 @@ public final class RtComposite {
         // the RR path whose render-resolution guide inputs the debug pass visualizes.
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
+        int wantedVolumeQuality = CausticaConfig.Rt.Volumetrics.QUALITY.value();
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
+                && volumeQuality == wantedVolumeQuality) {
             return;
         }
+        volumeQuality = wantedVolumeQuality;
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
         if (displayImage != null) {
             displayImage.destroy();
@@ -971,6 +990,12 @@ public final class RtComposite {
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
+        // The volumetric composite writes rrOutput in place and its shaft pass reads gDepth, so its
+        // resources are sized and bound here, after both exist.
+        if (volumetrics != null && skyLut != null) {
+            volumetrics.ensureResources(renderW, renderH, width, height, rrOutput.view, gDepth.view,
+                    skyLut.skyViewView(), skyLut.transmittanceView(), skyLut.sampler());
+        }
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
         waterWaveTimeValid = false;
@@ -1080,6 +1105,16 @@ public final class RtComposite {
                 flags |= 0b10000; // animated water wave normals
             }
 
+            // Underwater is its own medium, handled by the path tracer's water extinction. Running the
+            // air fog on top would attenuate the image twice, so the volumetric passes sit out entirely
+            // while the eye is submerged; the history reset below covers re-entry.
+            boolean submerged = (flags & 0b01) != 0;
+            boolean volumetricsActive = volumetrics != null
+                    && CausticaConfig.Rt.Volumetrics.ENABLED.value() && !submerged;
+            if (!volumetricsActive && volumetrics != null) {
+                volumetrics.invalidateHistory();
+            }
+
             // Water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
             float wtr = 0.25f, wtg = 0.46f, wtb = 0.9f; // neutral ocean-ish default if no level/biome
@@ -1156,7 +1191,10 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    // Zero extinction when the fog is off or the eye is submerged, so anything reading
+                    // WorldPush.fog sees "no medium" rather than having to know why.
+                    volumetricsActive ? RtVolumetrics.medium(terrain.blockY) : NO_FOG
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1175,6 +1213,12 @@ public final class RtComposite {
                         graphicsUse);
             }
             active.setTlas(frameTlas.accel.handle, graphicsUse, graphicsUseWaiter);
+            if (volumetricsActive) {
+                // Rotates the volumetric descriptor set (which is also the temporal ping-pong) and binds
+                // this frame's TLAS into it, on the same two-slot rotation the trace pipeline uses.
+                volumetrics.beginFrame(frameTlas.accel.handle, graphicsUse, graphicsUseWaiter,
+                        terrain.blockY);
+            }
             currentTlasHandle = frameTlas.accel.handle;
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.recordTlas")) {
                 RtAccel.recordTlasBuild(ctx, cmd, frameTlas);
@@ -1201,6 +1245,14 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
 
+            // Froxel grid, before the trace: it reads only the sky LUTs and the TLAS, so running it here
+            // lets the scan's long serial walk along z overlap with nothing else competing for the same
+            // units, and its output is not needed until the composite.
+            if (volumetricsActive) {
+                volumetrics.recordGrid(cmd, stack, pushBuf.deviceAddress);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
@@ -1211,6 +1263,14 @@ public final class RtComposite {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+
+            // Shaft estimator + its own denoiser. Needs gDepth, so it cannot run before the trace; it is
+            // kept out of DLSS-RR because RR reprojects by surface motion and in-scatter has no surface.
+            if (volumetricsActive) {
+                volumetrics.recordShafts(cmd, stack, pushBuf.deviceAddress);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1233,7 +1293,14 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to the fog composite
+
+            // Fog goes on before exposure and bloom, both of which read rrOutput: a foggy scene really is
+            // brighter, so auto-exposure should meter it, and a sun shaft should feed the bloom pyramid.
+            if (volumetricsActive) {
+                volumetrics.recordComposite(cmd, stack, pushBuf.deviceAddress);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1502,6 +1569,10 @@ public final class RtComposite {
         if (bloomPipeline != null) {
             bloomPipeline.destroy();
             bloomPipeline = null;
+        }
+        if (volumetrics != null) {
+            volumetrics.destroy();
+            volumetrics = null;
         }
         if (skyLut != null) {
             skyLut.destroy();

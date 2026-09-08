@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.Volumetrics.ENABLED, Ngx.PATH,
         };
     }
 
@@ -106,6 +106,11 @@ public final class CausticaConfig {
                         + " ui-nits controls UI brightness; peak-nits must be 500, 1000, 2000, or 4000.");
         FILE.setComment("screenshots",
                 " exr-enabled saves an ACEScg EXR beside the normal F2 PNG while ray tracing is active.");
+        FILE.setComment("volumetrics",
+                " Volumetric fog and sun shafts.\n"
+                        + " transmittance-red/green/blue is the colour a white surface fades to over\n"
+                        + " measurement-distance blocks; density scales the result. quality is 0-3.\n"
+                        + " anisotropy above 0 brightens the haze around the sun.");
     }
 
     private static Path resolveConfigPath() {
@@ -649,6 +654,142 @@ public final class CausticaConfig {
                     bool("caustica.rt.blockOutline", "overlay.block-outline.enabled", true);
 
             private Overlay() {
+            }
+        }
+
+        /**
+         * Volumetric fog: a froxel grid carrying the sky's contribution plus a screen-space, path-traced
+         * sun/moon shaft pass.
+         *
+         * <p>The medium is described the way a lighting artist measures one, not the way the integrator
+         * consumes it: pick the colour a white surface fades to over {@link #MEASUREMENT_DISTANCE} blocks
+         * and the renderer derives the per-channel extinction as {@code -ln(transmittance) / distance}.
+         * A transmittance of 1 is a vacuum and 0 is opaque, so both ends are clamped away from the
+         * logarithm's singularities.
+         */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.volumetrics", "volumetrics.enabled", true);
+
+            /**
+             * Quality preset, indexing {@code RtVolumetrics.QualityPreset}. Only the froxel grid scales
+             * with it; the shaft pass stays at render resolution at every level, because dropping it to
+             * half resolution costs exactly the sharpness the pass exists to provide.
+             */
+            public static final IntSetting QUALITY =
+                    clampedInt("caustica.rt.volumetrics.quality", "volumetrics.quality", 2, 0, 3);
+
+            /** Multiplier on the derived extinction. The user-facing "density" control. */
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.volumetrics.density", "volumetrics.density", 1.0f, 0.0f, 4.0f);
+
+            /**
+             * Henyey-Greenstein g. Positive is forward scattering, which is what real fog and haze do and
+             * what produces the bright halo around a low sun. Negative would put the halo opposite the sun.
+             */
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.volumetrics.anisotropy", "volumetrics.anisotropy",
+                            0.6f, -0.9f, 0.9f);
+
+            /** Colour a white surface fades to at {@link #MEASUREMENT_DISTANCE}, in sRGB primaries. */
+            public static final FloatSetting TRANSMITTANCE_R =
+                    clampedFloat("caustica.rt.volumetrics.transmittanceR",
+                            "volumetrics.transmittance-red", 0.60f, 0.0f, 1.0f);
+            public static final FloatSetting TRANSMITTANCE_G =
+                    clampedFloat("caustica.rt.volumetrics.transmittanceG",
+                            "volumetrics.transmittance-green", 0.65f, 0.0f, 1.0f);
+            public static final FloatSetting TRANSMITTANCE_B =
+                    clampedFloat("caustica.rt.volumetrics.transmittanceB",
+                            "volumetrics.transmittance-blue", 0.75f, 0.0f, 1.0f);
+            public static final FloatSetting MEASUREMENT_DISTANCE =
+                    clampedFloat("caustica.rt.volumetrics.measurementDistance",
+                            "volumetrics.measurement-distance", 200.0f, 1.0f, 4096.0f);
+
+            /**
+             * Single-scattering albedo: the fraction of extinction that scatters rather than absorbs.
+             * Water droplets barely absorb visible light, so anything short of smoke sits near 1.
+             */
+            public static final FloatSetting ALBEDO =
+                    clampedFloat("caustica.rt.volumetrics.albedo", "volumetrics.albedo", 0.95f, 0.0f, 1.0f);
+
+            /**
+             * Exponential height falloff, in inverse blocks; 0 makes the fog uniform. The default halves
+             * the density roughly every 58 blocks above {@link #HEIGHT_BASE}, so valleys stay hazy and
+             * mountaintops clear.
+             *
+             * <p>The profile is a true exponential in both directions, so density also GROWS below the
+             * base — about 4x at bedrock with the default. That is intentional (deep caves read as murky
+             * rather than crystalline) but it is the reason to raise this value cautiously: the growth is
+             * exponential in the depth below sea level, not in the height above it.
+             */
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.volumetrics.heightFalloff",
+                            "volumetrics.height-falloff", 0.012f, 0.0f, 1.0f);
+            /** Absolute world Y the configured transmittance is measured at. Sea level by default. */
+            public static final FloatSetting HEIGHT_BASE =
+                    finiteFloat("caustica.rt.volumetrics.heightBase", "volumetrics.height-base", 62.0f);
+
+            /**
+             * Range of the local fog, in blocks. Past it the sky's own aerial perspective takes over, so
+             * pushing this much beyond the render distance buys nothing and stretches the froxel slices.
+             */
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.volumetrics.maxDistance",
+                            "volumetrics.max-distance", 160.0f, 8.0f, 1024.0f);
+
+            /** Artistic scales on the two terms, for pushing beams without thickening the fog. */
+            public static final FloatSetting SHAFT_INTENSITY =
+                    clampedFloat("caustica.rt.volumetrics.shaftIntensity",
+                            "volumetrics.shaft-intensity", 1.0f, 0.0f, 8.0f);
+            public static final FloatSetting AMBIENT_INTENSITY =
+                    clampedFloat("caustica.rt.volumetrics.ambientIntensity",
+                            "volumetrics.ambient-intensity", 1.0f, 0.0f, 8.0f);
+
+            /**
+             * One visibility ray per froxel toward the sampled sky direction. Without it the fog inside a
+             * cave is lit by the unoccluded sky and the cave fills with glowing haze, so this is off only
+             * for profiling or for a fully open scene.
+             */
+            public static final BooleanSetting SKY_OCCLUSION =
+                    bool("caustica.rt.volumetrics.skyOcclusion", "volumetrics.sky-occlusion", true);
+
+            /**
+             * Temporal accumulation ceiling, in frames, for the froxel grid and the shaft resolve. High
+             * values are affordable here in a way they are not in most renderers: Minecraft's sun moves
+             * about 0.005 degrees per frame, so the signal being accumulated is effectively static and
+             * only camera motion and moving occluders invalidate history.
+             */
+            public static final IntSetting MAX_ACCUM_FRAMES =
+                    clampedInt("caustica.rt.volumetrics.maxAccumFrames",
+                            "volumetrics.max-accum-frames", 64, 1, 512);
+
+            /**
+             * Composite diagnostic: 0 off, 1 grid in-scatter, 2 raw shafts, 3 filtered shafts,
+             * 4 transmittance, 5 shaft history age. Independent of the main debug-view selector, which
+             * runs after the composite and would otherwise hide these.
+             */
+            public static final IntSetting DEBUG_VIEW =
+                    clampedInt("caustica.rt.volumetrics.debugView", "volumetrics.debug-view", 0, 0, 5);
+
+            private Volumetrics() {
+            }
+
+            /** Per-channel extinction per block, derived from the measured transmittance. */
+            public static float[] extinctionPerBlock() {
+                float distance = Math.max(MEASUREMENT_DISTANCE.value(), 1.0e-3f);
+                float density = DENSITY.value();
+                return new float[] {
+                        channelExtinction(TRANSMITTANCE_R.value(), distance) * density,
+                        channelExtinction(TRANSMITTANCE_G.value(), distance) * density,
+                        channelExtinction(TRANSMITTANCE_B.value(), distance) * density,
+                };
+            }
+
+            // Clamped away from both ends before the logarithm: 1 is a vacuum (log 0, no fog at all) and
+            // 0 is opaque (log -inf). The 1/255 bound matches the precision the value can be authored at.
+            private static float channelExtinction(float transmittance, float distance) {
+                float clamped = Math.clamp(transmittance, 1.0f / 255.0f, 1.0f - 1.0f / 255.0f);
+                return (float) (-Math.log(clamped) / distance);
             }
         }
 

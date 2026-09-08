@@ -51,6 +51,16 @@ abstract class GenerateRtBindings extends DefaultTask {
                     TRANSMITTANCE_IMAGE: "transmittanceImage", MULTISCATTER_IMAGE: "multiScatterImage",
                     SKY_VIEW_IMAGE: "skyViewImage", TRANSMITTANCE_SAMPLER: "transmittanceLut",
                     MULTISCATTER_SAMPLER: "multiScatterLut"]],
+            // All six volumetric passes share one descriptor set layout and each uses a subset, so any
+            // one of them reflects the whole set; the composite is picked because it touches the most.
+            [prefix: "VOLUME", source: "pipelines/volumetrics/composite.comp.slang", resources: [
+                    ACCUM_IMAGE: "volumeAccumImage", ACCUM_PREV: "volumeAccumPrev",
+                    ACCUM_CUR: "volumeAccumCur", INTEGRATED_IMAGE: "volumeIntegratedImage",
+                    INTEGRATED_LUT: "volumeIntegratedLut", SHAFT_RAW: "shaftRawImage",
+                    SHAFT_ACCUM: "shaftAccumImage", SHAFT_ACCUM_PREV: "shaftAccumPrev",
+                    SHAFT_AGE: "shaftAgeImage", SHAFT_AGE_PREV: "shaftAgePrev",
+                    SHAFT_FILTERED: "shaftFilteredImage", SCENE: "sceneImage", DEPTH: "depthImage",
+                    TLAS: "tlas", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut"]],
             [prefix: "PRESENT", source: "pipelines/hdr_composite/main.comp.slang", resources: [
                     OUTPUT: "outputImage", SOURCE: "sourceImage"]],
             [prefix: "OVERLAY_IMAGE", source: "pipelines/overlay_composite/glow.frag.slang", resources: [VALUE: "sourceImage"]],

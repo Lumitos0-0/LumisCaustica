@@ -43,6 +43,26 @@ public struct BreakEntry {
     public int4 posSlot;
 };
 
+// The participating medium the volumetric fog integrates, in one place so the froxel grid, the
+// sun-shaft march and the composite cannot disagree about what they are integrating.
+//
+// Density is separable: `extinction` is the per-channel coefficient PER BLOCK at height `heightBase`,
+// and `heightFalloff` scales it by a dimensionless exponential in world height. Everything downstream
+// therefore works in "optical depth" measured in block-densities, and recovers per-channel
+// transmittance as exp(-extinction * opticalDepth). Keeping the colour constant and the density scalar
+// is what makes the optical depth analytically invertible (see volumetrics.slang), which in turn is
+// what lets the shaft march importance-sample distance exactly rather than ray-marching uniformly.
+public struct VolumetricMedium {
+    public float3 extinction;       // sigma_t at heightBase, per block, linear ACEScg
+    public float  anisotropy;       // Henyey-Greenstein g, (-1, 1); >0 is forward scattering
+    public float3 albedo;           // single-scattering albedo; sigma_s = extinction * albedo
+    public float  heightFalloff;    // 1/H in inverse blocks; 0 makes the medium uniform
+    public float  heightBase;       // rebased world Y that `extinction` is quoted at
+    public float  maxDistance;      // blocks; past this the sky's own aerial perspective owns the haze
+    public float  shaftIntensity;   // artistic scale on the directional (sun/moon) in-scatter
+    public float  ambientIntensity; // artistic scale on the sky in-scatter
+};
+
 // Per-frame world data, read through a 64-bit device address. WorldPushData.java is generated from this
 // reflected type, including its serializer, byte size, vector/matrix types, and fixed-array capacities.
 public struct WorldPush {
@@ -88,6 +108,10 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // Volumetric fog medium. Lives here rather than in the volumetric passes' own push block because
+    // the path tracer needs the same numbers the moment fog affects anything it traces, and because a
+    // frame's fog must be built from the same push slot as the sky it scatters.
+    public VolumetricMedium fog;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

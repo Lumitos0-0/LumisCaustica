@@ -345,21 +345,39 @@ public final class RtContext {
      * see {@code VUID-VkRenderingInfo-colorAttachmentCount-06087}).
      */
     public RtImage createStorageImage(int width, int height, int format, String label, int extraUsage) {
+        return createStorageImage(width, height, 1, format, label, extraUsage);
+    }
+
+    /**
+     * A 3D storage image of the given format (STORAGE + SAMPLED + TRANSFER_SRC/DST), transitioned to
+     * GENERAL. The volumetric froxel volumes need one: their reconstruction is a single trilinear fetch
+     * across all three axes, which a 2D array cannot provide — an array filters within a layer only, so
+     * the depth axis would have to be interpolated by hand from two fetches, and the slice boundaries
+     * would show as banding wherever the fog has a gradient along the view ray.
+     */
+    public RtImage createStorageImage3D(int width, int height, int depth, int format, String label) {
+        return createStorageImage(width, height, depth, format, label, 0);
+    }
+
+    private RtImage createStorageImage(int width, int height, int depth, int format, String label, int extraUsage) {
+        boolean volumetric = depth > 1;
+        int imageType = volumetric ? VK10.VK_IMAGE_TYPE_3D : VK10.VK_IMAGE_TYPE_2D;
+        int viewType = volumetric ? VK10.VK_IMAGE_VIEW_TYPE_3D : VK10.VK_IMAGE_VIEW_TYPE_2D;
         int usage = VK10.VK_IMAGE_USAGE_STORAGE_BIT | VK10.VK_IMAGE_USAGE_SAMPLED_BIT
                 | VK10.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT | extraUsage;
-        requireStorageImageSupport(width, height, format, usage, label);
+        requireStorageImageSupport(width, height, depth, imageType, format, usage, label);
         long image;
         long allocation;
         long view;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
-                    .imageType(VK10.VK_IMAGE_TYPE_2D).format(format)
+                    .imageType(imageType).format(format)
                     .mipLevels(1).arrayLayers(1).samples(VK10.VK_SAMPLE_COUNT_1_BIT).tiling(VK10.VK_IMAGE_TILING_OPTIMAL)
                     // SAMPLED so DLSS-RR can read these as input textures (color + guide buffers);
                     // STORAGE for raygen/compute writes; TRANSFER for the world-target copies.
                     .usage(usage)
                     .sharingMode(VK10.VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED);
-            ici.extent().set(width, height, 1);
+            ici.extent().set(width, height, depth);
             VmaAllocationCreateInfo iaci = VmaAllocationCreateInfo.calloc(stack).usage(Vma.VMA_MEMORY_USAGE_AUTO);
             LongBuffer pImage = stack.mallocLong(1);
             PointerBuffer pAlloc = stack.mallocPointer(1);
@@ -369,7 +387,7 @@ public final class RtContext {
             RtDebugLabels.nameImage(this, image, label);
 
             VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
-                    .image(image).viewType(VK10.VK_IMAGE_VIEW_TYPE_2D).format(format);
+                    .image(image).viewType(viewType).format(format);
             vci.subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
             LongBuffer pView = stack.mallocLong(1);
             check(VK10.vkCreateImageView(vk, vci, null, pView), "vkCreateImageView");
@@ -390,10 +408,11 @@ public final class RtContext {
                         0, null, null, b);
             }
         });
-        return new RtImage(vma, vk, image, allocation, view, width, height);
+        return new RtImage(vma, vk, image, allocation, view, width, height, depth);
     }
 
-    private void requireStorageImageSupport(int width, int height, int format, int usage, String label) {
+    private void requireStorageImageSupport(int width, int height, int depth, int imageType,
+                                            int format, int usage, String label) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkFormatProperties formatProperties = VkFormatProperties.calloc(stack);
             VK10.vkGetPhysicalDeviceFormatProperties(vk.getPhysicalDevice(), format, formatProperties);
@@ -415,16 +434,17 @@ public final class RtContext {
 
             VkImageFormatProperties imageProperties = VkImageFormatProperties.calloc(stack);
             int result = VK10.vkGetPhysicalDeviceImageFormatProperties(vk.getPhysicalDevice(), format,
-                    VK10.VK_IMAGE_TYPE_2D, VK10.VK_IMAGE_TILING_OPTIMAL, usage, 0, imageProperties);
+                    imageType, VK10.VK_IMAGE_TILING_OPTIMAL, usage, 0, imageProperties);
             if (result == VK10.VK_ERROR_FORMAT_NOT_SUPPORTED) {
                 throw new UnsupportedOperationException(label + " format " + format
                         + " does not support image usage 0x" + Integer.toHexString(usage));
             }
             check(result, "vkGetPhysicalDeviceImageFormatProperties");
-            if (width > imageProperties.maxExtent().width() || height > imageProperties.maxExtent().height()) {
-                throw new UnsupportedOperationException(label + " extent " + width + "x" + height
+            if (width > imageProperties.maxExtent().width() || height > imageProperties.maxExtent().height()
+                    || depth > imageProperties.maxExtent().depth()) {
+                throw new UnsupportedOperationException(label + " extent " + width + "x" + height + "x" + depth
                         + " exceeds format maximum " + imageProperties.maxExtent().width() + "x"
-                        + imageProperties.maxExtent().height());
+                        + imageProperties.maxExtent().height() + "x" + imageProperties.maxExtent().depth());
             }
         }
     }
