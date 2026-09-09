@@ -308,7 +308,12 @@ public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float p
     // reader that saw only one of them would read the other as a bug: the column is what tints a tap that
     // happens to sit behind a pane, the volume is what keeps a sealed room's air from glowing.
     float3 direct = phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir) * sunVis;
-    float3 ambient = FOG_SKY_TINT * (FOG_SKY_LUMINANCE * sun.illuminance) * skyOpen;
+    // Attenuated by the medium above the tap, which for this profile is exactly sigma times the scale
+    // height: the vertical integral of an exponential is itself. Without it, thick fog would keep receiving
+    // its full skylight from a sky it can no longer see, and the veil would glow at the density settings
+    // where the sun's own term has correctly gone to nothing.
+    float3 ambient = FOG_SKY_TINT * (FOG_SKY_LUMINANCE * sun.illuminance) * skyOpen
+            * exp(-sigma * f.scaleHeight);
     return f.albedo * (direct + ambient);
 }
 
