@@ -258,6 +258,11 @@ void main() {
     // drawn over. It costs rays and no NEE: this is the light *test* the fog march would otherwise repeat per
     // tap, per bounce and per sample, hoisted to once per pixel.
     float3 primarySurface = gv_hitCamRel + worldPush.camOffset;
-    fogWriteSunShadow(pix, size, primarySurface, dot(gv_hitCamRel, gv_hitCamRel) > 0.0,
+    float primaryDistance = length(gv_hitCamRel);
+    // The miss branch parks this guide point at rd * 1e6 so the motion-vector maths has somewhere to stand,
+    // which is a long way past anything the terrain mesh contains — so distance doubles as "no surface here",
+    // and a texel of the field that is not anchored says so rather than reporting what a ray from a million
+    // blocks away found.
+    fogWriteSunShadow(pix, size, primarySurface, primaryDistance, primaryDistance < 1.0e5,
             dominantCelestialLight(skyState(worldPush), transmittanceLut));
 }

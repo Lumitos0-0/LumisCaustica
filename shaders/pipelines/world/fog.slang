@@ -163,7 +163,8 @@ public static const int FOG_SUN_SHADOW_TAPS = 4;
  * gradient. One quarter of the texels at four taps each is one ray per pixel per frame for the whole
  * shadowing problem, whatever the sample budget.
  */
-public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, bool hasSurface, CelestialLight sun) {
+public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, float hitDistance, bool anchored,
+        CelestialLight sun) {
     FogMedium f = fogMedium(worldPush);
     if (!f.active) {
         return;
@@ -176,14 +177,24 @@ public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, bool hasSur
     if (fieldSize.x <= 0 || fieldSize.y <= 0 || any(texel * 2 != pix)) {
         return;
     }
+    // One texel of this field stands for two pixels per axis, so this is how many blocks of the world a
+    // single shadow sample has to answer for at this depth.
+    float texelBlocks = hitDistance * 2.0 / max(size.y, 1.0);
+    // Trust it only while that stays finer than the thing being decided. Past about a block, a texel here
+    // cannot tell a canopy from the ground beneath it, and which of the two it reports depends on where the
+    // jittered primary ray happened to land — so the field starts returning lit air next to shaded air in
+    // quarter-resolution squares that crawl as the camera moves. Fading toward "unshadowed" at that point is
+    // the concession a shadow map makes when it runs out of resolution at range, and over hundreds of blocks
+    // it costs almost nothing visually: distant air is far too thin to carry a hard shadow boundary anyway.
+    float trust = 1.0 - smoothstep(0.25, 1.0, texelBlocks);
     float3 value = float3(0.0, 0.0, 0.0);
+    // Two cheap-outs before the rays, both of them the expensive part of the frame: nothing anchored here to
+    // ask about, and the case where the medium's own column says no direct light arrives at this altitude
+    // (dense fog with the sun near the horizon), which the traces would only prove. Occlusion by geometry is
+    // the different case and is not free: a shaded wall in clear air pays its four rays, because nothing but
+    // a ray knows a wall is there.
     float sigma = fogDensityAt(f, surface);
-    // The cheap-out the march used to carry, moved to where it saves four rays instead of one: where the
-    // medium's own column says no direct light arrives at this altitude — dense fog with the sun near the
-    // horizon — the answer is already zero and the traces would only prove it. Occlusion by geometry is a
-    // different case and is not free: a shaded wall in clear air pays its four rays, because nothing but a
-    // ray knows a wall is there.
-    if (hasSurface && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
+    if (anchored && trust > 0.0 && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
         // Fixed per texel, deliberately not the path's seed: mixing the frame index in here is what turns
         // a shadow field into noise the denoiser then has to guess at.
         uint s = uint(pix.x) * 1973u + uint(pix.y) * 9277u + 26699u;
@@ -197,11 +208,14 @@ public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, bool hasSur
         }
         value = sum / float(FOG_SUN_SHADOW_TAPS);
     }
+    // Unshadowed by interpolation rather than by branch, so the fade is continuous: the value a texel
+    // reports slides from the traced answer toward one as its footprint grows, and a pixel half way between
+    // two texels sees a soft blend of both rather than a switch.
+    float3 lit = value * trust + (1.0 - trust);
     // The alpha is not spare precision, it is the anchor. A primary ray that escaped to the sky resolved no
-    // surface, and borrowing the eye's occlusion for the horizon haze would dim it whenever the camera
-    // stands in shade. alpha=0 says "nothing here yet", and the reader answers with the analytic column
-    // alone -- unshadowed, which is what the distant sky's fog used to get, and still does.
-    gSunShadow[texel] = float4(value, hasSurface ? 1.0 : 0.0);
+    // surface, and borrowing the eye's occlusion for the horizon haze would dim it whenever the camera stands
+    // in shade. alpha=0 says "nothing here yet", and the reader answers with the analytic column alone.
+    gSunShadow[texel] = float4(lit, anchored ? 1.0 : 0.0);
 }
 
 /**
