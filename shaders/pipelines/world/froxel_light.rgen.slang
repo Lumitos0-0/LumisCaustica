@@ -154,7 +154,10 @@ void main() {
             uint seed = (index.x * 1973u + fy * 9277u + slice * 26699u)
                     ^ (worldPush.frameIndex * 2654435761u);
             seed = pcg(seed);
-            uint proposalSeed = pcg(seed ^ 0x9e3779b9u);
+            // Independent proposal stream, salted from the shading seed. pcg takes inout, so the salted
+            // value has to land in a variable before it can be hashed.
+            uint proposalSeed = seed ^ 0x9e3779b9u;
+            proposalSeed = pcg(proposalSeed);
 
             // The sun/moon term: a directional light's in-scatter is sigma_s * phase * illuminance,
             // gated by one visibility ray. Jittering the light direction within its angular extent is
