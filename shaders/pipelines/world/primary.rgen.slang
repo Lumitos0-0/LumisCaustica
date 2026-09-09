@@ -21,9 +21,7 @@ import medium;
 import segment;
 import water;
 import trace;
-import sky;
 import guides;
-import fog;
 
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
@@ -251,18 +249,4 @@ void main() {
     queue[pixelIndex] = packPathSegment(terminal, nextRecord);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
-
-    // The fog's sun-shadow field, resolved here because this is the only place that knows which surface the
-    // pixel is actually showing — the guide state above has just settled the refracted-destination case, and
-    // resolving the shadow from the same point is what keeps a shaft agreeing with the patch of light it is
-    // drawn over. It costs rays and no NEE: this is the light *test* the fog march would otherwise repeat per
-    // tap, per bounce and per sample, hoisted to once per pixel.
-    float3 primarySurface = gv_hitCamRel + worldPush.camOffset;
-    float primaryDistance = length(gv_hitCamRel);
-    // The miss branch parks this guide point at rd * 1e6 so the motion-vector maths has somewhere to stand,
-    // which is a long way past anything the terrain mesh contains — so distance doubles as "no surface here",
-    // and a texel of the field that is not anchored says so rather than reporting what a ray from a million
-    // blocks away found.
-    fogWriteSunShadow(pix, size, primarySurface, primaryDistance, primaryDistance < 1.0e5,
-            dominantCelestialLight(skyState(worldPush), transmittanceLut));
 }

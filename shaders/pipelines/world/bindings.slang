@@ -14,11 +14,11 @@ import world_common;
 [[vk::binding(6, 0)]] [format("rg16f")] public RWTexture2D<float2> gMotion;
 [[vk::binding(7, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSpecAlbedo;
 [[vk::binding(8, 0)]] [format("rg16f")] public RWTexture2D<float2> gSpecMotion;
-// The fog's sun-shadow field, half resolution and written by the primary pass. Not a DLSS guide, but it
-// shares the guide plumbing because it has the same shape: one write per pixel by pass A, read by pass B,
-// GENERAL layout, never leaves the pipeline. Binding 12 rather than 9 because Java addresses the guide block
-// by a contiguous slot index.
-[[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSunShadow;
+// The aerial medium's light volume: one float4 per screen column and log-depth slice, rgb the transmittance
+// to the sun and alpha how much sky the voxel sees. Filled by sun_froxels.rgen, read by the fog march in
+// indirect.rgen. It carries the G_ name because that prefix is what makes the binding generator count it as
+// a storage image in the world set's descriptor pool, and the pool is sized from that count.
+[[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture3D<float4> sunFroxels;
 
 [[vk::binding(2, 0)]] public Sampler2D blockAlbedoAtlas;
 [[vk::binding(9, 0)]] public Sampler2D celestialsAtlas;

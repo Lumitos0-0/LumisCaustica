@@ -254,9 +254,20 @@ public final class RtComposite {
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
-    // The fog's sun-shadow field: half resolution, written by Pass A's primary surface, read by every fog
-    // tap of that pixel. Not a DLSS guide, but the same lifetime and the same rebinding path.
-    private RtImage gSunShadow;
+    // The aerial medium's light volume: one float4 per screen column and log-depth slice. Not a DLSS guide,
+    // but the same lifetime and the same rebinding path.
+    private RtImage gSunFroxels;
+
+    // Voxels per axis: one per SUN_FROXEL_DIVISOR screen pixels, floored so a tiny render target still gets a
+    // usable grid. The rule has to match fog.slang's fogFroxelDims, which is where the march derives the same
+    // extent from the same size — nothing pushes it, so nothing can disagree silently.
+    private static final int SUN_FROXEL_DIVISOR = 16;
+    private static final int SUN_FROXEL_SLICES = 32;
+    /** Third raygen record of the world pipeline; see the list in {@link #ensureWorld}. */
+    private static final int SUN_FROXEL_RAYGEN_INDEX = 2;
+
+    private int sunFroxelW;
+    private int sunFroxelH;
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -731,7 +742,10 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            // No SER variant: the gather is a handful of shadow rays per voxel, which does not
+                            // amortize a reorder barrier any better than Pass A's short walk does.
+                            "sun_froxels.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -859,6 +873,10 @@ public final class RtComposite {
         }
     }
 
+    private static int fogFroxelExtent(int pixels, int minimum) {
+        return Math.max(minimum, pixels / SUN_FROXEL_DIVISOR);
+    }
+
     /** Bind the guide buffers into the world pipeline's extra storage-image slots. */
     private void bindGuideImages() {
         if (worldPipeline == null || gNormal == null) {
@@ -870,7 +888,7 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
-        worldPipeline.setSunShadowImage(gSunShadow.view);
+        worldPipeline.setSunFroxelImage(gSunFroxels.view);
     }
 
     private void destroyGuideImages() {
@@ -898,9 +916,9 @@ public final class RtComposite {
             gSpecMotion.destroy();
             gSpecMotion = null;
         }
-        if (gSunShadow != null) {
-            gSunShadow.destroy();
-            gSunShadow = null;
+        if (gSunFroxels != null) {
+            gSunFroxels.destroy();
+            gSunFroxels = null;
         }
         if (rrOutput != null) {
             rrOutput.destroy();
@@ -986,10 +1004,13 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
-        // Half resolution in each axis, and every texel is owned by the top-left pixel of its 2x2 block, so
-        // a texel is written once. Rounding must match the shader's (size + 1) * 0.5 for odd dimensions.
-        gSunShadow = ctx.createStorageImage((renderW + 1) / 2, (renderH + 1) / 2,
-                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog sun shadow " + (renderW + 1) / 2 + "x" + (renderH + 1) / 2);
+        // Both extents come from the render size by the same rule fog.slang applies when it indexes the
+        // volume, so no dimension has to travel through the push constants.
+        sunFroxelW = fogFroxelExtent(renderW, 32);
+        sunFroxelH = fogFroxelExtent(renderH, 20);
+        gSunFroxels = ctx.createStorageImage3D(sunFroxelW, sunFroxelH, SUN_FROXEL_SLICES,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "fog froxels " + sunFroxelW + "x" + sunFroxelH + "x" + SUN_FROXEL_SLICES);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -1242,6 +1263,19 @@ public final class RtComposite {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // continuation/guide writes visible to pass B
+            // The aerial medium's light volume, gathered between the two traces: it needs only the TLAS and
+            // the push, and Pass B reads what it writes. Its launch is the volume itself, so a froxel is a
+            // raygen thread rather than a loop inside one -- TraceRay is not legal in a compute stage here.
+            // Skipped with the medium off, like the push flag: nothing reads the volume then, and an empty
+            // dispatch of a few hundred thousand early-returning threads is not free just because it is idle.
+            if ((flags & 0b100000) != 0) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog froxels");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceFroxels")) {
+                    active.traceVolume(cmd, sunFroxelW, sunFroxelH, SUN_FROXEL_SLICES, pushConstants,
+                            SUN_FROXEL_RAYGEN_INDEX);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // froxel writes visible to the fog march
+            }
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);

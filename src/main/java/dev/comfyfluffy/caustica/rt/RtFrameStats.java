@@ -67,6 +67,7 @@ public final class RtFrameStats {
                     "frame.skyLut",
                     // Wavefront trace and downstream debug stages.
                     "frame.tracePrimary",
+                    "frame.traceFroxels",
                     "frame.traceIndirect",
                     "frame.exposure",
                     "frame.dlssRr",

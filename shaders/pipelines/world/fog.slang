@@ -8,23 +8,21 @@
 // renderer has no path to accumulate into; here the same physics is integrated per segment inside the
 // transport, so the volume dims and lights reflections, refractions and indirect bounces exactly as it
 // dims primary visibility, and a volume never needs reprojecting. And its fog is lit through a per-light
-// incident-radiance meter amortized across the volume; the sun's half of that is here as a shadow field of
-// its own, and everything else about the lighting stays closed form -- the height profile and the medium's
-// extinction toward the light are integrals rather than samples, so a march tap costs a fetch and a handful
-// of exponentials, with no rays in it at all.
+// incident-radiance meter amortized across the volume, and the same split is kept here: the meter's sun and
+// sky taps are gathered per voxel, while the medium's own attenuation toward the light stays a closed-form
+// integral, so a march tap costs eight texel reads and a handful of exponentials and no rays at all.
 //
-// Geometry gets a vote through that field: Pass A resolves once per pixel whether the surface this pixel
-// shows can see the directional body, over a few fixed points on its disc, and every fog tap of that pixel
-// multiplies by the answer. Without it a sealed room in-scatters at full daylight and the volume reads as a
-// uniform veil, because a height profile cannot tell a roof from clear air. Per-tap and per-emitter
-// resolution is what a froxel incident-light cache would add on top, which is exactly what MCRTX's meter is
-// for; this field is its sun-only half, and `fogScatterAt` is the one plug-in site.
+// Light is looked up where it lands rather than where the eye ends up: a frustum-aligned volume, one voxel
+// per screen column and log-depth slice, filled by sun_froxels.rgen with a few fixed rays per voxel and
+// sampled by every tap of every segment. Testing the surface behind the air instead reports the ground's
+// lighting, which collapses a shaft onto the patch of floor it lands on and flips between a leaf and the
+// gap beside it as the frame's jitter moves. A volume can do neither, and costs a fraction of the rays.
 //
 // Density is a function of ABSOLUTE world altitude: path positions are rebased to the terrain origin,
 // which moves as the camera travels, so every altitude goes through `rebaseY` (that origin's block Y,
 // pushed per frame). An exponential would otherwise slide with the player. The profile is flat at and
 // below `refY` rather than growing without bound downward, so a cave's air is no denser than a
-// mountaintop's; what makes caves and interiors dark is the shadow field above, not the profile.
+// mountaintop's; what makes caves and interiors dark is the volume above, not the profile.
 
 import world_common;
 import world_core;
@@ -112,7 +110,7 @@ public float fogPhase(FogMedium f, float cosTheta) {
  *
  * Closed form, not marched: for the exponential part of the profile the column has an exact antiderivative
  * along a climbing ray, and taking it also yields the light's reddening with altitude for free. A ray
- * heading down or level has no such bound — density only grows — so those integrate over the pushed reach
+ * heading down or level has no such bound — density only grows — so those integrate over the reach
  * and let exp(-tau) saturate. Below `refY` the real profile flattens where this keeps growing, which can
  * only ever darken in-scatter slightly; modelling the kink would cost a branch and a second closed form.
  *
@@ -132,119 +130,170 @@ public float fogColumnToLight(FogMedium f, float sigma, float3 lightDir) {
 }
 
 public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
-// Sun-disc samples per shadow-field texel. Four is enough to turn a hard edge into a gradient at this
-// resolution, and the field is written once per pixel of the *frame*, so it is not multiplied by bounces
-// or samples per pixel the way a per-tap test is.
-public static const int FOG_SUN_SHADOW_TAPS = 4;
 
 /**
- * The sun's shadow as a per-pixel field: pass A writes it from the surface it just resolved, and every fog
- * tap of every bounce of that pixel reads it back as a fetch.
+ * Sun and sky light reaching the aerial medium, gathered into a frustum-aligned volume once per frame.
  *
- * <p>This is the shape MCRTX uses. Its `SunShadowRayGenInline` writes `outputBufferSunLightShadow` at
- * render size, `ShadowDenoising` (separable, ping-ponged) and the checkerboard field blend filter that
- * against `previousSunLightShadowBuffer`, and the in-scatter step *samples* the result rather than testing
- * the sun per sample. The filtering is why their shafts are clean, so Caustica needs the shared field more
- * than it needs a denoiser: it already averages the field across bounces, SPP resamples and neighbouring
- * pixels, and it has nothing to filter out, because the taps are fixed rather than random.
+ * <p>The march needs to know what light arrives at a particular bit of air, and only a sample taken there
+ * can say so. Testing the surface behind the air instead — which is what a per-pixel shadow map does —
+ * reports the ground's lighting and reports it for every tap in front of it:
+ * a shaft then collapses onto the patch of floor it lands on and the air above that patch stays flat. It is
+ * also why a beam measured on screen cannot be stable: which leaf a jittered primary ray strikes changes
+ * with the frame's jitter, and the answer differs by a whole unit of light between the two possibilities.
  *
- * <p>Before this there was a jittered `visibility()` ray per fog segment, which is exactly as quiet as the
- * sample budget makes it -- sharp, correct, and grainy along beam edges at one sample per pixel. The field
- * is cheaper at any budget above one bounce and does not need samples to converge.
+ * <p>So the volume holds one float4 per (screen column, log-depth slice): rgb is the transmittance to the
+ * sun, alpha is how much of the sky the voxel can see. Both are estimated from a few FIXED directions,
+ * which is what lets the march sample a coarse structure without noise or crawl, and the whole frame pays
+ * `FOG_FROXEL_SUN_TAPS + FOG_FROXEL_SKY_TAPS` rays per voxel instead of one per tap per bounce per sample.
  *
- * <p>Determinism is the point of that last part. A jittered ray per sample is only as quiet as the sample
- * budget can make it, and a path that runs out of budget shows up as grain along beam edges -- the worst
- * place for it, because the eye reads flicker in a high-contrast edge far more readily than in the flat
- * haze between. Fixed offsets per texel give a field that is bit-identical frame to frame: beam edges that
- * are soft because they average several rays, not because ten frames averaged.
- *
- * <p>The field is half resolution in each axis, which is what buys the softness rather than costing it:
- * four pixels share a texel and the read interpolates, so a penumbra about a pixel wide still lands as a
- * gradient. One quarter of the texels at four taps each is one ray per pixel per frame for the whole
- * shadowing problem, whatever the sample budget.
+ * <p>Screen-aligned columns, world-correct contents: a voxel is defined by the view ray through its column
+ * at a given depth, so the grid thins out with distance the way the eye needs it to (a near voxel is
+ * centimetres wide, a far one is many blocks) and no reprojection is involved — the grid is rebuilt every
+ * frame from the current camera, so nothing has to be revalidated when the player turns.
  */
-public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, float hitDistance, bool anchored,
-        CelestialLight sun) {
+public static const int FOG_FROXEL_SLICES = 32;      // log-depth slices; Java's volume depth
+public static const int FOG_FROXEL_DIVISOR = 16;     // screen pixels per voxel edge, both axes
+public static const int FOG_FROXEL_SUN_TAPS = 4;
+public static const int FOG_FROXEL_SKY_TAPS = 4;
+public static const float FOG_FROXEL_Z_NEAR = 1.0;   // blocks: the first slice's inner edge
+// The sky's share of in-scattering, for the light that arrives from every direction except the body's.
+// Fog ambient is a veil rather than a light source, so it is estimated from the sky's openness alone: a
+// cool tint at a fixed fraction of the dominant body's illuminance, which follows the body from noon to
+// moonlight without a second colour term, and which needs no occlusion test to be right about a sealed room
+// because the openness estimate already is that test.
+public static const float FOG_SKY_LUMINANCE = 0.06;
+// BT.709 weights, the same ones the sky module uses to decide which body is brighter.
+public static const float3 FOG_LUMA = float3(0.2126, 0.7152, 0.0722);
+public static const float3 FOG_SKY_TINT = float3(0.62, 0.75, 1.0);
+
+/** The volume's extent in voxels. Both sides derive it from the render size, so it needs no push field. */
+public float2 fogFroxelDims(float2 renderSize) {
+    return max(float2(32.0, 20.0), floor(renderSize / float(FOG_FROXEL_DIVISOR)));
+}
+
+/**
+ * The depth a slice covers: geometric, because the near field needs centimetre-scale detail and the far
+ * field only needs to not band, and a linear split of `reach` would spend almost all slices on the horizon.
+ */
+public float fogFroxelSliceDepth(int slice, int slices, float reach) {
+    float ratio = log(max(reach, FOG_FROXEL_Z_NEAR * 2.0)) - log(FOG_FROXEL_Z_NEAR);
+    return FOG_FROXEL_Z_NEAR * exp(ratio * (float(slice) + 0.5) / float(max(slices, 1)));
+}
+
+/**
+ * Fill one voxel. `idx` is its position in the volume and `dims` the volume's own extent, so the launch is
+ * the whole gather: one ray set per thread, no loop over slices.
+ */
+public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     FogMedium f = fogMedium(worldPush);
-    if (!f.active) {
+    if (!f.active || idx.z >= uint(FOG_FROXEL_SLICES) || dims.x == 0u || dims.y == 0u) {
         return;
     }
-    int2 fieldSize = int2((size + 1.0) * 0.5);
-    int2 texel = int2((float2(pix) + 0.5) * 0.5);
-    // One thread per texel, the top-left pixel of its block. All four pixels of the block would otherwise
-    // race to write it, and a race for last write wins is precisely the frame-to-frame instability that this
-    // whole design exists to avoid.
-    if (fieldSize.x <= 0 || fieldSize.y <= 0 || any(texel * 2 != pix)) {
+    // The ray is the one the primary pass walks, minus the jitter: this grid is the frustum itself,
+    // not the sample positions inside it, and mixing jitter in here would make every voxel's contents crawl.
+    float2 uv = (float2(idx.xy) + 0.5) / float2(dims.xy);
+    float2 ndc = uv * 2.0 - 1.0;
+    float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
+    float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
+    float wn = nearH.w, wf = farH.w;
+    if (wn == 0.0 || wf == 0.0) {
         return;
     }
-    // One texel of this field stands for two pixels per axis, so this is how many blocks of the world a
-    // single shadow sample has to answer for at this depth.
-    float texelBlocks = hitDistance * 2.0 / max(size.y, 1.0);
-    // Trust it only while that stays finer than the thing being decided. Past about a block, a texel here
-    // cannot tell a canopy from the ground beneath it, and which of the two it reports depends on where the
-    // jittered primary ray happened to land — so the field starts returning lit air next to shaded air in
-    // quarter-resolution squares that crawl as the camera moves. Fading toward "unshadowed" at that point is
-    // the concession a shadow map makes when it runs out of resolution at range, and over hundreds of blocks
-    // it costs almost nothing visually: distant air is far too thin to carry a hard shadow boundary anyway.
-    float trust = 1.0 - smoothstep(0.25, 1.0, texelBlocks);
-    float3 value = float3(0.0, 0.0, 0.0);
-    // Two cheap-outs before the rays, both of them the expensive part of the frame: nothing anchored here to
-    // ask about, and the case where the medium's own column says no direct light arrives at this altitude
-    // (dense fog with the sun near the horizon), which the traces would only prove. Occlusion by geometry is
-    // the different case and is not free: a shaded wall in clear air pays its four rays, because nothing but
-    // a ray knows a wall is there.
-    float sigma = fogDensityAt(f, surface);
-    if (anchored && trust > 0.0 && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
-        // Fixed per texel, deliberately not the path's seed: mixing the frame index in here is what turns
-        // a shadow field into noise the denoiser then has to guess at.
-        uint s = uint(pix.x) * 1973u + uint(pix.y) * 9277u + 26699u;
+    float3 nearP = nearH.xyz / wn;
+    float3 farP = farH.xyz / wf;
+    float3 rayDir = farP - nearP;
+    // The parameter this grid slices on is clip w, which is linear along the ray and is the same scalar the
+    // read side recovers by projecting a tap — so a voxel and the taps inside it agree on depth without
+    // either inverting a matrix, and the interpolation between slices measures distance rather than a proxy.
+    float span = max(abs(wf - wn), 1.0e-4);
+    float depth = fogFroxelSliceDepth(int(idx.z), int(dims.z), f.reach);
+    float t = (depth - wn) / span;
+    float3 voxel = nearP + rayDir * t + worldPush.camOffset;
+
+    // The frame's dominant body, resolved the same way the indirect trace resolves it. Recomputed per voxel
+    // rather than read from the module static the raygens publish, because this pass runs before the one that
+    // fills it and a shadow field lagging a frame would show up as light that does not follow the sun.
+    CelestialLight sun = dominantCelestialLight(skyState(worldPush), transmittanceLut);
+    // Fixed per voxel, never the frame's: a pattern that moves is a pattern the denoiser has to guess at.
+    uint s = idx.x * 1973u + idx.y * 9277u + idx.z * 26699u;
+    float sigma = fogDensityAt(f, voxel);
+    float3 sunVis = float3(0.0, 0.0, 0.0);
+    // The cheap-out is about not tracing at all, since these are the frame's expensive rays: air whose own
+    // column says no direct light arrives already has the answer. Occlusion by geometry is the case that
+    // needs the rays, and it gets them.
+    if (fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
         float3 sum = float3(0.0, 0.0, 0.0);
-        for (int i = 0; i < FOG_SUN_SHADOW_TAPS; i++) {
-            // A point on the body's square disc, offset off the surface along it so the ray leaves the face
-            // it started on. With halfAngle at zero this is the exact direction, which is what a moonless
-            // pinhole look would ask for.
+        for (int i = 0; i < FOG_FROXEL_SUN_TAPS; i++) {
             float3 dir = sampleSquare(sun.dir, sun.halfAngle, s);
-            sum += visibility(surface + dir * SURF_BIAS, dir, f.reach).transmittance;
+            sum += visibility(voxel, dir, f.reach).transmittance;
         }
-        value = sum / float(FOG_SUN_SHADOW_TAPS);
+        sunVis = sum / float(FOG_FROXEL_SUN_TAPS);
     }
-    // Unshadowed by interpolation rather than by branch, so the fade is continuous: the value a texel
-    // reports slides from the traced answer toward one as its footprint grows, and a pixel half way between
-    // two texels sees a soft blend of both rather than a switch.
-    float3 lit = value * trust + (1.0 - trust);
-    // The alpha is not spare precision, it is the anchor. A primary ray that escaped to the sky resolved no
-    // surface, and borrowing the eye's occlusion for the horizon haze would dim it whenever the camera stands
-    // in shade. alpha=0 says "nothing here yet", and the reader answers with the analytic column alone.
-    gSunShadow[texel] = float4(lit, anchored ? 1.0 : 0.0);
+    // Sky openness, cosine weighted so a voxel under a canopy reports the light it can actually gather
+    // rather than the fraction of the dome it can see. Uniform hemisphere directions, golden-angle spread.
+    float open = 0.0;
+    for (int i = 0; i < FOG_FROXEL_SKY_TAPS; i++) {
+        float cosTheta = sqrt((float(i) + 0.5) / float(FOG_FROXEL_SKY_TAPS));
+        float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+        float azimuth = 6.28318530718 * (float(i) * 0.618034 + 0.5);
+        float3 dir = float3(cos(azimuth) * sinTheta, cosTheta, sin(azimuth) * sinTheta);
+        // Reduced to one number, unlike the sun's transmittance: the ambient's colour is this pass's tint
+        // rather than whatever glass happens to be overhead, because four directions through a dome is not a
+        // spectrum worth keeping and the veil it produces would not show one.
+        open += dot(visibility(voxel, dir, f.reach).transmittance, FOG_LUMA) * cosTheta;
+    }
+    sunFroxels[uint3(idx.xy, idx.z)] = float4(sunVis, open / float(FOG_FROXEL_SKY_TAPS));
+}
+
+static float4 fogFroxelTexel(int2 c, int slice, float2 dims) {
+    // Clamped on both axes rather than only where the weight is nonzero: a zero-weight out-of-range index is
+    // still out of range, and the edge texels replicating is what keeps a tap near the screen border from
+    // reading whatever the allocator left there.
+    int2 cc = clamp(c, int2(0, 0), int2(dims) - 1);
+    int s = clamp(slice, 0, FOG_FROXEL_SLICES - 1);
+    return sunFroxels[uint3(cc, uint(s))];
 }
 
 /**
- * Read the field for a pixel: bilinear across the half-resolution texels, by hand because a storage image
- * has no sampler of its own. What this replaces is a `visibility()` ray per fog segment: same four
- * questions answered, four loads instead of four traces, and one lookup per path instead of per tap.
+ * What light reaches a point in the medium: the volume, trilineared. Beyond the last slice the answer holds,
+ * because so does the medium's own `reach` — the far field is one long attenuated stretch either way.
  */
-public float3 fogSunShadow(float2 pix, float2 size) {
-    int2 fieldSize = int2((size + 1.0) * 0.5);
-    if (fieldSize.x <= 0 || fieldSize.y <= 0) {
-        return float3(1.0, 1.0, 1.0);
+// One slice, bilineared across the column. Split out because a slice is a 2x2 footprint and the read wants
+// two of them, and writing both inline reads like arithmetic rather than like a lookup.
+static float4 fogFroxelLayer(int2 b, float2 w, int slice, float2 dims) {
+    return lerp(lerp(fogFroxelTexel(b, slice, dims), fogFroxelTexel(b + int2(1, 0), slice, dims), w.x),
+            lerp(fogFroxelTexel(b + int2(0, 1), slice, dims),
+                    fogFroxelTexel(b + int2(1, 1), slice, dims), w.x), w.y);
+}
+
+public float4 fogSunFroxels(float3 p, float2 renderSize, float reach) {
+    float4 clip = mul(worldPush.curViewProj, float4(p - worldPush.camOffset, 1.0));
+    if (clip.w <= 0.0) {
+        // Behind the camera, which reflection segments reach constantly: the nearest edge of the grid is the
+        // least wrong answer, and unlike a zero it does not punch a dark hole in a mirror.
+        clip.w = 1.0e-4;
     }
-    float2 p = clamp((pix + 0.5) * 0.5 - 0.5, float2(0.0, 0.0), float2(fieldSize) - 1.0);
-    int2 lo = int2(floor(p));
-    float2 w = p - float2(lo);
-    // All four corners are clamped, not just the far ones: at the last texel the +1 neighbour exists only as
-    // a zero-weight term, and a zero-weight out-of-range index is still out of range.
-    int2 x1 = int2(min(lo.x + 1, fieldSize.x - 1), lo.y);
-    int2 y1 = int2(lo.x, min(lo.y + 1, fieldSize.y - 1));
-    int2 c11 = min(lo + int2(1, 1), fieldSize - 1);
-    float4 a = lerp(lerp(gSunShadow[lo], gSunShadow[x1], w.x),
-            lerp(gSunShadow[y1], gSunShadow[c11], w.x), w.y);
-    // The anchor interpolates with the value, so a texel that resolved no surface pulls its share of the
-    // blend toward "unshadowed" instead of toward zero. No divide: alpha is a weight, not a count.
-    return lerp(float3(1.0, 1.0, 1.0), a.xyz, a.w);
+    float2 ndc = clip.xy / clip.w;
+    float2 dims = fogFroxelDims(renderSize);
+    float2 g = clamp((ndc * 0.5 + 0.5) * dims - 0.5, float2(0.0, 0.0), dims - 1.0);
+    float2 bf = floor(g);
+    float2 w = g - bf;
+    int2 b = int2(bf);
+    float slices = float(FOG_FROXEL_SLICES);
+    float ratio = log(max(reach, FOG_FROXEL_Z_NEAR * 2.0)) - log(FOG_FROXEL_Z_NEAR);
+    float zf = clamp(log(max(clip.w, FOG_FROXEL_Z_NEAR)) - log(FOG_FROXEL_Z_NEAR), 0.0, ratio)
+            / ratio * slices - 0.5;
+    float zfrac = zf - floor(zf);
+    int z0 = int(floor(zf));
+    // Eight texels: bilinear in the column, linear across slices. That interpolation is what lets a coarse
+    // grid carry a soft boundary — the march asks for a point, not for a texel, so a shaft edge lands where
+    // it lands rather than on whichever slice it fell into.
+    return lerp(fogFroxelLayer(b, w, z0, dims), fogFroxelLayer(b, w, z0 + 1, dims), zfrac);
 }
 
 /**
- * Sun light reaching a fog tap, in `sun.illuminance`'s units: the analytic column times the shadow field.
+ * Light reaching a fog tap, in `sun.illuminance`'s units: the analytic column times the volume's sun
+ * transmittance, plus the sky term that volume's alpha carries.
  *
  * <p>The column and the field answer different questions and both are needed. The column integrates the
  * medium's own profile toward the body, which is what reddens light through a long horizontal path and what
@@ -252,8 +301,15 @@ public float3 fogSunShadow(float2 pix, float2 size) {
  * know either, because they vary along the way. The field knows about *geometry*, which a profile cannot
  * see: a roof, a wall, sixty blocks of hillside.
  */
-public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float phase) {
-    return f.albedo * phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir);
+public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float phase, float3 sunVis,
+        float skyOpen) {
+    // The sun's own path through the medium is the analytic column; the volume says what geometry leaves of
+    // it here. The two are multiplied rather than merged because they answer for different things, and a
+    // reader that saw only one of them would read the other as a bug: the column is what tints a tap that
+    // happens to sit behind a pane, the volume is what keeps a sealed room's air from glowing.
+    float3 direct = phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir) * sunVis;
+    float3 ambient = FOG_SKY_TINT * (FOG_SKY_LUMINANCE * sun.illuminance) * skyOpen;
+    return f.albedo * (direct + ambient);
 }
 
 /**
@@ -272,7 +328,7 @@ public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float p
  * sits where transmittance has already gone to nothing.
  */
 public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight sun,
-                         float3 ro, float3 rd, float t, float3 segmentLight,
+                         float3 ro, float3 rd, float t, float2 size,
                          out float3 T, out float3 S) {
     T = float3(1.0, 1.0, 1.0);
     S = float3(0.0, 0.0, 0.0);
@@ -298,10 +354,11 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
     int steps = min(max((int)ceil(resolved / tapLen), 1), f.maxSteps);
     float dt = resolved / float(steps);
 
-    // The pixel's sun-shadow value arrives from the caller, already resolved: one lookup per traced path,
-    // shared by every segment of it. Both regions below multiply by the same value, so a shadow cannot
-    // apply to the near half of a stretch and not the far half -- a beam is either there for this pixel or
-    // it is not, and anything else reads as a seam sliding across the image as the camera moves.
+    // Light is looked up per tap rather than per segment, which is the entire point of the volume: a
+    // stretch of air that starts in a sunbeam and ends in a building's shade has to scatter accordingly at
+    // both ends, and one value for the segment would have to pick a side. The lookup is eight texel reads,
+    // so this is not the expensive part of the march -- the rays that filled them were, and they were paid
+    // once per voxel for the frame instead of once per tap per bounce per sample.
 
     for (int i = 0; i < steps; i++) {
         float3 tapMid = ro + rd * (dt * (float(i) + 0.5));
@@ -310,7 +367,8 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
         // integral divided by sigma, so a thin tap costs the same expression as a thick one and neither
         // divides by a small number.
         float segmentT = exp(-sigma * dt);
-        S += T * fogScatterAt(f, sun, sigma, phase) * segmentLight * (1.0 - segmentT);
+        float4 lit = fogSunFroxels(tapMid, size, f.reach);
+        S += T * fogScatterAt(f, sun, sigma, phase, lit.rgb, lit.a) * (1.0 - segmentT);
         T *= segmentT;
     }
 
@@ -319,7 +377,8 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
         float3 farMid = ro + rd * (resolved + 0.5 * far);
         float sigma = fogDensityAt(f, farMid);
         float segmentT = exp(-sigma * far);
-        S += T * fogScatterAt(f, sun, sigma, phase) * segmentLight * (1.0 - segmentT);
+        float4 lit = fogSunFroxels(farMid, size, f.reach);
+        S += T * fogScatterAt(f, sun, sigma, phase, lit.rgb, lit.a) * (1.0 - segmentT);
         T *= segmentT;
     }
 }
@@ -334,15 +393,14 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
  * record's throughput — but throughput is a multiplier, so the light the air scattered into that stretch
  * has nowhere to live. Reconstructing the ray is cheaper than widening the record ABI to carry it, and
  * doing it here keeps the budget honest: the prefix is added once per sample, where the record it belongs
- * to is read by every SPP resample and by both halves of a split, and it reads the pixel's resolved shadow
- * field like any other segment, so a frame over water costs a fetch rather than a ray. The unprojection
- * below mirrors primary.rgen
+ * to is read by every SPP resample and by both halves of a split, and it pays for light the same way any
+ * other segment does. The unprojection below mirrors primary.rgen
  * except for the far plane it never needs, jitter included, because the prefix has to end on the surface
  * that ray hit. `hitPos` is the biased one the record carries, so the length is off by at most SURF_BIAS
  * against a scale height of blocks.
  */
 public void fogPrimarySegment(WorldPush push, FogMedium f, CelestialLight sun, MediumStack medium,
-                       float2 pix, float2 size, float3 hitPos, float3 segmentLight,
+                       float2 pix, float2 size, float3 hitPos,
                        out float3 T, out float3 S) {
     T = float3(1.0, 1.0, 1.0);
     S = float3(0.0, 0.0, 0.0);
@@ -362,5 +420,5 @@ public void fogPrimarySegment(WorldPush push, FogMedium f, CelestialLight sun, M
     if (hitDistance <= 1.0e-4) {
         return;
     }
-    fogIntegrateSegment(medium, f, sun, eye, toHit / hitDistance, hitDistance, segmentLight, T, S);
+    fogIntegrateSegment(medium, f, sun, eye, toHit / hitDistance, hitDistance, size, T, S);
 }

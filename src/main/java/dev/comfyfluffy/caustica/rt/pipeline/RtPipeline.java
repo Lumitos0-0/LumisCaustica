@@ -158,11 +158,11 @@ public final class RtPipeline {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
-            // The fog's sun-shadow field sits past the sampled bindings rather than joining the guide block,
-            // because that block is written through setExtraStorageImage, which addresses guides by a slot
-            // index it assumes is contiguous with the rest. It is a storage image read and written only by
-            // the two raygens, which is the same shape the guides have.
-            binds.get(WORLD_G_SUN_SHADOW).binding(WORLD_G_SUN_SHADOW)
+            // The aerial medium's light volume sits past the sampled bindings rather than joining the guide
+            // block, because that block is written through setExtraStorageImage, which addresses guides by a
+            // slot index it assumes is contiguous with the rest. It is a storage image read and written only
+            // by the raygens, which is the same shape the guides have.
+            binds.get(WORLD_G_SUN_FROXELS).binding(WORLD_G_SUN_FROXELS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_CELESTIALS).binding(WORLD_CELESTIALS)
@@ -414,16 +414,17 @@ public final class RtPipeline {
     }
 
     /**
-     * Write the fog's sun-shadow field across every ring slot. Pass A fills it, Pass B reads it, and the
-     * GENERAL layout both need is the one the guides already use, so nothing here transitions.
+     * Write the aerial medium's light volume across every ring slot. It is written by its own raygen record
+     * and read by the indirect trace, and the GENERAL layout both need is the one the guides already use, so
+     * nothing here transitions.
      */
-    public void setSunShadowImage(long imageView) {
+    public void setSunFroxelImage(long imageView) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
             imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(RING, stack);
             for (int i = 0; i < RING; i++) {
-                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_G_SUN_SHADOW)
+                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_G_SUN_FROXELS)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(imgInfo);
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
@@ -527,11 +528,26 @@ public final class RtPipeline {
     }
 
     /**
+     * Record a trace over a three-dimensional raygen grid, for a pass whose launch is a volume rather than a
+     * frame of pixels: {@code depth} is the number of slices, and the shader reads its own extent out of
+     * {@code DispatchRaysDimensions()}.
+     */
+    public void traceVolume(VkCommandBuffer cmd, int width, int height, int depth,
+                            java.nio.ByteBuffer pushConstants, int raygenIndex) {
+        trace(cmd, width, height, pushConstants, raygenIndex, depth);
+    }
+
+    /**
      * Record bind (+ optional raygen push constants) + trace into the given command buffer.
      * {@code raygenIndex} selects which raygen record of the SBT this dispatch launches; the miss and
      * hit regions are shared, so passes over the same scene differ only in this index.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex) {
+        trace(cmd, width, height, pushConstants, raygenIndex, 1);
+    }
+
+    private void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants,
+                       int raygenIndex, int depth) {
         if (raygenIndex < 0 || raygenIndex >= raygenCount) {
             throw new IllegalArgumentException("raygen index " + raygenIndex + " out of range [0, " + raygenCount + ")");
         }
@@ -553,7 +569,7 @@ public final class RtPipeline {
             VkStridedDeviceAddressRegionKHR hit = VkStridedDeviceAddressRegionKHR.calloc(stack)
                     .deviceAddress(sbt.deviceAddress + (long) (raygenCount + missCount) * sbtStride).stride(sbtStride).size((long) hitGroupCount * sbtStride);
             VkStridedDeviceAddressRegionKHR callable = VkStridedDeviceAddressRegionKHR.calloc(stack);
-            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, 1);
+            vkCmdTraceRaysKHR(cmd, raygen, miss, hit, callable, width, height, depth);
         }
     }
 
