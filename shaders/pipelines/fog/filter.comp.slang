@@ -32,6 +32,11 @@ void main(uint3 id : SV_DispatchThreadID) {
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
     int2 grid = int2(pc.grid);
     float slices = max(worldPush.fogGrid.z, 1.0);
+    // The dispatch rounds each axis up to the 4x4x4 group, so the tail lanes of a grid that is not a
+    // multiple of four must not write past the cache extent.
+    if (any(int3(id) >= int3(grid, int(slices)))) {
+        return;
+    }
     float2 uv = (float2(id.xy) + 0.5) / float2(grid);
     float u = (float(id.z) + 0.5) / slices;
 
