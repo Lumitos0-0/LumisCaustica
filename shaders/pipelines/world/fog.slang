@@ -8,8 +8,9 @@
 // renderer has no path to accumulate into; here the same physics is integrated per segment inside the
 // transport, so the volume dims and lights reflections, refractions and indirect bounces exactly as it
 // dims primary visibility, and a volume never needs reprojecting. And its fog is lit through a per-light
-// incident-radiance meter amortized across the volume, which pays off only when the volume is sampled
-// millions of times; a per-segment sun term is one closed-form column, so nothing needs amortizing yet.
+// incident-radiance meter amortized across the volume. That amortization is what makes a meter worth
+// building for a deferred compositor; for one segment of one path, the sun term is a closed-form column,
+// so caching it would cost more than evaluating it.
 //
 // Density is a function of ABSOLUTE world altitude: path positions are rebased to the terrain origin,
 // which moves as the camera travels, so every altitude goes through `rebaseY` (that origin's block Y,
@@ -18,6 +19,7 @@
 
 import world_common;
 import world_core;
+import medium;
 import sky;
 
 public static const uint FOG_ENABLED_BIT = 32u; // WorldPush.flags bit 5
@@ -122,11 +124,11 @@ public float fogColumnToLight(FogMedium f, float sigma, float3 lightDir) {
  * this value times (1 - exp(-sigma*dt)), because integrating a constant medium over a length divides a
  * sigma out and the sigma_s/sigma ratio of a uniform-albedo profile is just the albedo.
  *
- * Only the directional body lights the volume today, and its illuminance is the one terrain already pays
- * for — the column integral is the entire extra cost. Emitter light is the missing half: a torch currently
- * dims the fog in front of it rather than glowing in it. That needs incident light sampled per tap, and
- * per tap is exactly where a meter would plug in: its term is a lookup by the tap's position, the one
- * argument this signature still lacks.
+ * Only the directional body lights the volume, and it is the one terrain already resolves, so the column
+ * integral is the entire extra cost here. Block emitters are not gathered at all, which is why a torch
+ * dims the fog in front of it rather than glowing in it: their light would have to be sampled per tap.
+ * Returning the value as a function of the tap's density keeps that gather a pure extension of this
+ * expression instead of a rewrite of the march.
  */
 public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float phase) {
     return f.albedo * phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir);
