@@ -8,22 +8,23 @@
 // renderer has no path to accumulate into; here the same physics is integrated per segment inside the
 // transport, so the volume dims and lights reflections, refractions and indirect bounces exactly as it
 // dims primary visibility, and a volume never needs reprojecting. And its fog is lit through a per-light
-// incident-radiance meter amortized across the volume. The height profile and the medium's own extinction
-// toward the light stay closed form here, so one segment of one path costs two shadow rays no meter could
-// have saved; the volume is still where per-tap light resolution -- every light, every bounce, at a
-// fraction of the rays -- has to come from.
+// incident-radiance meter amortized across the volume; the sun's half of that is here as a shadow field of
+// its own, and everything else about the lighting stays closed form -- the height profile and the medium's
+// extinction toward the light are integrals rather than samples, so a march tap costs a fetch and a handful
+// of exponentials, with no rays in it at all.
 //
-// Geometry gets a vote: each region of a segment asks one shadow ray whether the tap region sees the
-// directional body at all. Without it a sealed room in-scatters at full daylight and the volume reads as a
-// uniform veil, because the analytic height profile below cannot tell a roof from clear air. One ray per
-// region (not per tap) is the deliberate trade: per-tap visibility is what the froxel incident-light cache
-// amortizes, at a fraction of the rays, and it is the reason a light meter earns its keep here at all.
+// Geometry gets a vote through that field: Pass A resolves once per pixel whether the surface this pixel
+// shows can see the directional body, over a few fixed points on its disc, and every fog tap of that pixel
+// multiplies by the answer. Without it a sealed room in-scatters at full daylight and the volume reads as a
+// uniform veil, because a height profile cannot tell a roof from clear air. Per-tap and per-emitter
+// resolution is what a froxel incident-light cache would add on top, which is exactly what MCRTX's meter is
+// for; this field is its sun-only half, and `fogScatterAt` is the one plug-in site.
 //
 // Density is a function of ABSOLUTE world altitude: path positions are rebased to the terrain origin,
 // which moves as the camera travels, so every altitude goes through `rebaseY` (that origin's block Y,
 // pushed per frame). An exponential would otherwise slide with the player. The profile is flat at and
 // below `refY` rather than growing without bound downward, so a cave's air is no denser than a
-// mountaintop's; what makes caves and interiors dark is the shadow ray above, not the profile.
+// mountaintop's; what makes caves and interiors dark is the shadow field above, not the profile.
 
 import world_common;
 import world_core;
@@ -177,9 +178,11 @@ public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, bool hasSur
     }
     float3 value = float3(0.0, 0.0, 0.0);
     float sigma = fogDensityAt(f, surface);
-    // The same cheap-out the march used to pay for itself with: where the medium's own column carries no
-    // light at this altitude, the answer is already zero and the four rays that would prove it are the
-    // expensive part of the frame. Caves and sealed rooms therefore cost a store, not traces.
+    // The cheap-out the march used to carry, moved to where it saves four rays instead of one: where the
+    // medium's own column says no direct light arrives at this altitude — dense fog with the sun near the
+    // horizon — the answer is already zero and the traces would only prove it. Occlusion by geometry is a
+    // different case and is not free: a shaded wall in clear air pays its four rays, because nothing but a
+    // ray knows a wall is there.
     if (hasSurface && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
         // Fixed per texel, deliberately not the path's seed: mixing the frame index in here is what turns
         // a shadow field into noise the denoiser then has to guess at.
@@ -317,8 +320,9 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
  * record's throughput — but throughput is a multiplier, so the light the air scattered into that stretch
  * has nowhere to live. Reconstructing the ray is cheaper than widening the record ABI to carry it, and
  * doing it here keeps the budget honest: the prefix is added once per sample, where the record it belongs
- * to is read by every SPP resample and by both halves of a split. It pays the same single light ray as any
- * other segment, so a frame over water costs one more. The unprojection below mirrors primary.rgen
+ * to is read by every SPP resample and by both halves of a split, and it reads the pixel's resolved shadow
+ * field like any other segment, so a frame over water costs a fetch rather than a ray. The unprojection
+ * below mirrors primary.rgen
  * except for the far plane it never needs, jitter included, because the prefix has to end on the surface
  * that ray hit. `hitPos` is the biased one the record carries, so the length is off by at most SURF_BIAS
  * against a scale height of blocks.
