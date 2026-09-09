@@ -269,6 +269,10 @@ public final class RtComposite {
     // 0 = the filter reads cacheA and writes cacheB this frame, 1 = the reverse. Only advances on a
     // frame that actually ran the filter, so a fog-disabled frame keeps pointing at the same half.
     private int fogParity;
+    // Set by an explicit render-state invalidation (dimension change, F3+A): the accumulated history
+    // describes a different world, so the next filter dispatch starts from an empty cache instead of
+    // reprojection-rejecting its way back over several frames.
+    private boolean fogHistoryResetRequested;
     private int froxelW = -1;
     private int froxelH = -1;
     private int froxelSlices = -1;
@@ -552,6 +556,16 @@ public final class RtComposite {
     /** Reset exposure filtering after an explicit render-state invalidation such as F3+A. */
     public void resetExposureHistory() {
         exposure.requestReset();
+    }
+
+    /**
+     * Drop the accumulated froxel history after an explicit render-state invalidation. Deferred to the
+     * next recorded frame rather than cleared here: the invalidation callback runs between frames, and
+     * clearing inside the frame's own command buffer keeps the write ordered against the filter that
+     * reads it without a second submission.
+     */
+    public void resetFogHistory() {
+        fogHistoryResetRequested = true;
     }
 
     /**
@@ -953,6 +967,7 @@ public final class RtComposite {
         froxelSlices = -1;
         fogDivisorAlloc = -1;
         fogSlicesAlloc = -1;
+        fogHistoryResetRequested = false;
     }
 
     /**
@@ -963,16 +978,22 @@ public final class RtComposite {
     private void clearFogCaches(RtContext ctx) {
         ctx.submitSync(cmd -> {
             try (MemoryStack stack = MemoryStack.stackPush()) {
-                VkClearColorValue color = VkClearColorValue.calloc(stack);
-                color.float32(0, 0.0f).float32(1, 0.0f).float32(2, 0.0f).float32(3, 0.0f);
-                VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
-                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
-                        .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-                VK10.vkCmdClearColorImage(cmd, froxelCacheA.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
-                VK10.vkCmdClearColorImage(cmd, froxelCacheB.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
-                VK10.vkCmdClearColorImage(cmd, froxelRaw.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
+                recordFogCacheClear(cmd, stack, froxelCacheA);
+                recordFogCacheClear(cmd, stack, froxelCacheB);
+                recordFogCacheClear(cmd, stack, froxelRaw);
             }
         });
+    }
+
+    /** Clear one cache half inside a recorded frame, so the next filter dispatch sees empty history. */
+    private void recordFogCacheClear(VkCommandBuffer cmd, MemoryStack stack, RtImage cache) {
+        VkClearColorValue color = VkClearColorValue.calloc(stack);
+        color.float32(0, 0.0f).float32(1, 0.0f).float32(2, 0.0f).float32(3, 0.0f);
+        VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+        range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+        VK10.vkCmdClearColorImage(cmd, cache.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
+        VulkanCommandEncoder.memoryBarrier(cmd, stack); // clear visible to the filter's history sample
     }
 
     private void destroyGuideImages() {
@@ -1401,6 +1422,12 @@ public final class RtComposite {
             // meters and glows like any other scene radiance.
             int marchParity = fogParity;
             if (fogOn) {
+                if (fogHistoryResetRequested) {
+                    fogHistoryResetRequested = false;
+                    try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog history reset")) {
+                        recordFogCacheClear(cmd, stack, marchParity == 0 ? froxelCacheA : froxelCacheB);
+                    }
+                }
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel lighting");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogFroxels")) {
                     active.trace(cmd, froxelW, froxelH * froxelSlices, pushConstants, FROXEL_RAYGEN_INDEX);

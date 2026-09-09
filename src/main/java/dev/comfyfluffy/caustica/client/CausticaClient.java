@@ -76,6 +76,7 @@ public final class CausticaClient implements ClientModInitializer {
 		InvalidateRenderStateCallback.EVENT.register(() -> {
 			RtTerrain.requestFullClear();
 			RtComposite.INSTANCE.resetExposureHistory();
+			RtComposite.INSTANCE.resetFogHistory();
 			RtComposite.INSTANCE.resetFailureLatch(); // F3+A doubles as manual RT recovery after a latched failure
 		});
 
