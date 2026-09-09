@@ -254,6 +254,9 @@ public final class RtComposite {
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
+    // The fog's sun-shadow field: half resolution, written by Pass A's primary surface, read by every fog
+    // tap of that pixel. Not a DLSS guide, but the same lifetime and the same rebinding path.
+    private RtImage gSunShadow;
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -867,6 +870,7 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
+        worldPipeline.setSunShadowImage(gSunShadow.view);
     }
 
     private void destroyGuideImages() {
@@ -893,6 +897,10 @@ public final class RtComposite {
         if (gSpecMotion != null) {
             gSpecMotion.destroy();
             gSpecMotion = null;
+        }
+        if (gSunShadow != null) {
+            gSunShadow.destroy();
+            gSunShadow = null;
         }
         if (rrOutput != null) {
             rrOutput.destroy();
@@ -978,6 +986,10 @@ public final class RtComposite {
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
+        // Half resolution in each axis, and every texel is owned by the top-left pixel of its 2x2 block, so
+        // a texel is written once. Rounding must match the shader's (size + 1) * 0.5 for odd dimensions.
+        gSunShadow = ctx.createStorageImage((renderW + 1) / 2, (renderH + 1) / 2,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "fog sun shadow " + (renderW + 1) / 2 + "x" + (renderH + 1) / 2);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);

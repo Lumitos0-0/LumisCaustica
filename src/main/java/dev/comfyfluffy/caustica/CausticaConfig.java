@@ -621,10 +621,10 @@ public final class CausticaConfig {
             public static final FloatSetting ANISOTROPY =
                     clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.35f, -0.9f, 0.9f);
             // Distance a segment is resolved into STEPS taps, the vertical extent of the sun column, and
-            // how far a fog region's light ray looks for occluders. Not a "how far fog reaches": a path's
-            // whole length is always integrated, only its near field is finely sampled, so raising REACH
-            // buys detail rather than adding a visible wall -- but it does lengthen every light ray, so it
-            // is the second knob to turn if shafts get expensive.
+            // how far the shadow field's rays look for occluders. Not a "how far fog reaches": a path's whole
+            // length is always integrated, only its near field is finely sampled, so raising REACH buys
+            // detail rather than adding a visible wall. The rays it lengthens are one set per pixel of the
+            // frame rather than one per fog tap, which is why this is cheap to raise.
             public static final FloatSetting REACH =
                     clampedFloat("caustica.rt.fog.reach", "fog.reach", 512.0f, 16.0f, 4096.0f);
             public static final IntSetting STEPS =

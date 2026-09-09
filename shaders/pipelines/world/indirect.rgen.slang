@@ -70,6 +70,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
     // a dielectric it is whatever the parent was travelling through.
     MediumStack medium = seg.medium;
     FogMedium aerial = fogMedium(worldPush);
+    // Where the sun is visible to this pixel's fog, resolved once by Pass A. Every segment of this path
+    // reads that one answer, which is why a shaft looks like a shaft at any sample count.
+    float3 aerialLight = aerial.active ? fogSunShadow(float2(pix), frameSize) : float3(1.0, 1.0, 1.0);
 
     // The camera-to-first-interface stretch, when Pass A consumed it. A record that still starts at the eye
     // (bounce 0) needs nothing here: this trace re-walks the primary ray and its own first segment covers
@@ -78,7 +81,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
         float3 prefixT;
         float3 prefixS;
         fogPrimarySegment(worldPush, aerial, celestialLight, medium, float2(pix), frameSize, seg.ro,
-                          seed, prefixT, prefixS);
+                          aerialLight, prefixT, prefixS);
         L += prefixS;
         throughput *= prefixT;
     }
@@ -128,7 +131,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
             // medium's reach.
             float3 escapedT;
             float3 escapedS;
-            fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, ESCAPE_DISTANCE, seed,
+            fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, ESCAPE_DISTANCE, aerialLight,
                                 escapedT, escapedS);
             float3 sky = payloadSky();
             L += throughput * (escapedS + escapedT * sky); // escaped to sky
@@ -141,7 +144,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
         // air; one function owns both so neither is applied twice. Air with fog off costs one comparison.
         float3 segmentT;
         float3 segmentS;
-        fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, payload.hitT, seed, segmentT, segmentS);
+        fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, payload.hitT, aerialLight,
+                segmentT, segmentS);
         L += throughput * segmentS;
         throughput *= segmentT;
 

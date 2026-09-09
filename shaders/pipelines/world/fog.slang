@@ -27,6 +27,7 @@
 
 import world_common;
 import world_core;
+import bindings;
 import math;
 import medium;
 import trace;
@@ -129,46 +130,110 @@ public float fogColumnToLight(FogMedium f, float sigma, float3 lightDir) {
     return exp(-min(tau, FOG_MAX_TAU));
 }
 
-/** A region whose own column has extinguished the light to this fraction is not worth a ray for. */
 public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
+// Sun-disc samples per shadow-field texel. Four is enough to turn a hard edge into a gradient at this
+// resolution, and the field is written once per pixel of the *frame*, so it is not multiplied by bounces
+// or samples per pixel the way a per-tap test is.
+public static const int FOG_SUN_SHADOW_TAPS = 4;
 
 /**
- * Whether the sun (or moon) reaches a point in the volume: geometry first, then the medium's own
- * extinction toward it. A solid block ends this ray at its first intersection, so a fully shadowed tap
- * costs a traversal, not a march -- and a tap the fog has already extinguished costs nothing, which is
- * why the column is tested before the ray is cast rather than multiplied after it.
+ * The sun's shadow as a per-pixel field: pass A writes it from the surface it just resolved, and every fog
+ * tap of every bounce of that pixel reads it back as a fetch.
  *
- * The direction is jittered across the body's angular extent so beam edges accumulate soft, the same trick
- * the terrain's sun NEE uses; a fixed direction would put a hard crease along every shadow boundary and
- * hand DLSS-RR an edge it cannot resolve.
+ * <p>This is the shape MCRTX uses. Its `SunShadowRayGenInline` writes `outputBufferSunLightShadow` at
+ * render size, `ShadowDenoising` (separable, ping-ponged) and the checkerboard field blend filter that
+ * against `previousSunLightShadowBuffer`, and the in-scatter step *samples* the result rather than testing
+ * the sun per sample. The filtering is why their shafts are clean, so Caustica needs the shared field more
+ * than it needs a denoiser: it already averages the field across bounces, SPP resamples and neighbouring
+ * pixels, and it has nothing to filter out, because the taps are fixed rather than random.
  *
- * One ray per segment is a stop-gap, not the shape this wants: a shadow *field* -- one filtered, shared,
- * screen-space value per pixel, written where the primary hit already is and read here as a fetch -- gives
- * every sample of every bounce the same answer at a quarter of the rays, and cannot flicker because it is
- * not resampled per path. See the sun-shadow field in the port analysis.
+ * <p>Before this there was a jittered `visibility()` ray per fog segment, which is exactly as quiet as the
+ * sample budget makes it -- sharp, correct, and grainy along beam edges at one sample per pixel. The field
+ * is cheaper at any budget above one bounce and does not need samples to converge.
+ *
+ * <p>Determinism is the point of that last part. A jittered ray per sample is only as quiet as the sample
+ * budget can make it, and a path that runs out of budget shows up as grain along beam edges -- the worst
+ * place for it, because the eye reads flicker in a high-contrast edge far more readily than in the flat
+ * haze between. Fixed offsets per texel give a field that is bit-identical frame to frame: beam edges that
+ * are soft because they average several rays, not because ten frames averaged.
+ *
+ * <p>The field is half resolution in each axis, which is what buys the softness rather than costing it:
+ * four pixels share a texel and the read interpolates, so a penumbra about a pixel wide still lands as a
+ * gradient. One quarter of the texels at four taps each is one ray per pixel per frame for the whole
+ * shadowing problem, whatever the sample budget.
  */
-public float3 fogLightVisibility(FogMedium f, CelestialLight sun, float3 rebasedPos, inout uint seed) {
-    float sigma = fogDensityAt(f, rebasedPos);
-    if (fogColumnToLight(f, sigma, sun.dir) < FOG_NEGLIGIBLE_LIGHT) {
-        return float3(0.0, 0.0, 0.0);
+public void fogWriteSunShadow(int2 pix, float2 size, float3 surface, bool hasSurface, CelestialLight sun) {
+    FogMedium f = fogMedium(worldPush);
+    if (!f.active) {
+        return;
     }
-    float3 dir = sun.dir;
-    if (sun.halfAngle > 0.0) {
-        dir = sampleSquare(dir, sun.halfAngle, seed);
+    int2 fieldSize = int2((size + 1.0) * 0.5);
+    int2 texel = int2((float2(pix) + 0.5) * 0.5);
+    // One thread per texel, the top-left pixel of its block. All four pixels of the block would otherwise
+    // race to write it, and a race for last write wins is precisely the frame-to-frame instability that this
+    // whole design exists to avoid.
+    if (fieldSize.x <= 0 || fieldSize.y <= 0 || any(texel * 2 != pix)) {
+        return;
     }
-    return visibility(rebasedPos + dir * SURF_BIAS, dir, f.reach).transmittance;
+    float3 value = float3(0.0, 0.0, 0.0);
+    float sigma = fogDensityAt(f, surface);
+    // The same cheap-out the march used to pay for itself with: where the medium's own column carries no
+    // light at this altitude, the answer is already zero and the four rays that would prove it are the
+    // expensive part of the frame. Caves and sealed rooms therefore cost a store, not traces.
+    if (hasSurface && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
+        // Fixed per texel, deliberately not the path's seed: mixing the frame index in here is what turns
+        // a shadow field into noise the denoiser then has to guess at.
+        uint s = uint(pix.x) * 1973u + uint(pix.y) * 9277u + 26699u;
+        float3 sum = float3(0.0, 0.0, 0.0);
+        for (int i = 0; i < FOG_SUN_SHADOW_TAPS; i++) {
+            // A point on the body's square disc, offset off the surface along it so the ray leaves the face
+            // it started on. With halfAngle at zero this is the exact direction, which is what a moonless
+            // pinhole look would ask for.
+            float3 dir = sampleSquare(sun.dir, sun.halfAngle, s);
+            sum += visibility(surface + dir * SURF_BIAS, dir, f.reach).transmittance;
+        }
+        value = sum / float(FOG_SUN_SHADOW_TAPS);
+    }
+    // The alpha is not spare precision, it is the anchor. A primary ray that escaped to the sky resolved no
+    // surface, and borrowing the eye's occlusion for the horizon haze would dim it whenever the camera
+    // stands in shade. alpha=0 says "nothing here yet", and the reader answers with the analytic column
+    // alone -- unshadowed, which is what the distant sky's fog used to get, and still does.
+    gSunShadow[texel] = float4(value, hasSurface ? 1.0 : 0.0);
 }
 
 /**
- * What one tap scatters toward the eye, in the units this march wants: the tap's in-scattered radiance is
- * this value times (1 - exp(-sigma*dt)), because integrating a constant medium over a length divides a
- * sigma out and the sigma_s/sigma ratio of a uniform-albedo profile is just the albedo.
+ * Read the field for a pixel: bilinear across the half-resolution texels, by hand because a storage image
+ * has no sampler of its own. What this replaces is a `visibility()` ray per fog segment: same four
+ * questions answered, four loads instead of four traces, and one lookup per path instead of per tap.
+ */
+public float3 fogSunShadow(float2 pix, float2 size) {
+    int2 fieldSize = int2((size + 1.0) * 0.5);
+    if (fieldSize.x <= 0 || fieldSize.y <= 0) {
+        return float3(1.0, 1.0, 1.0);
+    }
+    float2 p = clamp((pix + 0.5) * 0.5 - 0.5, float2(0.0, 0.0), float2(fieldSize) - 1.0);
+    int2 lo = int2(floor(p));
+    float2 w = p - float2(lo);
+    // All four corners are clamped, not just the far ones: at the last texel the +1 neighbour exists only as
+    // a zero-weight term, and a zero-weight out-of-range index is still out of range.
+    int2 x1 = int2(min(lo.x + 1, fieldSize.x - 1), lo.y);
+    int2 y1 = int2(lo.x, min(lo.y + 1, fieldSize.y - 1));
+    int2 c11 = min(lo + int2(1, 1), fieldSize - 1);
+    float4 a = lerp(lerp(gSunShadow[lo], gSunShadow[x1], w.x),
+            lerp(gSunShadow[y1], gSunShadow[c11], w.x), w.y);
+    // The anchor interpolates with the value, so a texel that resolved no surface pulls its share of the
+    // blend toward "unshadowed" instead of toward zero. No divide: alpha is a weight, not a count.
+    return lerp(float3(1.0, 1.0, 1.0), a.xyz, a.w);
+}
+
+/**
+ * Sun light reaching a fog tap, in `sun.illuminance`'s units: the analytic column times the shadow field.
  *
- * The column toward the body rides here because it is a property of the tap; the geometry in between is a
- * property of the region and arrives as a separate multiplier from fogLightVisibility. Block emitters are
- * not gathered at all, which is why a torch dims the fog in front of it rather than glowing in it: that
- * light needs a radiance cache per tap to be worth the rays. Keeping this a function of the tap (rather
- * than an expression inlined twice) is what lets such a cache extend the march instead of rewriting it.
+ * <p>The column and the field answer different questions and both are needed. The column integrates the
+ * medium's own profile toward the body, which is what reddens light through a long horizontal path and what
+ * tints it through a pane a tap happens to be behind; a single sample at the end of a segment could never
+ * know either, because they vary along the way. The field knows about *geometry*, which a profile cannot
+ * see: a roof, a wall, sixty blocks of hillside.
  */
 public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float phase) {
     return f.albedo * phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir);
@@ -190,7 +255,7 @@ public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float p
  * sits where transmittance has already gone to nothing.
  */
 public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight sun,
-                         float3 ro, float3 rd, float t, inout uint seed,
+                         float3 ro, float3 rd, float t, float3 segmentLight,
                          out float3 T, out float3 S) {
     T = float3(1.0, 1.0, 1.0);
     S = float3(0.0, 0.0, 0.0);
@@ -216,15 +281,10 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
     int steps = min(max((int)ceil(resolved / tapLen), 1), f.maxSteps);
     float dt = resolved / float(steps);
 
-    // ONE light sample for the whole segment, taken at the surface it ends on (or, for a ray that escapes
-    // past `reach`, at the far end of the stretch the medium still matters over). Anchoring there rather
-    // than mid-segment is what makes a beam look like a beam: the sample lands on the geometry the viewer
-    // is actually seeing, so a sunlit patch glows through the haze in front of it and a shaded patch does
-    // not, and every bounce, refraction and SPP resample of the pixel agrees. Sampling mid-segment instead
-    // can miss a shaft entirely or land in one, which reads as a blob sliding across the image as the
-    // camera moves. Per-region and per-tap resolution is the win a filtered shadow field buys; see the
-    // note on fogLightVisibility.
-    float3 segmentLight = fogLightVisibility(f, sun, ro + rd * min(t, f.reach), seed);
+    // The pixel's sun-shadow value arrives from the caller, already resolved: one lookup per traced path,
+    // shared by every segment of it. Both regions below multiply by the same value, so a shadow cannot
+    // apply to the near half of a stretch and not the far half -- a beam is either there for this pixel or
+    // it is not, and anything else reads as a seam sliding across the image as the camera moves.
 
     for (int i = 0; i < steps; i++) {
         float3 tapMid = ro + rd * (dt * (float(i) + 0.5));
@@ -264,7 +324,7 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
  * against a scale height of blocks.
  */
 public void fogPrimarySegment(WorldPush push, FogMedium f, CelestialLight sun, MediumStack medium,
-                       float2 pix, float2 size, float3 hitPos, inout uint seed,
+                       float2 pix, float2 size, float3 hitPos, float3 segmentLight,
                        out float3 T, out float3 S) {
     T = float3(1.0, 1.0, 1.0);
     S = float3(0.0, 0.0, 0.0);
@@ -284,5 +344,5 @@ public void fogPrimarySegment(WorldPush push, FogMedium f, CelestialLight sun, M
     if (hitDistance <= 1.0e-4) {
         return;
     }
-    fogIntegrateSegment(medium, f, sun, eye, toHit / hitDistance, hitDistance, seed, T, S);
+    fogIntegrateSegment(medium, f, sun, eye, toHit / hitDistance, hitDistance, segmentLight, T, S);
 }

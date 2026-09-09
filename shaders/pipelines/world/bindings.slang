@@ -14,6 +14,11 @@ import world_common;
 [[vk::binding(6, 0)]] [format("rg16f")] public RWTexture2D<float2> gMotion;
 [[vk::binding(7, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSpecAlbedo;
 [[vk::binding(8, 0)]] [format("rg16f")] public RWTexture2D<float2> gSpecMotion;
+// The fog's sun-shadow field, half resolution and written by the primary pass. Not a DLSS guide, but it
+// shares the guide plumbing because it has the same shape: one write per pixel by pass A, read by pass B,
+// GENERAL layout, never leaves the pipeline. Binding 12 rather than 9 because Java addresses the guide block
+// by a contiguous slot index.
+[[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSunShadow;
 
 [[vk::binding(2, 0)]] public Sampler2D blockAlbedoAtlas;
 [[vk::binding(9, 0)]] public Sampler2D celestialsAtlas;
