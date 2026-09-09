@@ -33,18 +33,26 @@ abstract class GenerateRtBindings extends DefaultTask {
                     G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
                     CELESTIALS: "celestialsAtlas", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut",
                     ENTITY_ALBEDO: "entityAlbedoTex", MATERIAL_SURFACE0: "materialSurface0Tex",
-                    MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],
+                    MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex",
+                    FROXEL_RAW: "froxelRaw"]],
             [prefix: "DISPLAY", source: "pipelines/display/main.comp.slang", resources: [
                     OUTPUT: "outputImage", RT_IMAGE: "rtImage", EXPOSURE: "exposureImage", HDR_OUTPUT: "hdrImage",
                     SDR_TONE_LUT: "toneLut", HDR_TONE_LUT: "hdrToneLut", LOOK_LUT: "lookLut", BLOOM: "bloomImage"]],
             [prefix: "DEBUG_PRESENT", source: "pipelines/debug_present/main.comp.slang", resources: [
                     OUTPUT: "outputImage", G_NORMAL: "gNormal", G_ALBEDO: "gAlbedo", G_DEPTH: "gDepth",
                     G_MOTION: "gMotion", G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
-                    SCENE: "sceneImage", EXPOSURE: "exposureImage", EXPOSURE_STATE: "exposureState"]],
+                    SCENE: "sceneImage", EXPOSURE: "exposureImage", EXPOSURE_STATE: "exposureState",
+                    FOGGED: "foggedImage"]],
             [prefix: "EXPOSURE_HIST", source: "pipelines/exposure_hist/main.comp.slang", resources: [
                     COLOR: "colorImage", BINS: "histBins", DEPTH: "depthImage", ALBEDO: "albedoImage"]],
             [prefix: "EXPOSURE_RESOLVE", source: "pipelines/exposure_resolve/main.comp.slang", resources: [
                     HIST_BINS: "histBins", IMAGE: "exposureImage", STATE: "stateBuf"]],
+            [prefix: "FOG_FILTER", source: "pipelines/fog/filter.comp.slang", resources: [
+                    RAW: "rawFroxel", CACHE_A: "cacheA", CACHE_B: "cacheB",
+                    WRITE_A: "writeA", WRITE_B: "writeB"]],
+            [prefix: "FOG_MARCH", source: "pipelines/fog/march.comp.slang", resources: [
+                    FROXEL_A: "froxelA", FROXEL_B: "froxelB", SCENE: "sceneImage",
+                    DEPTH: "depthImage", OUTPUT: "foggedImage"]],
             [prefix: "BLOOM", source: "pipelines/bloom/main.comp.slang", resources: [
                     OUTPUT: "dstImage", SOURCE: "srcImage", EXPOSURE: "exposureImage"]],
             [prefix: "SKY_LUT", source: "pipelines/sky_lut/view.comp.slang", resources: [
@@ -120,7 +128,7 @@ abstract class GenerateRtBindings extends DefaultTask {
                 constants.WORLD_SET = ordinary.values().first().set
                 ordinary.each { suffix, location -> constants["WORLD_${suffix}"] = location.index }
                 def guides = ordinary.findAll { suffix, ignored -> (suffix as String).startsWith("G_") }
-                def storageImages = guides + ordinary.findAll { suffix, ignored -> suffix == "OUTPUT" }
+                def storageImages = guides + ordinary.findAll { suffix, ignored -> suffix == "OUTPUT" || suffix == "FROXEL_RAW" }
                 def samplers = ordinary.findAll { suffix, ignored -> suffix != "TLAS" && !storageImages.containsKey(suffix) }
                 constants.WORLD_GUIDE_COUNT = guides.size()
                 constants.WORLD_SET_BINDING_COUNT = ordinary.values()*.index.max() + 1

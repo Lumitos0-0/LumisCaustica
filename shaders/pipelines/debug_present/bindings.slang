@@ -10,3 +10,5 @@ import display_common;
 [[vk::binding(7, 0)]] [format("rgba16f")] public RWTexture2D<float4> sceneImage;
 [[vk::binding(8, 0)]] [format("r32f")] public RWTexture2D<float> exposureImage;
 [[vk::binding(9, 0)]] public StructuredBuffer<ExposureState, Std430DataLayout> exposureState;
+// Display-res fog composite (rgb = fogged scene, a = transmittance), written by pipelines/fog/march.comp.
+[[vk::binding(10, 0)]] [format("rgba16f")] public RWTexture2D<float4> foggedImage;

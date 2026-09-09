@@ -93,6 +93,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0);
         float evFromMidGrey = log2(max(exposedLuminance, 1.0e-6) / 0.18);
         dbg = exposureFalseColor(evFromMidGrey);
+    } else if (pc.debugView == 10u) {
+        // What the fog added: the composite minus the attenuated scene. Scaled up because a single
+        // scatter event's radiance is small next to the surfaces it veils.
+        float4 fogged = foggedImage[pix];
+        float3 inScatter = max(fogged.rgb - sceneImage[pix].rgb * fogged.a, float3(0.0));
+        dbg = acesCgToSrgb(inScatter * 4.0);
+    } else if (pc.debugView == 11u) {
+        float transmittance = clamp(foggedImage[pix].a, 0.0, 1.0);
+        dbg = float3(transmittance, transmittance, transmittance);
     } else if (pc.debugView == 9u) {
         float weight = meteringWeight(uv, gDepth[guidePix], gAlbedo[guidePix].a > 0.5);
         dbg = float3(weight, weight, weight);

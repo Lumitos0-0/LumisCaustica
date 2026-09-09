@@ -19,6 +19,12 @@ import world_common;
 [[vk::binding(9, 0)]] public Sampler2D celestialsAtlas;
 [[vk::binding(10, 0)]] public Sampler2D skyViewLut;
 [[vk::binding(11, 0)]] public Sampler2D transmittanceLut;
+// Froxel radiance cache input: the per-froxel single-scatter source term written by froxel_light.rgen
+// (rgb = in-scatter radiance per unit distance, a = extinction at the froxel centre). The temporal/filter
+// pass in pipelines/fog reads rgb and produces the cache the display-res march integrates; extinction is
+// re-evaluated analytically by the march instead of being interpolated from this coarse grid, so alpha
+// here describes the froxel that was lit rather than feeding the composite.
+[[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture3D<float4> froxelRaw;
 
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];

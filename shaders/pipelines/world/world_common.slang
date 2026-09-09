@@ -83,6 +83,17 @@ public struct WorldPush {
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+    // ---- Volumetric fog (froxel radiance cache). See shaders/pipelines/world/fog_common.slang.
+    // x scattering density at/below the reference altitude (1/block), y density scale height (blocks),
+    // z reference altitude in ABSOLUTE world Y, w Henyey-Greenstein anisotropy.
+    public float4   fogParams;
+    // x march/froxel max distance (blocks), y froxel depth-slice distribution exponent,
+    // z froxel depth slice count, w enabled (0 = fog off; the composite pass then copies the scene).
+    public float4   fogGrid;
+    // x single-scatter albedo (scattering/extinction), y froxel lateral divisor (render res / this),
+    // z RIS emitter candidates per froxel (0 = sun only), w absolute world Y of rebased zero, i.e. the
+    // terrain rebase origin's block Y — rebased shader positions plus this recover absolute altitude.
+    public float4   fogScatter;
     // Pre-exposure scalar applied to radiance at the outImage write
     // ONLY, so all light transport above stays in absolute scene units. Keeps stored fp16 values
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel

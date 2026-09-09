@@ -583,6 +583,53 @@ public final class CausticaConfig {
             }
         }
 
+        /**
+         * Volumetric fog: a frustum-aligned froxel radiance cache lit by traced visibility rays (sun) and
+         * RIS-selected emitters, integrated along each camera ray at display resolution. See
+         * {@code shaders/pipelines/world/fog_common.slang} for the medium model and
+         * {@code shaders/pipelines/fog} for the filter and march passes.
+         *
+         * <p>Density is the scattering coefficient at or below the reference altitude, in 1/block; the
+         * medium thins exponentially above it with {@link #SCALE_HEIGHT}. Single scattering only — the
+         * cache's temporal accumulation makes one traced sample per froxel per frame converge, and a
+         * second scatter event would need the whole volume re-lit per bounce.
+         */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fog", "fog.enabled", true);
+            /** Scattering density at or below the reference altitude, 1/block. */
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.fogDensity", "fog.density", 0.012f, 0.0f, 0.5f);
+            /** Fraction of extinction that scatters rather than absorbs; 1 is a conservative (white) medium. */
+            public static final FloatSetting SCATTER_ALBEDO =
+                    clampedFloat("caustica.rt.fogScatterAlbedo", "fog.scatter-albedo", 0.92f, 0.0f, 1.0f);
+            /** Henyey-Greenstein anisotropy: positive forward-scatters, which is what makes shafts read as beams. */
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.62f, -0.9f, 0.95f);
+            /** Exponential density falloff above the reference altitude, in blocks. */
+            public static final FloatSetting SCALE_HEIGHT =
+                    clampedFloat("caustica.rt.fogScaleHeight", "fog.scale-height", 24.0f, 1.0f, 512.0f);
+            /** How far the volume is traced, in blocks. Beyond this the medium is treated as vacuum. */
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.fogMaxDistance", "fog.max-distance", 128.0f, 8.0f, 512.0f);
+            /** Depth-slice distribution exponent: 1 is linear, higher packs slices near the camera. */
+            public static final FloatSetting SLICE_EXPONENT =
+                    clampedFloat("caustica.rt.fogSliceExponent", "fog.slice-exponent", 2.0f, 1.0f, 4.0f);
+            /** Froxel lateral size as a divisor of the render resolution (Remix uses 16). */
+            public static final IntSetting FROXEL_DIVISOR =
+                    intChoice("caustica.rt.fogFroxelDivisor", "fog.froxel-divisor", 16, List.of(8, 16, 24, 32));
+            public static final IntSetting SLICES =
+                    intChoice("caustica.rt.fogSlices", "fog.slices", 48, List.of(16, 32, 48, 64, 96));
+            /** RIS emitter candidates traced per froxel per frame (0 = sun and sky only). */
+            public static final IntSetting RIS_CANDIDATES =
+                    clampedInt("caustica.rt.fogRisCandidates", "fog.ris-candidates", 4, 0, 16);
+            /** Temporal sample-count clamp: higher converges harder and trails longer on fast motion. */
+            public static final FloatSetting MAX_HISTORY =
+                    clampedFloat("caustica.rt.fogMaxHistory", "fog.max-history", 32.0f, 1.0f, 256.0f);
+
+            private Fog() {
+            }
+        }
+
         public static final class Omm {
             public static final BooleanSetting ENABLED = bool("caustica.rt.omm", "omm.enabled", true);
             public static final IntSetting SUBDIVISION =

@@ -49,6 +49,7 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricFog(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -135,6 +136,10 @@ public final class RtVideoOptions {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
     }
 
+    private static OptionInstance<Boolean> volumetricFog() {
+        return bool("caustica.options.rt.fog", CausticaConfig.Rt.Fog.ENABLED);
+    }
+
     private static OptionInstance<Integer> dlssQuality() {
         IntSetting setting = CausticaConfig.Rt.DlssRr.QUALITY;
         List<Integer> steps = CausticaConfig.Rt.DlssRr.QUALITY_STEPS;
@@ -200,8 +205,8 @@ public final class RtVideoOptions {
             // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("caustica.options.rt.debugView." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), Codec.INT),
-            Math.clamp(setting.value(), 0, 9),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11), Codec.INT),
+            Math.clamp(setting.value(), 0, 11),
             setting::set);
     }
 

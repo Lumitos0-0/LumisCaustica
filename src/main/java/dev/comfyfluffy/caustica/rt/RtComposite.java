@@ -38,12 +38,14 @@ import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkBufferImageCopy;
+import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
 import org.lwjgl.vulkan.VkImageBlit;
 import org.lwjgl.vulkan.VkImageCopy;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkImageMemoryBarrier2;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkMemoryBarrier;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
@@ -63,6 +65,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
+import dev.comfyfluffy.caustica.rt.pipeline.RtFogPipeline;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
@@ -170,6 +173,14 @@ public final class RtComposite {
     // pushed inline (the full generated structure exceeds NVIDIA's 256-byte push-constant ceiling).
     // Exact graphics completion guards host writes; ring depth only avoids routine waits.
     private static final int PUSH_RING = 6;
+    /** World-pipeline raygen record that lights the froxel volume (primary 0, indirect 1, froxels 2). */
+    private static final int FROXEL_RAYGEN_INDEX = 2;
+    /**
+     * Luminance ceiling applied to a froxel's filtered source term. A bare emitter inside fog can
+     * otherwise leave one froxel at emission strength, which the temporal cache then smears into a
+     * crawling bright blob; clamping keeps that to a local, stationary glow.
+     */
+    private static final float FOG_FIREFLY_LUMINANCE = 1000.0f;
     private PushSlot[] pushRing;
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
@@ -247,6 +258,23 @@ public final class RtComposite {
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
+    // Volumetric fog. froxelRaw is the per-froxel single-scatter source term the world pipeline's third
+    // raygen record writes; the two cache images are the resolved ping-pong pair the filter alternates
+    // between; fogged is the display-res composite every downstream pass reads instead of rrOutput.
+    private RtImage froxelRaw;
+    private RtImage froxelCacheA;
+    private RtImage froxelCacheB;
+    private RtImage fogged;
+    private RtFogPipeline fogPipeline;
+    // 0 = the filter reads cacheA and writes cacheB this frame, 1 = the reverse. Only advances on a
+    // frame that actually ran the filter, so a fog-disabled frame keeps pointing at the same half.
+    private int fogParity;
+    private int froxelW = -1;
+    private int froxelH = -1;
+    private int froxelSlices = -1;
+    // The grid shape the caches were allocated for, so a config change reallocates them.
+    private int fogDivisorAlloc = -1;
+    private int fogSlicesAlloc = -1;
     private final RtExposure exposure = new RtExposure();
 
     // Trace + guide buffers run at render res; composite (display-mapping) runs at display res.
@@ -337,6 +365,25 @@ public final class RtComposite {
     }
 
     /**
+     * One-line summary of the volumetric fog state for the F3 debug screen ({@code RtFogDebugEntry}):
+     * the live froxel grid, the medium parameters actually pushed to the shader this frame, and which
+     * half of the resolved cache the last march read. Null until the volume has been allocated.
+     */
+    public String fogDebugSummaryLine() {
+        if (froxelRaw == null || fogged == null) {
+            return null;
+        }
+        boolean on = CausticaConfig.Rt.Fog.ENABLED.value();
+        return String.format(java.util.Locale.ROOT,
+                "Caustica fog: %s grid %dx%dx%d (div %d) sigmaT %.4f albedo %.2f g %.2f dist %.0f M %d hist %.0f next cache %s",
+                on ? "on" : "off", froxelW, froxelH, froxelSlices, fogDivisorAlloc,
+                CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.SCATTER_ALBEDO.value(),
+                CausticaConfig.Rt.Fog.ANISOTROPY.value(), CausticaConfig.Rt.Fog.MAX_DISTANCE.value(),
+                CausticaConfig.Rt.Fog.RIS_CANDIDATES.value(), CausticaConfig.Rt.Fog.MAX_HISTORY.value(),
+                fogParity == 0 ? "A" : "B");
+    }
+
+    /**
      * Export the latest RT scene image at the exact input seam of the Look/LMT stage.
      *
      * <p>The GPU image stores {@code sceneLinear * preExposure} in fp16. This readback multiplies RGB by
@@ -349,7 +396,7 @@ public final class RtComposite {
     public boolean exportLatestResidualExposureExr(Path outputPath) throws java.io.IOException {
         RenderSystem.assertOnRenderThread();
         RtContext ctx = RtContext.currentOrNull();
-        if (!enabled() || failed || ctx == null || rrOutput == null || exposure.image() == null
+        if (!enabled() || failed || ctx == null || fogged == null || exposure.image() == null
                 || displayW <= 0 || displayH <= 0 || pendingGraphicsUse != null) {
             return false;
         }
@@ -363,7 +410,8 @@ public final class RtComposite {
         }
 
         // All ordinary frame commands have been submitted before the F2 key is handled. Drain them before
-        // a private one-shot copy so rrOutput and the exposure image describe the same completed frame.
+        // a private one-shot copy so the fog composite and the exposure image describe the same completed
+        // frame.
         ctx.waitIdle();
         RtBuffer readback = ctx.createReadbackBuffer(totalBytes, "residual-exposure EXR readback");
         try {
@@ -413,7 +461,7 @@ public final class RtComposite {
                     .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
                     .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
                     .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
-                    .image(rrOutput.image);
+                    .image(fogged.image);
             imageBarriers.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                     .levelCount(1).layerCount(1);
             imageBarriers.get(1).sType$Default()
@@ -432,7 +480,7 @@ public final class RtComposite {
             sceneCopy.get(0).bufferOffset(0L);
             sceneCopy.get(0).imageSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).layerCount(1);
             sceneCopy.get(0).imageExtent().set(displayW, displayH, 1);
-            VK10.vkCmdCopyImageToBuffer(cmd, rrOutput.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+            VK10.vkCmdCopyImageToBuffer(cmd, fogged.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
                     readback.handle, sceneCopy);
 
             VkBufferImageCopy.Buffer exposureCopy = VkBufferImageCopy.calloc(1, stack);
@@ -603,6 +651,9 @@ public final class RtComposite {
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
+            if (fogPipeline == null) {
+                fogPipeline = RtFogPipeline.create(ctx);
+            }
             if (sdrToneLut == null) {
                 sdrToneLut = RtToneLut.load(ctx, "sdr_aces2_rec709.bin");
             }
@@ -647,14 +698,7 @@ public final class RtComposite {
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
-            RtToneLut boundLookLut = lookLut;
-            displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
-                    sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
-            bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
-            debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
-                    exposure.stateBuffer());
+            bindDisplayChain();
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -718,7 +762,11 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            // Record 2: froxel volume lighting. Shares this pipeline's SBT, TLAS, light
+                            // grid and sky LUTs, which is exactly why it is a raygen record and not a
+                            // separate compute pipeline.
+                            "froxel_light.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -733,6 +781,9 @@ public final class RtComposite {
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
+            }
+            if (froxelRaw != null) {
+                worldPipeline.setFroxelImage(froxelRaw.view);
             }
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
@@ -859,6 +910,71 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
     }
 
+    /**
+     * Point every pass downstream of the fog march at this allocation's images. The display mapper, the
+     * bloom pyramid and the exposure histogram all read {@code fogged} rather than {@code rrOutput}: the
+     * march writes the scene through unchanged when fog is off, so the chain has one input either way and
+     * fog participates in auto-exposure and bloom like any other scene radiance. The debug pass keeps
+     * {@code rrOutput} as its scene image (its exposure view inspects the pre-fog scene) and additionally
+     * binds the composite for the in-scatter and transmittance views.
+     */
+    private void bindDisplayChain() {
+        RtToneLut boundLookLut = lookLut;
+        displayPipeline.setImages(displayImage.view, fogged.view, exposure.image().view, hdrDisplayImage.view,
+                sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
+                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+        bloomPipeline.setImages(fogged.view, exposure.image().view, bloomLevels);
+        debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
+                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                exposure.stateBuffer(), fogged.view);
+        fogPipeline.setImages(froxelRaw.view, froxelCacheA.view, froxelCacheB.view,
+                rrOutput.view, gDepth.view, fogged.view);
+    }
+
+    private void destroyFogImages() {
+        if (froxelRaw != null) {
+            froxelRaw.destroy();
+            froxelRaw = null;
+        }
+        if (froxelCacheA != null) {
+            froxelCacheA.destroy();
+            froxelCacheA = null;
+        }
+        if (froxelCacheB != null) {
+            froxelCacheB.destroy();
+            froxelCacheB = null;
+        }
+        if (fogged != null) {
+            fogged.destroy();
+            fogged = null;
+        }
+        froxelW = -1;
+        froxelH = -1;
+        froxelSlices = -1;
+        fogDivisorAlloc = -1;
+        fogSlicesAlloc = -1;
+    }
+
+    /**
+     * Zero both halves of the resolved cache. The temporal blend weights history by its stored sample
+     * count, so an uncleared half would contribute garbage radiance with a garbage (possibly huge)
+     * weight on the first frame after an allocation.
+     */
+    private void clearFogCaches(RtContext ctx) {
+        ctx.submitSync(cmd -> {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkClearColorValue color = VkClearColorValue.calloc(stack);
+                color.float32(0, 0.0f).float32(1, 0.0f).float32(2, 0.0f).float32(3, 0.0f);
+                VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+                VK10.vkCmdClearColorImage(cmd, froxelCacheA.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
+                VK10.vkCmdClearColorImage(cmd, froxelCacheB.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
+                VK10.vkCmdClearColorImage(cmd, froxelRaw.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
+            }
+        });
+    }
+
     private void destroyGuideImages() {
         if (gNormal != null) {
             gNormal.destroy();
@@ -896,9 +1012,13 @@ public final class RtComposite {
         // the RR path whose render-resolution guide inputs the debug pass visualizes.
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
+        int fogDivisor = Math.max(1, CausticaConfig.Rt.Fog.FROXEL_DIVISOR.value());
+        int fogSlices = Math.max(1, CausticaConfig.Rt.Fog.SLICES.value());
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
+                && froxelRaw != null && froxelCacheA != null && froxelCacheB != null && fogged != null
+                && fogDivisorAlloc == fogDivisor && fogSlicesAlloc == fogSlices
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
             return;
@@ -919,6 +1039,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        destroyFogImages();
 
         displayW = width;
         displayH = height;
@@ -970,22 +1091,37 @@ public final class RtComposite {
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        // Froxel volume. The lateral axes are the render resolution divided by the configured froxel
+        // divisor (Remix uses 16, which is what a trilinear march can hide); the depth axis is the
+        // configured slice count, distributed nonlinearly by the shader. The resolved cache is a
+        // ping-pong pair so the filter never samples the half it writes.
+        froxelW = Math.max(1, renderW / fogDivisor);
+        froxelH = Math.max(1, renderH / fogDivisor);
+        froxelSlices = fogSlices;
+        String froxelExtent = froxelW + "x" + froxelH + "x" + froxelSlices;
+        froxelRaw = ctx.createStorageImage3D(froxelW, froxelH, froxelSlices,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel source term " + froxelExtent);
+        froxelCacheA = ctx.createStorageImage3D(froxelW, froxelH, froxelSlices,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel cache A " + froxelExtent);
+        froxelCacheB = ctx.createStorageImage3D(froxelW, froxelH, froxelSlices,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "froxel cache B " + froxelExtent);
+        fogged = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "fog composite " + width + "x" + height);
+        fogDivisorAlloc = fogDivisor;
+        fogSlicesAlloc = fogSlices;
+        // Half A is the first frame's history, so both halves start empty rather than undefined.
+        fogParity = 0;
+        clearFogCaches(ctx);
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
+            worldPipeline.setFroxelImage(froxelRaw.view);
             bindGuideImages();
         }
-        RtToneLut boundLookLut = lookLut;
-        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
-                sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
-        bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
-        debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
-                exposure.stateBuffer());
+        bindDisplayChain();
     }
 
     private void destroyBloomLevels() {
@@ -1121,6 +1257,25 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            // Volumetric fog for this frame. Density's reference altitude is the level's sea level, so fog
+            // pools in valleys and thins on mountains instead of following the camera vertically; the
+            // shader recovers absolute altitude from the terrain rebase origin's block Y (fogScatter.w),
+            // because every position it shades is rebased. Density 0 and enabled 0 both make the medium a
+            // vacuum, so a fog-disabled frame costs one copy in the march and nothing anywhere else.
+            // Underwater is excluded: the water medium already applies its own absorption and in-scatter
+            // along every segment (medium.slang), so an air-fog volume on top would double-count the
+            // murk and tint it with the sky instead of the water.
+            boolean fogOn = CausticaConfig.Rt.Fog.ENABLED.value() && (flags & 0b01) == 0
+                    && froxelRaw != null && froxelCacheA != null && froxelCacheB != null
+                    && fogged != null && fogPipeline != null;
+            float fogReferenceY = level != null ? (float) level.getSeaLevel() : (float) camY;
+            Float4 fogParams = new Float4(fogOn ? CausticaConfig.Rt.Fog.DENSITY.value() : 0.0f,
+                    CausticaConfig.Rt.Fog.SCALE_HEIGHT.value(), fogReferenceY,
+                    CausticaConfig.Rt.Fog.ANISOTROPY.value());
+            Float4 fogGrid = new Float4(CausticaConfig.Rt.Fog.MAX_DISTANCE.value(),
+                    CausticaConfig.Rt.Fog.SLICE_EXPONENT.value(), froxelSlices, fogOn ? 1.0f : 0.0f);
+            Float4 fogScatter = new Float4(CausticaConfig.Rt.Fog.SCATTER_ALBEDO.value(),
+                    fogDivisorAlloc, CausticaConfig.Rt.Fog.RIS_CANDIDATES.value(), (float) terrain.blockY);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1154,6 +1309,9 @@ public final class RtComposite {
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
+                    fogParams,
+                    fogGrid,
+                    fogScatter,
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
                     exposure.preExposure()
@@ -1233,18 +1391,51 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to the fog march
 
-            // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
-            // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
+            // Volumetric fog: light the froxel volume with traced visibility (third raygen record of the
+            // same pipeline, so the SBT, TLAS and light grid are already bound), resolve it against the
+            // previous frame's cache, then march it over the display-res scene. This sits after DLSS-RR
+            // because the cache is temporally converged by construction and needs no denoiser, and RR's
+            // surface guides must stay free of volume content; it sits before exposure and bloom so fog
+            // meters and glows like any other scene radiance.
+            int marchParity = fogParity;
+            if (fogOn) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "froxel lighting");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogFroxels")) {
+                    active.trace(cmd, froxelW, froxelH * froxelSlices, pushConstants, FROXEL_RAYGEN_INDEX);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // raw froxel writes visible to the filter
+                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogFilter")) {
+                    fogPipeline.recordFilter(cmd, froxelW, froxelH, froxelSlices, marchParity,
+                            CausticaConfig.Rt.Fog.MAX_HISTORY.value(), FOG_FIREFLY_LUMINANCE,
+                            pushBuf.deviceAddress);
+                }
+                // The parity only advances on a frame that ran the filter: it names the half the filter
+                // just wrote, and a fog-disabled frame leaves the previous frame's half in place.
+                fogParity ^= 1;
+            }
+            if (fogPipeline != null && fogged != null) {
+                // Always dispatched, fog on or off: with fog off the march copies the scene through, so
+                // the display chain reads one image whichever way the setting is flipped.
+                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogMarch")) {
+                    fogPipeline.recordMarch(cmd, fogOn, marchParity, frameCounter, displayW, displayH,
+                            renderW, renderH, pushBuf.deviceAddress);
+                }
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog composite visible to exposure histogram
+
+            // Auto-exposure meters the fog composite (post-RR, denoised/converged, plus the volume), not
+            // the raw pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
             // exposure/auto-exposure/sharpness entirely for RR), so this is purely our own metering
             // choice, independent of RR's pipeline placement. Metering the noisy pre-RR buffer made
             // the histogram's log-luminance average biased by Monte-Carlo noise (Jensen's inequality
-            // on the concave log()), so the computed exposure drifted with SPP; rrOutput is stable
-            // regardless of SPP, keeping exposure consistent.
+            // on the concave log()), so the computed exposure drifted with SPP; the composite is stable
+            // regardless of SPP, keeping exposure consistent. Metering after the fog march also means a
+            // bright sun shaft veiling the frame is exposed for, exactly as a real eye would.
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
-                exposure.record(ctx, cmd, stack, rrOutput, gDepth, gAlbedo);
+                exposure.record(ctx, cmd, stack, fogged, gDepth, gAlbedo);
                 exposure.recordStateReadback(cmd, stack);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
@@ -1494,6 +1685,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        destroyFogImages();
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();
@@ -1510,6 +1702,10 @@ public final class RtComposite {
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();
             debugPresentPipeline = null;
+        }
+        if (fogPipeline != null) {
+            fogPipeline.destroy();
+            fogPipeline = null;
         }
         if (sdrToneLut != null) {
             sdrToneLut.destroy();

@@ -28,6 +28,8 @@ public final class CausticaClient implements ClientModInitializer {
 		// same way as any other optional vanilla entry (e.g. GPU utilization).
 		@SuppressWarnings("unused")
 		Object registerExposureDebugEntry = RtExposureDebugEntry.ID;
+		@SuppressWarnings("unused")
+		Object registerFogDebugEntry = RtFogDebugEntry.ID;
 
 		// The GpuDevice exists well before the first tick, so a one-shot at tick start
 		// runs on the render thread with the device idle between frames.

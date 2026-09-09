@@ -30,6 +30,9 @@
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 
+	"caustica.options.rt.fog": "Volumetric Fog",
+	"caustica.options.rt.fog.tooltip": "Light shafts and atmospheric haze traced through the world's actual geometry: sunbeams are carved by real shadow rays, so leaves and buildings occlude them. Fog density, colour and distance are configured in the mod's config file.",
+
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",
 
@@ -58,5 +61,7 @@
 	"caustica.options.rt.debugView.6": "Specular",
 	"caustica.options.rt.debugView.7": "Specular Motion",
 	"caustica.options.rt.debugView.8": "Exposure False Color",
-	"caustica.options.rt.debugView.9": "Metering Weight"
+	"caustica.options.rt.debugView.9": "Metering Weight",
+	"caustica.options.rt.debugView.10": "Fog In-Scatter",
+	"caustica.options.rt.debugView.11": "Fog Transmittance"
 }

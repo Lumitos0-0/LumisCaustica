@@ -94,3 +94,24 @@ void probeBloomPush(uint3 id : SV_DispatchThreadID) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
     }
 }
+
+[[vk::push_constant]] FogFilterPush fogFilterPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogFilterPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(fogFilterPushProbe.parity) + float(fogFilterPushProbe.grid.x)
+                + fogFilterPushProbe.maxHistory + fogFilterPushProbe.fireflyClamp;
+    }
+}
+
+[[vk::push_constant]] FogMarchPush fogMarchPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeFogMarchPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(fogMarchPushProbe.enabled) + float(fogMarchPushProbe.parity)
+                + float(fogMarchPushProbe.size.x)
+                + float(fogMarchPushProbe.depthSize.x);
+    }
+}

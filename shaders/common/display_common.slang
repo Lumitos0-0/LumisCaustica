@@ -87,7 +87,28 @@ public struct BloomPush {
 };
 
 public struct DebugPresentPush {
-    public uint debugView;     // 1..9; this pass is only dispatched for debugView != 0
+    public uint debugView;     // 1..11; this pass is only dispatched for debugView != 0
     public float centerWeightSigma;
     public float centerWeightFloor;
+};
+
+// Froxel temporal/filter pass. parity selects which half of the resolved cache's ping-pong pair is read
+// as history and which is written, so a frame never samples the cache it is overwriting.
+public struct FogFilterPush {
+    public uint64_t worldPushAddr;  // the frame's WorldPush slot, same BDA pattern as the sky LUT passes
+    public uint parity;         // 0 reads cacheA / writes cacheB, 1 the reverse
+    public uint2 grid;          // froxel width, height in texels (clamps the spatial filter's taps)
+    public float maxHistory;    // temporal sample-count clamp; bounds motion trail length
+    public float fireflyClamp;  // per-froxel luminance ceiling applied after the spatial filter
+};
+
+// Display-res fog march. depthSize is the render resolution of the reversed-Z depth guide, which the
+// march nearest-samples at display resolution to find each ray's scene distance.
+public struct FogMarchPush {
+    public uint64_t worldPushAddr;
+    public uint enabled;        // 0 = copy the scene through untouched
+    public uint parity;         // selects the resolved-cache half the filter pass just wrote
+    public uint frameIndex;     // salts the per-slice jitter so banding integrates to noise
+    public uint2 size;          // march (display) resolution
+    public uint2 depthSize;     // depth guide (render) resolution
 };
