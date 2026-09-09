@@ -91,9 +91,10 @@ public struct WorldPush {
     // ---- Aerial-perspective medium, consumed by fog.slang and evaluated per path segment. The profile
     // is sigma(h) = density * exp(-max(h - refY, 0) / scaleHeight), with h the ABSOLUTE block altitude, so
     // `rebaseY` (the terrain origin's Y) is required to keep the layer from sliding with the camera.
-    // `reach` bounds both the sun column and the distance over which a segment is resolved into
-    // `steps` taps; it is not a "how far fog is visible" cutoff, since a segment's full length is always
-    // integrated and only its near field is finely sampled. Gated by WorldPush flags bit 5.
+    // `reach` bounds the sun column, the distance over which a segment is resolved into `steps` taps, and
+    // the light ray each region casts for occluders; it is not a "how far fog is visible" cutoff, since a
+    // segment's full length is always integrated and only its near field is finely sampled. Gated by
+    // WorldPush flags bit 5.
     public float4   fogParams;        // x density (1/block), y scale height, z reference altitude, w HG g
     public float4   fogTuning;        // x scatter albedo, y reach, z rebase origin Y, w max steps
 };

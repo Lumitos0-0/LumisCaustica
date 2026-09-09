@@ -78,7 +78,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
         float3 prefixT;
         float3 prefixS;
         fogPrimarySegment(worldPush, aerial, celestialLight, medium, float2(pix), frameSize, seg.ro,
-                          prefixT, prefixS);
+                          seed, prefixT, prefixS);
         L += prefixS;
         throughput *= prefixT;
     }
@@ -128,7 +128,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
             // medium's reach.
             float3 escapedT;
             float3 escapedS;
-            fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, ESCAPE_DISTANCE, escapedT, escapedS);
+            fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, ESCAPE_DISTANCE, seed,
+                                escapedT, escapedS);
             float3 sky = payloadSky();
             L += throughput * (escapedS + escapedT * sky); // escaped to sky
             break;
@@ -140,7 +141,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 fra
         // air; one function owns both so neither is applied twice. Air with fog off costs one comparison.
         float3 segmentT;
         float3 segmentS;
-        fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, payload.hitT, segmentT, segmentS);
+        fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, payload.hitT, seed, segmentT, segmentS);
         L += throughput * segmentS;
         throughput *= segmentT;
 

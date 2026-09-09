@@ -597,8 +597,9 @@ public final class CausticaConfig {
          * Aerial-perspective medium (fog), integrated along each traced path segment inside the transport
          * rather than composited in screen space. Its density falls exponentially with ABSOLUTE altitude
          * above the level's sea level, so a distant horizon hazes over while caves and ocean trenches sit
-         * at the flat profile floor instead of thickening without bound; they self-limit anyway, because
-         * in-scatter needs the sun column above them and a roof makes that transmittance zero.
+         * at the flat profile floor instead of thickening without bound. What keeps a sealed room from
+         * glowing is the light ray each fog region casts, not the profile: a roof occludes the sun, and
+         * the same ray is what carves visible shafts out of the haze.
          *
          * <p>DENSITY is per-block extinction, so optical depth grows with path length: a value tuned so
          * that one e-fold sits past a typical render distance keeps short views crisp and long views hazy
@@ -619,9 +620,11 @@ public final class CausticaConfig {
             // saturated blob, which no exposure or denoiser recovers.
             public static final FloatSetting ANISOTROPY =
                     clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.35f, -0.9f, 0.9f);
-            // Distance a segment is resolved into STEPS taps, and the vertical extent of the sun column.
-            // Not a "how far fog reaches": a path's whole length is always integrated, only its near field
-            // is finely sampled, so raising REACH buys detail rather than adding a visible wall.
+            // Distance a segment is resolved into STEPS taps, the vertical extent of the sun column, and
+            // how far a fog region's light ray looks for occluders. Not a "how far fog reaches": a path's
+            // whole length is always integrated, only its near field is finely sampled, so raising REACH
+            // buys detail rather than adding a visible wall -- but it does lengthen every light ray, so it
+            // is the second knob to turn if shafts get expensive.
             public static final FloatSetting REACH =
                     clampedFloat("caustica.rt.fog.reach", "fog.reach", 512.0f, 16.0f, 4096.0f);
             public static final IntSetting STEPS =

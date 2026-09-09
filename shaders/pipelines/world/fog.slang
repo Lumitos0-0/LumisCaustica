@@ -8,18 +8,28 @@
 // renderer has no path to accumulate into; here the same physics is integrated per segment inside the
 // transport, so the volume dims and lights reflections, refractions and indirect bounces exactly as it
 // dims primary visibility, and a volume never needs reprojecting. And its fog is lit through a per-light
-// incident-radiance meter amortized across the volume. That amortization is what makes a meter worth
-// building for a deferred compositor; for one segment of one path, the sun term is a closed-form column,
-// so caching it would cost more than evaluating it.
+// incident-radiance meter amortized across the volume. The height profile and the medium's own extinction
+// toward the light stay closed form here, so one segment of one path costs two shadow rays no meter could
+// have saved; the volume is still where per-tap light resolution -- every light, every bounce, at a
+// fraction of the rays -- has to come from.
+//
+// Geometry gets a vote: each region of a segment asks one shadow ray whether the tap region sees the
+// directional body at all. Without it a sealed room in-scatters at full daylight and the volume reads as a
+// uniform veil, because the analytic height profile below cannot tell a roof from clear air. One ray per
+// region (not per tap) is the deliberate trade: per-tap visibility is what the froxel incident-light cache
+// amortizes, at a fraction of the rays, and it is the reason a light meter earns its keep here at all.
 //
 // Density is a function of ABSOLUTE world altitude: path positions are rebased to the terrain origin,
 // which moves as the camera travels, so every altitude goes through `rebaseY` (that origin's block Y,
 // pushed per frame). An exponential would otherwise slide with the player. The profile is flat at and
-// below `refY` rather than growing without bound downward, so a deep cave stays visible.
+// below `refY` rather than growing without bound downward, so a cave's air is no denser than a
+// mountaintop's; what makes caves and interiors dark is the shadow ray above, not the profile.
 
 import world_common;
 import world_core;
+import math;
 import medium;
+import trace;
 import sky;
 
 public static const uint FOG_ENABLED_BIT = 32u; // WorldPush.flags bit 5
@@ -119,16 +129,46 @@ public float fogColumnToLight(FogMedium f, float sigma, float3 lightDir) {
     return exp(-min(tau, FOG_MAX_TAU));
 }
 
+/** A region whose own column has extinguished the light to this fraction is not worth a ray for. */
+public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
+
+/**
+ * Whether the sun (or moon) reaches a point in the volume: geometry first, then the medium's own
+ * extinction toward it. A solid block ends this ray at its first intersection, so a fully shadowed tap
+ * costs a traversal, not a march -- and a tap the fog has already extinguished costs nothing, which is
+ * why the column is tested before the ray is cast rather than multiplied after it.
+ *
+ * The direction is jittered across the body's angular extent so beam edges accumulate soft, the same trick
+ * the terrain's sun NEE uses; a fixed direction would put a hard crease along every shadow boundary and
+ * hand DLSS-RR an edge it cannot resolve.
+ *
+ * One ray per segment is a stop-gap, not the shape this wants: a shadow *field* -- one filtered, shared,
+ * screen-space value per pixel, written where the primary hit already is and read here as a fetch -- gives
+ * every sample of every bounce the same answer at a quarter of the rays, and cannot flicker because it is
+ * not resampled per path. See the sun-shadow field in the port analysis.
+ */
+public float3 fogLightVisibility(FogMedium f, CelestialLight sun, float3 rebasedPos, inout uint seed) {
+    float sigma = fogDensityAt(f, rebasedPos);
+    if (fogColumnToLight(f, sigma, sun.dir) < FOG_NEGLIGIBLE_LIGHT) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 dir = sun.dir;
+    if (sun.halfAngle > 0.0) {
+        dir = sampleSquare(dir, sun.halfAngle, seed);
+    }
+    return visibility(rebasedPos + dir * SURF_BIAS, dir, f.reach).transmittance;
+}
+
 /**
  * What one tap scatters toward the eye, in the units this march wants: the tap's in-scattered radiance is
  * this value times (1 - exp(-sigma*dt)), because integrating a constant medium over a length divides a
  * sigma out and the sigma_s/sigma ratio of a uniform-albedo profile is just the albedo.
  *
- * Only the directional body lights the volume, and it is the one terrain already resolves, so the column
- * integral is the entire extra cost here. Block emitters are not gathered at all, which is why a torch
- * dims the fog in front of it rather than glowing in it: their light would have to be sampled per tap.
- * Returning the value as a function of the tap's density keeps that gather a pure extension of this
- * expression instead of a rewrite of the march.
+ * The column toward the body rides here because it is a property of the tap; the geometry in between is a
+ * property of the region and arrives as a separate multiplier from fogLightVisibility. Block emitters are
+ * not gathered at all, which is why a torch dims the fog in front of it rather than glowing in it: that
+ * light needs a radiance cache per tap to be worth the rays. Keeping this a function of the tap (rather
+ * than an expression inlined twice) is what lets such a cache extend the march instead of rewriting it.
  */
 public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float phase) {
     return f.albedo * phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir);
@@ -150,7 +190,7 @@ public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float p
  * sits where transmittance has already gone to nothing.
  */
 public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight sun,
-                         float3 ro, float3 rd, float t,
+                         float3 ro, float3 rd, float t, inout uint seed,
                          out float3 T, out float3 S) {
     T = float3(1.0, 1.0, 1.0);
     S = float3(0.0, 0.0, 0.0);
@@ -176,23 +216,33 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
     int steps = min(max((int)ceil(resolved / tapLen), 1), f.maxSteps);
     float dt = resolved / float(steps);
 
+    // ONE light sample for the whole segment, taken at the surface it ends on (or, for a ray that escapes
+    // past `reach`, at the far end of the stretch the medium still matters over). Anchoring there rather
+    // than mid-segment is what makes a beam look like a beam: the sample lands on the geometry the viewer
+    // is actually seeing, so a sunlit patch glows through the haze in front of it and a shaded patch does
+    // not, and every bounce, refraction and SPP resample of the pixel agrees. Sampling mid-segment instead
+    // can miss a shaft entirely or land in one, which reads as a blob sliding across the image as the
+    // camera moves. Per-region and per-tap resolution is the win a filtered shadow field buys; see the
+    // note on fogLightVisibility.
+    float3 segmentLight = fogLightVisibility(f, sun, ro + rd * min(t, f.reach), seed);
+
     for (int i = 0; i < steps; i++) {
-        float3 mid = ro + rd * (dt * (float(i) + 0.5));
-        float sigma = fogDensityAt(f, mid);
+        float3 tapMid = ro + rd * (dt * (float(i) + 0.5));
+        float sigma = fogDensityAt(f, tapMid);
         // exp(-sigma*dt) and (1 - exp(-sigma*dt)) are the constant-medium transmittance and the same
         // integral divided by sigma, so a thin tap costs the same expression as a thick one and neither
         // divides by a small number.
         float segmentT = exp(-sigma * dt);
-        S += T * fogScatterAt(f, sun, sigma, phase) * (1.0 - segmentT);
+        S += T * fogScatterAt(f, sun, sigma, phase) * segmentLight * (1.0 - segmentT);
         T *= segmentT;
     }
 
     if (t > resolved) {
         float far = t - resolved;
-        float3 mid = ro + rd * (resolved + 0.5 * far);
-        float sigma = fogDensityAt(f, mid);
+        float3 farMid = ro + rd * (resolved + 0.5 * far);
+        float sigma = fogDensityAt(f, farMid);
         float segmentT = exp(-sigma * far);
-        S += T * fogScatterAt(f, sun, sigma, phase) * (1.0 - segmentT);
+        S += T * fogScatterAt(f, sun, sigma, phase) * segmentLight * (1.0 - segmentT);
         T *= segmentT;
     }
 }
@@ -206,14 +256,15 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
  * interface, records a continuation that starts at the surface, and keeps that segment's absorption in the
  * record's throughput — but throughput is a multiplier, so the light the air scattered into that stretch
  * has nowhere to live. Reconstructing the ray is cheaper than widening the record ABI to carry it, and
- * doing it here keeps the budget honest: the prefix is added once per sample, where the record it belongs to is
- * read by every SPP resample and by both halves of a split. The unprojection below mirrors primary.rgen
+ * doing it here keeps the budget honest: the prefix is added once per sample, where the record it belongs
+ * to is read by every SPP resample and by both halves of a split. It pays the same single light ray as any
+ * other segment, so a frame over water costs one more. The unprojection below mirrors primary.rgen
  * except for the far plane it never needs, jitter included, because the prefix has to end on the surface
  * that ray hit. `hitPos` is the biased one the record carries, so the length is off by at most SURF_BIAS
  * against a scale height of blocks.
  */
 public void fogPrimarySegment(WorldPush push, FogMedium f, CelestialLight sun, MediumStack medium,
-                       float2 pix, float2 size, float3 hitPos,
+                       float2 pix, float2 size, float3 hitPos, inout uint seed,
                        out float3 T, out float3 S) {
     T = float3(1.0, 1.0, 1.0);
     S = float3(0.0, 0.0, 0.0);
@@ -233,5 +284,5 @@ public void fogPrimarySegment(WorldPush push, FogMedium f, CelestialLight sun, M
     if (hitDistance <= 1.0e-4) {
         return;
     }
-    fogIntegrateSegment(medium, f, sun, eye, toHit / hitDistance, hitDistance, T, S);
+    fogIntegrateSegment(medium, f, sun, eye, toHit / hitDistance, hitDistance, seed, T, S);
 }
