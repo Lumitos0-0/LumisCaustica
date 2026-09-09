@@ -40,16 +40,16 @@ void main(uint3 id : SV_DispatchThreadID) {
     float2 uv = (float2(id.xy) + 0.5) / float2(grid);
     float u = (float(id.z) + 0.5) / slices;
 
-    // 3x3 lateral tent with clamped taps. The cache is already coarse (render res / 16), so a wider
-    // kernel would erase the beam edges the visibility rays worked for; a tent only removes single-froxel
-    // salt before it is integrated along a whole ray, where it would otherwise read as a bright slab.
-    float3 blurred = float3(0.0, 0.0, 0.0);
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            int2 tap = clamp(int2(id.xy) + int2(dx, dy), int2(0, 0), grid - int2(1, 1));
-            float w = (dx == 0 && dy == 0) ? 0.25 : ((dx == 0 || dy == 0) ? 0.125 : 0.0625);
-            blurred += rawFroxel[int3(tap, int(id.z))].rgb * w;
-        }
+    // Narrow cross blur with clamped taps: half this froxel's own value, an eighth from each lateral
+    // neighbour. The sun term is deterministic, so the only salt this has to remove is the emitter RIS
+    // sample; a wider tent would spend the beam edges the visibility rays and the finer froxel grid
+    // worked for, and beam crispness is the whole point of the pass.
+    float3 blurred = rawFroxel[int3(int2(id.xy), int(id.z))].rgb * 0.5;
+    for (int axis = 0; axis < 4; axis++) {
+        int2 offset = axis == 0 ? int2(1, 0) : axis == 1 ? int2(-1, 0)
+                : axis == 2 ? int2(0, 1) : int2(0, -1);
+        int2 tap = clamp(int2(id.xy) + offset, int2(0, 0), grid - int2(1, 1));
+        blurred += rawFroxel[int3(tap, int(id.z))].rgb * 0.125;
     }
     blurred = clampLuminance(max(blurred, float3(0.0, 0.0, 0.0)), pc.fireflyClamp);
 
@@ -76,6 +76,11 @@ void main(uint3 id : SV_DispatchThreadID) {
         }
     }
 
+    // Translation needs no fade: reprojection lands exactly on the same world point, and the cache is
+    // a function of world position. Rotation is different — the cached source term baked the previous
+    // frame's view direction into its phase evaluation — so the history's weight is faded by how far
+    // the camera turned this frame, which is what keeps the volume feeling attached to the camera.
+    historySamples *= clamp(pc.historyFade, 0.0, 1.0);
     float total = historySamples + 1.0;
     float4 resolved = float4((history * historySamples + blurred) / total, min(total, pc.maxHistory));
     if (pc.parity == 0u) {

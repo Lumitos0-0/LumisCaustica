@@ -5,9 +5,11 @@
 //
 // Each slice segment uses the analytic constant-medium integral (S/sigmaT) * (1 - exp(-sigmaT * dt))
 // rather than a midpoint sample, which is the same trick the sky march uses to stay banding-free at low
-// step counts. The slice boundaries carry a per-pixel jitter so the residual discretisation becomes
-// high-frequency noise in the slice index instead of visible banding planes; the cache's temporal
-// accumulation integrates it away over frames.
+// step counts. Slice boundaries are deliberately NOT jittered per pixel: this pass runs after DLSS-RR,
+// so any per-pixel noise it manufactures has nothing left to integrate it, and a fixed jitter would
+// freeze into a pattern. The integrand is continuous across slice boundaries (the cache is trilinear in
+// the depth axis and the segment integral is analytic), so the residual discretisation is a smooth
+// interpolation error, not banding planes.
 //
 // Runs after DLSS-RR (the cache is already temporally clean and needs no denoiser, and RR's surface
 // guides must stay uncontaminated by volume content) and before exposure/bloom (so fog participates in
@@ -18,16 +20,6 @@ import fog_common;
 import march_bindings;
 
 [[vk::push_constant]] FogMarchPush pc;
-
-float sliceJitter(uint2 pix) {
-    uint h = pix.x * 1973u ^ pix.y * 9277u ^ pc.frameIndex * 2654435761u;
-    h ^= h >> 16;
-    h *= 0x7feb352du;
-    h ^= h >> 15;
-    h *= 0x846ca68bu;
-    h ^= h >> 16;
-    return float(h) / 4294967296.0;
-}
 
 [numthreads(8, 8, 1)]
 void main(uint2 pix : SV_DispatchThreadID) {
@@ -52,9 +44,8 @@ void main(uint2 pix : SV_DispatchThreadID) {
     float transmittance = 1.0;
     float3 inScatter = float3(0.0, 0.0, 0.0);
     float slices = max(worldPush.fogGrid.z, 1.0);
-    float jitter = sliceJitter(pix);
     for (int s = 0; s < int(slices); s++) {
-        float t0 = fogSliceDistance(worldPush, (float(s) + jitter) / slices);
+        float t0 = fogSliceDistance(worldPush, float(s) / slices);
         if (t0 >= tScene) {
             break;
         }

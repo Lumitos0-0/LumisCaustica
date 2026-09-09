@@ -614,17 +614,26 @@ public final class CausticaConfig {
             /** Depth-slice distribution exponent: 1 is linear, higher packs slices near the camera. */
             public static final FloatSetting SLICE_EXPONENT =
                     clampedFloat("caustica.rt.fogSliceExponent", "fog.slice-exponent", 2.0f, 1.0f, 4.0f);
-            /** Froxel lateral size as a divisor of the render resolution (Remix uses 16). */
+            /**
+             * Froxel lateral size as a divisor of the render resolution. This is the beam-edge
+             * resolution: a shadow boundary in the cache is interpolated across one froxel, so the
+             * divisor is directly how many pixels a shaft's edge is soft over. 8 keeps edges crisp
+             * enough to read as shafts; 16 halves the cost twice over and turns them into mush.
+             */
             public static final IntSetting FROXEL_DIVISOR =
-                    intChoice("caustica.rt.fogFroxelDivisor", "fog.froxel-divisor", 16, List.of(8, 16, 24, 32));
+                    intChoice("caustica.rt.fogFroxelDivisor", "fog.froxel-divisor", 8, List.of(4, 8, 16, 24, 32));
             public static final IntSetting SLICES =
                     intChoice("caustica.rt.fogSlices", "fog.slices", 48, List.of(16, 32, 48, 64, 96));
             /** RIS emitter candidates traced per froxel per frame (0 = sun and sky only). */
             public static final IntSetting RIS_CANDIDATES =
                     clampedInt("caustica.rt.fogRisCandidates", "fog.ris-candidates", 4, 0, 16);
-            /** Temporal sample-count clamp: higher converges harder and trails longer on fast motion. */
+            /**
+             * Temporal sample-count clamp: higher converges the emitter RIS harder but trails longer
+             * whenever the baked view-direction term stops matching (camera rotation), which reads as
+             * the volume lagging the camera. 16 keeps emitter mist converged while staying responsive.
+             */
             public static final FloatSetting MAX_HISTORY =
-                    clampedFloat("caustica.rt.fogMaxHistory", "fog.max-history", 32.0f, 1.0f, 256.0f);
+                    clampedFloat("caustica.rt.fogMaxHistory", "fog.max-history", 16.0f, 1.0f, 256.0f);
 
             private Fog() {
             }

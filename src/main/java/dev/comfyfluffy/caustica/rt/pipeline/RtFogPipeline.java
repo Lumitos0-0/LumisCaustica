@@ -279,7 +279,8 @@ public final class RtFogPipeline {
      * previous-frame view-projection and camera delta to reproject history.
      */
     public void recordFilter(VkCommandBuffer cmd, int gridWidth, int gridHeight, int slices, int parity,
-                             float maxHistory, float fireflyClamp, long worldPushAddress) {
+                             float maxHistory, float fireflyClamp, float historyFade,
+                             long worldPushAddress) {
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog froxel filter")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, filterPipeline);
@@ -287,7 +288,7 @@ public final class RtFogPipeline {
                     filterPipelineLayout, 0, stack.longs(filterSet), null);
             ByteBuffer push = stack.malloc(FogFilterPushData.BYTE_SIZE);
             new FogFilterPushData(worldPushAddress, parity, new Int2(gridWidth, gridHeight),
-                    maxHistory, fireflyClamp).write(push);
+                    maxHistory, fireflyClamp, historyFade).write(push);
             VK10.vkCmdPushConstants(cmd, filterPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (gridWidth + 3) / 4, (gridHeight + 3) / 4, slices);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // resolved cache visible to the march
@@ -298,7 +299,7 @@ public final class RtFogPipeline {
      * Record the display-res march and composite. {@code enabled} 0 makes the pass copy the scene
      * through untouched, so the display chain can read one image whether fog is on or off.
      */
-    public void recordMarch(VkCommandBuffer cmd, boolean enabled, int parity, long frameIndex,
+    public void recordMarch(VkCommandBuffer cmd, boolean enabled, int parity,
                             int displayWidth, int displayHeight, int renderWidth, int renderHeight,
                             long worldPushAddress) {
         try (MemoryStack stack = MemoryStack.stackPush();
@@ -307,7 +308,7 @@ public final class RtFogPipeline {
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
                     marchPipelineLayout, 0, stack.longs(marchSet), null);
             ByteBuffer push = stack.malloc(FogMarchPushData.BYTE_SIZE);
-            new FogMarchPushData(worldPushAddress, enabled ? 1 : 0, parity, (int) frameIndex,
+            new FogMarchPushData(worldPushAddress, enabled ? 1 : 0, parity,
                     new FogMarchPushData.Int2(displayWidth, displayHeight),
                     new FogMarchPushData.Int2(renderWidth, renderHeight)).write(push);
             VK10.vkCmdPushConstants(cmd, marchPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);

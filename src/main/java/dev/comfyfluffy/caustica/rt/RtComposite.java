@@ -273,6 +273,11 @@ public final class RtComposite {
     // describes a different world, so the next filter dispatch starts from an empty cache instead of
     // reprojection-rejecting its way back over several frames.
     private boolean fogHistoryResetRequested;
+    // Previous frame's view rotation, for fading the fog's temporal history by camera turn rate. The
+    // cache's source term bakes the view direction into its phase evaluation, so rotation — unlike
+    // translation, which reprojection handles exactly — makes history progressively wrong.
+    private final Matrix4f fogPrevViewRotation = new Matrix4f();
+    private boolean fogPrevViewRotationValid;
     private int froxelW = -1;
     private int froxelH = -1;
     private int froxelSlices = -1;
@@ -968,6 +973,7 @@ public final class RtComposite {
         fogDivisorAlloc = -1;
         fogSlicesAlloc = -1;
         fogHistoryResetRequested = false;
+        fogPrevViewRotationValid = false;
     }
 
     /**
@@ -1113,9 +1119,10 @@ public final class RtComposite {
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         // Froxel volume. The lateral axes are the render resolution divided by the configured froxel
-        // divisor (Remix uses 16, which is what a trilinear march can hide); the depth axis is the
-        // configured slice count, distributed nonlinearly by the shader. The resolved cache is a
-        // ping-pong pair so the filter never samples the half it writes.
+        // divisor, which sets how many pixels a cached shadow boundary is interpolated across — i.e.
+        // how soft a shaft's edge reads; the depth axis is the configured slice count, distributed
+        // nonlinearly by the shader. The resolved cache is a ping-pong pair so the filter never
+        // samples the half it writes.
         froxelW = Math.max(1, renderW / fogDivisor);
         froxelH = Math.max(1, renderH / fogDivisor);
         froxelSlices = fogSlices;
@@ -1433,10 +1440,22 @@ public final class RtComposite {
                     active.trace(cmd, froxelW, froxelH * froxelSlices, pushConstants, FROXEL_RAYGEN_INDEX);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // raw froxel writes visible to the filter
+                // Fade the history by this frame's camera turn: at 1 degree/frame it keeps ~80% of the
+                // accumulated weight, at 5 ~35%, at 15 essentially none, so a quick look-around snaps
+                // the volume to the new view instead of dragging a stale one behind the camera.
+                float fogHistoryFade = 1.0f;
+                if (fogPrevViewRotationValid) {
+                    float cos = Mth.clamp(
+                            frameViewRotation.m20() * fogPrevViewRotation.m20()
+                                    + frameViewRotation.m21() * fogPrevViewRotation.m21()
+                                    + frameViewRotation.m22() * fogPrevViewRotation.m22(),
+                            -1.0f, 1.0f);
+                    fogHistoryFade = (float) Math.exp(-Math.acos(cos) * 12.0);
+                }
                 try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogFilter")) {
                     fogPipeline.recordFilter(cmd, froxelW, froxelH, froxelSlices, marchParity,
                             CausticaConfig.Rt.Fog.MAX_HISTORY.value(), FOG_FIREFLY_LUMINANCE,
-                            pushBuf.deviceAddress);
+                            fogHistoryFade, pushBuf.deviceAddress);
                 }
                 // The parity only advances on a frame that ran the filter: it names the half the filter
                 // just wrote, and a fog-disabled frame leaves the previous frame's half in place.
@@ -1446,10 +1465,12 @@ public final class RtComposite {
                 // Always dispatched, fog on or off: with fog off the march copies the scene through, so
                 // the display chain reads one image whichever way the setting is flipped.
                 try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogMarch")) {
-                    fogPipeline.recordMarch(cmd, fogOn, marchParity, frameCounter, displayW, displayH,
+                    fogPipeline.recordMarch(cmd, fogOn, marchParity, displayW, displayH,
                             renderW, renderH, pushBuf.deviceAddress);
                 }
             }
+            fogPrevViewRotation.set(frameViewRotation);
+            fogPrevViewRotationValid = true;
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // fog composite visible to exposure histogram
 
             // Auto-exposure meters the fog composite (post-RR, denoised/converged, plus the volume), not

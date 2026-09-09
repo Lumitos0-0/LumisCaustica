@@ -100,6 +100,7 @@ public struct FogFilterPush {
     public uint2 grid;          // froxel width, height in texels (clamps the spatial filter's taps)
     public float maxHistory;    // temporal sample-count clamp; bounds motion trail length
     public float fireflyClamp;  // per-froxel luminance ceiling applied after the spatial filter
+    public float historyFade;   // 0..1 multiplier on the history sample count, faded by camera rotation
 };
 
 // Display-res fog march. depthSize is the render resolution of the reversed-Z depth guide, which the
@@ -108,7 +109,6 @@ public struct FogMarchPush {
     public uint64_t worldPushAddr;
     public uint enabled;        // 0 = copy the scene through untouched
     public uint parity;         // selects the resolved-cache half the filter pass just wrote
-    public uint frameIndex;     // salts the per-slice jitter so banding integrates to noise
     public uint2 size;          // march (display) resolution
     public uint2 depthSize;     // depth guide (render) resolution
 };

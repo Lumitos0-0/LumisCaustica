@@ -101,7 +101,8 @@ void probeBloomPush(uint3 id : SV_DispatchThreadID) {
 void probeFogFilterPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(fogFilterPushProbe.parity) + float(fogFilterPushProbe.grid.x)
-                + fogFilterPushProbe.maxHistory + fogFilterPushProbe.fireflyClamp;
+                + fogFilterPushProbe.maxHistory + fogFilterPushProbe.fireflyClamp
+                + fogFilterPushProbe.historyFade;
     }
 }
 

@@ -38,6 +38,29 @@ public bool fogEnabled(WorldPush push) {
     return push.fogGrid.w > 0.0 && push.fogParams.x > 0.0;
 }
 
+/**
+ * Transmittance of the medium itself along a light ray from a point in the volume, i.e. the fog's own
+ * aerial-perspective self-shadowing. Without it every sunlit froxel out to the volume's far plane
+ * contributes at full strength and the result is a uniform white veil with dark wedges cut into it,
+ * rather than beams standing out against fog that the light has already been spent crossing.
+ *
+ * Integrated numerically over {@code distance} rather than in closed form: the exponential height
+ * profile has an analytic optical depth only for rays that stay above the reference altitude, and the
+ * piecewise case (ray diving below it into the flat-density region) is not worth a branch per froxel
+ * when eight trapezoid taps cost less than the visibility ray this multiplies.
+ */
+public float fogLightTransmittance(WorldPush push, float3 rebasedPos, float3 lightDir, float distance) {
+    float opticalDepth = 0.0;
+    float step = distance / 8.0;
+    float previous = fogDensityAt(push, rebasedPos);
+    for (int tap = 1; tap <= 8; tap++) {
+        float here = fogDensityAt(push, rebasedPos + lightDir * (step * float(tap)));
+        opticalDepth += 0.5 * (previous + here) * step;
+        previous = here;
+    }
+    return exp(-opticalDepth);
+}
+
 // ---- Froxel depth parameterisation -----------------------------------------------------------------
 
 /** Distance along a view ray from a normalised slice coordinate u in [0,1]. */
@@ -93,10 +116,20 @@ public float fogDistanceFromDepth(WorldPush push, FogRay ray, float depth) {
     return max(0.0, (A - depth * C) / denominator);
 }
 
-/** Henyey-Greenstein phase at the configured anisotropy, 4pi-normalised; mirrors math.hg. */
+/**
+ * Two-lobe Henyey-Greenstein phase at the configured anisotropy, 4pi-normalised: mostly the forward
+ * lobe that makes shafts read as beams when the view aligns with the light, blended with a weak
+ * backward lobe. A single forward lobe at g = 0.6 peaks near eleven times isotropic, which turns
+ * looking toward the sun into a white-out that swallows the whole frame; the second lobe spends a
+ * third of that peak while keeping the forward bias that the beams depend on, and lifts the
+ * back-scattered haze on the side of the volume away from the light.
+ */
 public float fogPhase(WorldPush push, float cosTheta) {
     float g = push.fogParams.w;
     float g2 = g * g;
-    return (1.0 - g2) / (4.0 * 3.14159265359
-            * pow(max(0.0, 1.0 + g2 - 2.0 * g * cosTheta), 1.5));
+    float forward = (1.0 - g2) / pow(max(0.0, 1.0 + g2 - 2.0 * g * cosTheta), 1.5);
+    float gb = -0.25;
+    float gb2 = gb * gb;
+    float backward = (1.0 - gb2) / pow(max(0.0, 1.0 + gb2 - 2.0 * gb * cosTheta), 1.5);
+    return (0.65 * forward + 0.35 * backward) / (4.0 * 3.14159265359);
 }

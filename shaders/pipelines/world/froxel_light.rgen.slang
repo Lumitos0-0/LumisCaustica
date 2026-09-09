@@ -122,7 +122,9 @@ float3 emitterInScatter(float3 p, float sigmaS, float3 viewDir, inout uint seed,
     float3 contrib = sigmaS * fogPhase(worldPush, dot(viewDir, wi)) * selectedRadiance
             * (cosL * selectedArea / max(dist * dist, 1.0e-6));
     // Stop just short of the sample point so the ray cannot self-occlude on the emitter's own face.
-    float3 vis = visibility(p + wi * SURF_BIAS, wi, dist * 0.999).transmittance;
+    // The medium extinction over the (finite) emitter distance rides the same ray.
+    float3 vis = visibility(p + wi * SURF_BIAS, wi, dist * 0.999).transmittance
+            * fogLightTransmittance(worldPush, p, wi, dist);
     return contrib * vis * W;
 }
 
@@ -160,10 +162,14 @@ void main() {
             proposalSeed = pcg(proposalSeed);
 
             // The sun/moon term: a directional light's in-scatter is sigma_s * phase * illuminance,
-            // gated by one visibility ray. Jittering the light direction within its angular extent is
-            // unnecessary here — the disc is tiny and the temporal pass integrates what jitter buys.
+            // gated by one visibility ray and by the medium's own extinction along the light path —
+            // fogLightTransmittance over the volume extent, which is what stops a fully sunlit volume
+            // from integrating into a frame-filling white veil. Jittering the light direction within
+            // its angular extent is unnecessary here: the disc is tiny and the temporal pass integrates
+            // what jitter buys.
             float3 sunVis = visibility(p + celestialLight.dir * SURF_BIAS,
-                                       celestialLight.dir, 10000.0).transmittance;
+                                       celestialLight.dir, 10000.0).transmittance
+                    * fogLightTransmittance(worldPush, p, celestialLight.dir, worldPush.fogGrid.x);
             float3 source = sigmaS * fogPhase(worldPush, dot(ray.dir, celestialLight.dir))
                     * celestialLight.illuminance * sunVis;
 
