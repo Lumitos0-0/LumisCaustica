@@ -24,6 +24,7 @@ import math;
 import medium;
 import segment;
 import water;
+import fog;
 import trace;
 #ifdef CAUSTICA_ENABLE_EXT_SER
 import trace_ser;
@@ -34,7 +35,14 @@ import bindings;
 
 // Atmospheric transmittance LUT (RtSkyLut), also bound to world.rmiss at the same binding: raygen reads it
 // to colour the NEE sun/moonlight, the miss shader reads it to tint the visible discs and stars.
-public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
+
+// The radiance trace's own tmax, so an escaped ray integrates the medium over exactly the distance it was
+// allowed to travel rather than over an unrelated reach. See traceRadiance in trace.slang.
+static const float ESCAPE_DISTANCE = 10000.0;
+
+// `primaryPrefix` covers the one stretch of a path no segment of this trace spans: see fogPrimarySegment.
+public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex, float2 frameSize,
+                        bool primaryPrefix) {
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
     float3 rd = seg.rd;
@@ -61,6 +69,20 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // (so the first ray already carries the right relative index and absorption); for a segment split off
     // a dielectric it is whatever the parent was travelling through.
     MediumStack medium = seg.medium;
+    FogMedium aerial = fogMedium(worldPush);
+
+    // The camera-to-first-interface stretch, when Pass A consumed it. A record that still starts at the eye
+    // (bounce 0) needs nothing here: this trace re-walks the primary ray and its own first segment covers
+    // that distance, so adding the prefix to that one would double-charge the medium.
+    if (primaryPrefix) {
+        float3 prefixT;
+        float3 prefixS;
+        fogPrimarySegment(worldPush, aerial, celestialLight, medium, float2(pix), frameSize, seg.ro,
+                          prefixT, prefixS);
+        L += prefixS;
+        throughput *= prefixT;
+    }
+
     bool waterWaves = (worldPush.flags & 16u) != 0u; // animated wave-normal perturbation
     // Sky-disc gate (see world.rmiss): the sun/moon disc is shown to the primary ray and to rays spawned
     // by a specular/dielectric bounce (mirror reflections + refractions of the sun/moon), but hidden from
@@ -100,18 +122,27 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into the payload's
             // surface words as a full float3, so this is absolute scene units with nothing to undo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.
+            // The medium between here and space still owns the ray: its in-scatter is added and its
+            // transmittance dims the sky, which is what turns a hazy horizon hazy. The integration length is
+            // the trace's own tmax, so it matches the distance the ray was allowed to travel rather than the
+            // medium's reach.
+            float3 escapedT;
+            float3 escapedS;
+            fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, ESCAPE_DISTANCE, escapedT, escapedS);
             float3 sky = payloadSky();
-            L += throughput * sky; // escaped to sky
+            L += throughput * (escapedS + escapedT * sky); // escaped to sky
             break;
         }
 
-        // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
-        // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
-        // lies within it), shifting the transmitted radiance with distance. Air's extinction is zero, so
-        // the ordinary case costs one comparison.
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
-        }
+        // Transport along the segment just travelled: attenuate by the medium it lay inside, and when the
+        // aerial medium is active also add what it scattered toward the eye. This is Beer–Lambert for a
+        // volume dielectric (its own exit face, or whatever content lies within it) and the fog march for
+        // air; one function owns both so neither is applied twice. Air with fog off costs one comparison.
+        float3 segmentT;
+        float3 segmentS;
+        fogIntegrateSegment(medium, aerial, celestialLight, ro, rd, payload.hitT, segmentT, segmentS);
+        L += throughput * segmentS;
+        throughput *= segmentT;
 
         float3 n = payloadNormal(); // oriented toward the incoming ray by the closest-hit
         float3 hitPos = ro + rd * payload.hitT;
@@ -417,7 +448,13 @@ void main() {
         PackedPathSegment packed = queue[recordIndex];
         PathSegment segment = unpackPathSegment(packed);
         for (uint s = 0u; s < spp; ++s) {
-            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp);
+            // The prefix exists for a stretch no segment of this trace spans, which is exactly what
+            // `bounce > 0` records: pass A consumed an interface to get here. A bounce-0 record still
+            // starts at the eye and re-walks that stretch itself. Only the chain's first record qualifies,
+            // since a dielectric's two split halves would otherwise each pay for the same air.
+            bool primaryPrefix = leaf == 0u && segment.bounce > 0;
+            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp, float2(dimensions),
+                    primaryPrefix);
         }
         if (packed.nextRecord == PATH_NO_NEXT) {
             break;

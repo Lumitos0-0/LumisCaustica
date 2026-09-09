@@ -53,7 +53,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit4 waves
+    public uint     flags;            // bit0 submerged, bit4 waves, bit5 aerial medium
     public uint     maxBounces;
     // ---- Sky state. Only what the CPU alone can know: Minecraft's four eased celestial angles (the
     // 26.2 timeline drives them through a cubic-bezier ease and a datapack may replace the track, so
@@ -88,6 +88,14 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // ---- Aerial-perspective medium, consumed by fog.slang and evaluated per path segment. The profile
+    // is sigma(h) = density * exp(-max(h - refY, 0) / scaleHeight), with h the ABSOLUTE block altitude, so
+    // `rebaseY` (the terrain origin's Y) is required to keep the layer from sliding with the camera.
+    // `reach` bounds both the sun column and the distance over which a segment is resolved into
+    // `steps` taps; it is not a "how far fog is visible" cutoff, since a segment's full length is always
+    // integrated and only its near field is finely sampled. Gated by WorldPush flags bit 5.
+    public float4   fogParams;        // x density (1/block), y scale height, z reference altitude, w HG g
+    public float4   fogTuning;        // x scatter albedo, y reach, z rebase origin Y, w max steps
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

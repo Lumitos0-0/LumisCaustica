@@ -49,6 +49,7 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricFog(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -133,6 +134,10 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    private static OptionInstance<Boolean> volumetricFog() {
+        return bool("caustica.options.rt.volumetricFog", CausticaConfig.Rt.Fog.ENABLED);
     }
 
     private static OptionInstance<Integer> dlssQuality() {

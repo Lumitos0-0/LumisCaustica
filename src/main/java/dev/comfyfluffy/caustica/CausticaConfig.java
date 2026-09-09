@@ -593,6 +593,44 @@ public final class CausticaConfig {
             }
         }
 
+        /**
+         * Aerial-perspective medium (fog), integrated along each traced path segment inside the transport
+         * rather than composited in screen space. Its density falls exponentially with ABSOLUTE altitude
+         * above the level's sea level, so a distant horizon hazes over while caves and ocean trenches sit
+         * at the flat profile floor instead of thickening without bound; they self-limit anyway, because
+         * in-scatter needs the sun column above them and a roof makes that transmittance zero.
+         *
+         * <p>DENSITY is per-block extinction, so optical depth grows with path length: a value tuned so
+         * that one e-fold sits past a typical render distance keeps short views crisp and long views hazy
+         * instead of needing a re-tune per display setting.
+         */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fog.enabled", "fog.enabled", false);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.fog.density", "fog.density", 0.0015f, 0.0f, 0.05f);
+            public static final FloatSetting SCALE_HEIGHT =
+                    clampedFloat("caustica.rt.fog.scaleHeight", "fog.scale-height", 96.0f, 4.0f, 4096.0f);
+            // Fraction of extinction that scatters instead of being absorbed: at 1.0 the medium is pure
+            // haze and stays bright at the horizon, at 0.5 it turns smoky and darkens what it covers.
+            public static final FloatSetting SCATTER_ALBEDO =
+                    clampedFloat("caustica.rt.fog.scatterAlbedo", "fog.scatter-albedo", 0.9f, 0.0f, 1.0f);
+            // Forward lobe of the phase function. Kept off 1.0 by the clamp because that lobe's peak grows
+            // as 1/(1-g)^2: past ~0.9 the pixels around the sun stop being bright haze and become a
+            // saturated blob, which no exposure or denoiser recovers.
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.35f, -0.9f, 0.9f);
+            // Distance a segment is resolved into STEPS taps, and the vertical extent of the sun column.
+            // Not a "how far fog reaches": a path's whole length is always integrated, only its near field
+            // is finely sampled, so raising REACH buys detail rather than adding a visible wall.
+            public static final FloatSetting REACH =
+                    clampedFloat("caustica.rt.fog.reach", "fog.reach", 512.0f, 16.0f, 4096.0f);
+            public static final IntSetting STEPS =
+                    clampedInt("caustica.rt.fog.steps", "fog.steps", 8, 1, 32);
+
+            private Fog() {
+            }
+        }
+
         public static final class Entities {
             public static final BooleanSetting ENABLED = bool("caustica.rt.entities", "entities.enabled", true);
             public static final BooleanSetting PARTICLES_ENABLED =

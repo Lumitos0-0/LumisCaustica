@@ -121,7 +121,17 @@ public final class RtComposite {
         return CausticaConfig.Rt.Composite.WATER_WAVES.value();
     }
 
+    // The bit is what the trace pays attention to, and it is gated on density as well as the toggle so a
+    // zero-density volume and a disabled one take the identical path (see fogMedium in fog.slang).
+    private static boolean volumetricFog() {
+        return CausticaConfig.Rt.Fog.ENABLED.value() && CausticaConfig.Rt.Fog.DENSITY.value() > 0.0f;
+    }
+
     private static final int WATER_ANCHOR_MASK = 4095;
+    // Reference altitude for the fog profile when there is no level to ask. The overworld's sea level, since
+    // that is the atmosphere the profile was authored against; without a level there is no altitude to be
+    // wrong about, it only decides how hazy a title-screen panoramic or a pre-join first frame looks.
+    private static final int FOG_SEA_LEVEL_FALLBACK = 63;
     // The versioned look package owns every photometric anchor and the sky geometry. Its sun illuminance is the
     // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
     // to ~117,000 lux under a zenith sun and reddens/dims it through sunset, and because world.rmiss tints
@@ -1061,7 +1071,8 @@ public final class RtComposite {
             ByteBuffer push = MemoryUtil.memByteBuffer(pushBuf.mapped, WORLD_PUSH_SIZE);
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
-            // submerged, fixing the air→water first-segment orientation) and animated water normals.
+            // submerged, fixing the air→water first-segment orientation), animated water normals, and the
+            // aerial medium the trace integrates its own in-scatter from.
             // Bit 1 remains unused to avoid conflicting with stale external readers.
             int flags = 0;
             var level = Minecraft.getInstance().level;
@@ -1078,6 +1089,9 @@ public final class RtComposite {
             }
             if (waterWaves()) {
                 flags |= 0b10000; // animated water wave normals
+            }
+            if (volumetricFog()) {
+                flags |= 0b100000; // aerial medium: in-scatter and its own transmittance, per segment
             }
 
             // Water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
@@ -1156,7 +1170,17 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    // Aerial medium, in blocks and absolute altitude: extinction at the level's sea level and
+                    // its e-folding height, then the scatter fraction, sun-column reach, tap budget. The
+                    // profile is evaluated at rebased positions, so the terrain origin's Y has to travel
+                    // with them or the layer would slide as the camera moves; blockY is already a multiple
+                    // of the section height, so it costs nothing to pin.
+                    new Float4(CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.SCALE_HEIGHT.value(),
+                            level != null ? level.getSeaLevel() : FOG_SEA_LEVEL_FALLBACK,
+                            CausticaConfig.Rt.Fog.ANISOTROPY.value()),
+                    new Float4(CausticaConfig.Rt.Fog.SCATTER_ALBEDO.value(), CausticaConfig.Rt.Fog.REACH.value(),
+                            terrain.blockY, CausticaConfig.Rt.Fog.STEPS.value())
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
