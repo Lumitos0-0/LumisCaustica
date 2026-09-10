@@ -258,8 +258,10 @@ public final class RtComposite {
     // but the same lifetime and the same rebinding path.
     private RtImage gSunFroxels;
 
-    // Voxels per axis: one per SUN_FROXEL_DIVISOR screen pixels, floored so a tiny render target still gets a
-    // usable grid. The rule has to match fog.slang's fogFroxelDims, which is where the march derives the same
+    // Voxels per axis: one per SUN_FROXEL_DIVISOR screen pixels, floored down. The floor is what makes
+    // dims * DIVISOR <= render extent true, and the gather relies on that: it reads this voxel's cell out of
+    // the depth guides at idx * DIVISOR, so a grid wider than the frame divided by the divisor would index
+    // past them. The rule has to match fog.slang's fogFroxelDims, which is where the march derives the same
     // extent from the same size — nothing pushes it, so nothing can disagree silently.
     private static final int SUN_FROXEL_DIVISOR = 16;
     private static final int SUN_FROXEL_SLICES = 32;
@@ -873,8 +875,8 @@ public final class RtComposite {
         }
     }
 
-    private static int fogFroxelExtent(int pixels, int minimum) {
-        return Math.max(minimum, pixels / SUN_FROXEL_DIVISOR);
+    private static int fogFroxelExtent(int pixels) {
+        return Math.max(1, pixels / SUN_FROXEL_DIVISOR);
     }
 
     /** Bind the guide buffers into the world pipeline's extra storage-image slots. */
@@ -1006,8 +1008,8 @@ public final class RtComposite {
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Both extents come from the render size by the same rule fog.slang applies when it indexes the
         // volume, so no dimension has to travel through the push constants.
-        sunFroxelW = fogFroxelExtent(renderW, 32);
-        sunFroxelH = fogFroxelExtent(renderH, 20);
+        sunFroxelW = fogFroxelExtent(renderW);
+        sunFroxelH = fogFroxelExtent(renderH);
         gSunFroxels = ctx.createStorageImage3D(sunFroxelW, sunFroxelH, SUN_FROXEL_SLICES,
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                 "fog froxels " + sunFroxelW + "x" + sunFroxelH + "x" + SUN_FROXEL_SLICES);

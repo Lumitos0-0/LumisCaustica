@@ -166,9 +166,14 @@ public static const float FOG_SKY_LUMINANCE = 0.06;
 public static const float3 FOG_LUMA = float3(0.2126, 0.7152, 0.0722);
 public static const float3 FOG_SKY_TINT = float3(0.62, 0.75, 1.0);
 
-/** The volume's extent in voxels. Both sides derive it from the render size, so it needs no push field. */
+/**
+ * The volume's extent in voxels. Both sides derive it from the render size, so it needs no push field. The
+ * floor is load-bearing beyond tidiness: the gather looks up this voxel's cell in the depth guides at
+ * `idx * DIVISOR`, and a grid that ever came out wider than the frame divided by the divisor would read
+ * outside them, so the minimum is one voxel rather than a nicer-looking 32.
+ */
 public float2 fogFroxelDims(float2 renderSize) {
-    return max(float2(32.0, 20.0), floor(renderSize / float(FOG_FROXEL_DIVISOR)));
+    return max(float2(1.0, 1.0), floor(renderSize / float(FOG_FROXEL_DIVISOR)));
 }
 
 /**
@@ -208,7 +213,42 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     float span = max(abs(wf - wn), 1.0e-4);
     float depth = fogFroxelSliceDepth(int(idx.z), int(dims.z), f.reach);
     float t = (depth - wn) / span;
-    float3 voxel = nearP + rayDir * t + worldPush.camOffset;
+    float3 voxelRel = nearP + rayDir * t;
+    float3 voxel = voxelRel + worldPush.camOffset;
+
+    // Froxel z-bounds: a voxel the primary ray sails past is inside geometry, and a shadow ray started inside
+    // geometry has its first face on the *back* of the block that contains it, which is exactly the face the
+    // secondary cull mode discards. So the ray leaves, and the voxel reports sun and open sky from the middle
+    // of a wall. Nothing downstream can recover from that -- the march's taps sit in air, and the air is what
+    // reads those neighbours -- so a shell of falsely-lit voxels around every surface in view was smearing
+    // into the medium as light that seemed to come from no object at all. Behind the surface there is no air
+    // to scatter, which is also the honest answer, so the voxel is written as nothing rather than left stale.
+    if (dims.x > 1u && dims.y > 1u) {
+        uint2 lo = idx.xy * uint(FOG_FROXEL_DIVISOR);
+        uint2 hi = lo + uint2(FOG_FROXEL_DIVISOR - 1u, FOG_FROXEL_DIVISOR - 1u);
+        float4 cornerZ = float4(gDepth[lo], gDepth[uint2(hi.x, lo.y)],
+                gDepth[uint2(lo.x, hi.y)], gDepth[hi]);
+        // The farthest surface in the cell, not the nearest: a cell that straddles an edge must not reject
+        // the air in front of that edge, and a whole cell of error is already the grid's own resolution.
+        float deviceZ = min(min(cornerZ.x, cornerZ.y), min(cornerZ.z, cornerZ.w));
+        // Compared in the guides' own space: hardware depth, reversed, so 1 is near and 0 is sky. Pulling
+        // that onto this voxel's ray needs no near/far constants for the two sides to agree on, and a sky
+        // cell unprojects to the far plane, which rejects nothing.
+        float4 surfH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, deviceZ, 1.0));
+        if (surfH.w != 0.0) {
+            float3 surfRel = surfH.xyz / surfH.w;
+            float3 along = normalize(rayDir);
+            // Allowed to sit this far past the surface: a quarter of the distance, which is the slice law's
+            // own half-gap (32 geometric slices over `reach` is a factor of 1.2 per step), plus the cell's
+            // footprint, which grows with depth at the same rate. Below a block it stops mattering, so the
+            // floor keeps the near field from clipping against the geometry it is attached to.
+            float slop = max(1.0, 0.25 * max(dot(surfRel - nearP, along), 0.0));
+            if (dot(voxelRel - surfRel, along) > slop) {
+                sunFroxels[uint3(idx.xy, idx.z)] = float4(0.0, 0.0, 0.0, 0.0);
+                return;
+            }
+        }
+    }
 
     // The frame's dominant body, resolved the same way the indirect trace resolves it. Recomputed per voxel
     // rather than read from the module static the raygens publish, because this pass runs before the one that
