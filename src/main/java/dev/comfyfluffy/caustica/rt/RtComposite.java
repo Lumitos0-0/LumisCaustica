@@ -257,6 +257,8 @@ public final class RtComposite {
     // The aerial medium's light volume: one float4 per screen column and log-depth slice. Not a DLSS guide,
     // but the same lifetime and the same rebinding path.
     private RtImage gSunFroxels;
+    // The spatially filtered copy the march reads, written by the filter record from the volume above.
+    private RtImage gSunFroxelsFiltered;
 
     // Voxels per axis: one per configured screen pixels, floored down (see CausticaConfig for the setting).
     // The floor is what makes dims * divisor <= render extent true, and the gather relies on that: it reads
@@ -265,6 +267,8 @@ public final class RtComposite {
     // mirrored in a constant, so the image and the march cannot disagree about which grid they share.
     /** Third raygen record of the world pipeline; see the list in {@link #ensureWorld}. */
     private static final int SUN_FROXEL_RAYGEN_INDEX = 2;
+    /** Fourth: the filter pass over the volume the third one filled. */
+    private static final int SUN_FROXEL_FILTER_RAYGEN_INDEX = 3;
 
     private int sunFroxelW;
     private int sunFroxelH;
@@ -747,7 +751,9 @@ public final class RtComposite {
                             RtDeviceBringup.worldRaygenShader(),
                             // No SER variant: the gather is a handful of shadow rays per voxel, which does not
                             // amortize a reorder barrier any better than Pass A's short walk does.
-                            "sun_froxels.rgen.spv"},
+                            "sun_froxels.rgen.spv",
+                            // Also no SER variant: 27 image loads per voxel and no rays at all.
+                            "sun_froxels_filter.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -891,6 +897,7 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
         worldPipeline.setSunFroxelImage(gSunFroxels.view);
+        worldPipeline.setSunFroxelFilteredImage(gSunFroxelsFiltered.view);
     }
 
     private void destroyGuideImages() {
@@ -921,6 +928,10 @@ public final class RtComposite {
         if (gSunFroxels != null) {
             gSunFroxels.destroy();
             gSunFroxels = null;
+        }
+        if (gSunFroxelsFiltered != null) {
+            gSunFroxelsFiltered.destroy();
+            gSunFroxelsFiltered = null;
         }
         if (rrOutput != null) {
             rrOutput.destroy();
@@ -1019,6 +1030,9 @@ public final class RtComposite {
         gSunFroxels = ctx.createStorageImage3D(sunFroxelW, sunFroxelH, sunFroxelSlices,
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                 "fog froxels " + sunFroxelW + "x" + sunFroxelH + "x" + sunFroxelSlices);
+        gSunFroxelsFiltered = ctx.createStorageImage3D(sunFroxelW, sunFroxelH, sunFroxelSlices,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "fog froxels filtered " + sunFroxelW + "x" + sunFroxelH + "x" + sunFroxelSlices);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -1133,6 +1147,13 @@ public final class RtComposite {
             }
             if (volumetricFog()) {
                 flags |= 0b100000; // aerial medium: in-scatter and its own transmittance, per segment
+            }
+            if (debugView == 10) {
+                // The medium's own contribution, stored in the radiance target instead of the guides: red is
+                // what it scattered into this path, green what it removed, blue which slice of the light volume
+                // that came from, over a dimmed lattice marking the volume's cell borders. See fogDebugColour
+                // in fog.slang, and turn DLSS-RR off for the pixel-exact version.
+                flags |= 0b1000000;
             }
 
             // Water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
@@ -1286,7 +1307,14 @@ public final class RtComposite {
                     active.traceVolume(cmd, sunFroxelW, sunFroxelH, sunFroxelSlices, pushConstants,
                             SUN_FROXEL_RAYGEN_INDEX);
                 }
-                VulkanCommandEncoder.memoryBarrier(cmd, stack); // froxel writes visible to the fog march
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // gathered voxels visible to the filter
+                // One filter dispatch per gather dispatch, same launch and same extent: a voxel per thread.
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog froxel filter");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceFroxelFilter")) {
+                    active.traceVolume(cmd, sunFroxelW, sunFroxelH, sunFroxelSlices, pushConstants,
+                            SUN_FROXEL_FILTER_RAYGEN_INDEX);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // filtered voxels visible to the fog march
             }
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {

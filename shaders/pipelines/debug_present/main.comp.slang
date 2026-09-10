@@ -88,7 +88,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float4 normalRough = gNormal[guidePix];
     float3 dbg;
-    if (pc.debugView == 8u) {
+    if (pc.debugView == 10u) {
+        // The fog's own pass already wrote display-referred diagnostic channels into the radiance target, so
+        // this is a passthrough: no false colour, and no re-derivation here, since this pipeline has neither
+        // the push nor the projection that the light volume's addressing would take.
+        dbg = clamp(sceneImage[pix].rgb, float3(0.0), float3(1.0));
+    } else if (pc.debugView == 8u) {
         float luminance = dot(max(sceneImage[pix].rgb, float3(0.0)), ACESCG_LUMA);
         float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0);
         float evFromMidGrey = log2(max(exposedLuminance, 1.0e-6) / 0.18);

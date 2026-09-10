@@ -165,12 +165,19 @@ public final class RtPipeline {
             binds.get(WORLD_G_SUN_FROXELS).binding(WORLD_G_SUN_FROXELS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            // The filtered copy, written by the filter record and read by the indirect trace's march.
+            binds.get(WORLD_G_SUN_FROXELS_FILTERED).binding(WORLD_G_SUN_FROXELS_FILTERED)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_CELESTIALS).binding(WORLD_CELESTIALS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+            // The light volume's gather samples the sky LUT for the ambient the medium scatters, so the
+            // fetch is a raygen one and the raygen bit has to be listed; a descriptor whose stageFlags omit
+            // the stage doing the sampling is a validation error even where drivers let it slide.
             binds.get(WORLD_SKY_VIEW).binding(WORLD_SKY_VIEW)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_TRANSMITTANCE).binding(WORLD_TRANSMITTANCE)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)
@@ -419,12 +426,21 @@ public final class RtPipeline {
      * nothing here transitions.
      */
     public void setSunFroxelImage(long imageView) {
+        writeStorageImageBinding(WORLD_G_SUN_FROXELS, imageView);
+    }
+
+    /** The filtered half of the aerial medium's light volume; same shape, same GENERAL layout. */
+    public void setSunFroxelFilteredImage(long imageView) {
+        writeStorageImageBinding(WORLD_G_SUN_FROXELS_FILTERED, imageView);
+    }
+
+    private void writeStorageImageBinding(int binding, long imageView) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
             imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(RING, stack);
             for (int i = 0; i < RING; i++) {
-                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_G_SUN_FROXELS)
+                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(binding)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(imgInfo);
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);

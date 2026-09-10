@@ -156,6 +156,12 @@ public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
  * frame from the current camera, so nothing has to be revalidated when the player turns.
  */
 public static const int FOG_FROXEL_SUN_TAPS = 4;
+// How much of the filtered value replaces the gathered one, per channel: the ambient is a veil and takes the
+// filter fully, the sun's transmittance keeps a quarter of its edge so a shaft stays a shaft. Slice
+// neighbours count for less than same-slice ones, since one slice step is a long way at distance.
+public static const float FOG_FILTER_AMBIENT_WEIGHT = 1.0;
+public static const float FOG_FILTER_SUN_WEIGHT = 0.75;
+public static const float FOG_FILTER_SLICE_WEIGHT = 0.35;
 public static const int FOG_FROXEL_DOME_TAPS = 8;    // directions over the whole sphere, not the dome
 public static const float FOG_FROXEL_Z_NEAR = 1.0;   // blocks: the first slice's inner edge
 // Shortest distance a march tap covers. Light is now looked up per tap, so a step sized as a share of
@@ -325,13 +331,90 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
             bound * dot(ambient, FOG_LUMA) / float(FOG_FROXEL_DOME_TAPS));
 }
 
+/**
+ * Spatial filter, one thread per voxel, no rays: a 3x3x3 box over the gathered volume, mixed into the
+ * gathered value channel by channel. It exists because the grid is coarse relative to what it now carries --
+ * on a canopy the sun test returns 0 or 1 per voxel, and 261k independent coin flips read as puffs of light
+ * hanging between the leaves rather than as shade. A filter is also what MCRTX does, and its asymmetry is
+ * worth copying exactly: the pass list has BlurGIInscatter and NO blur for the sun's in-scatter, because the
+ * ambient is a veil that can be smoothed freely while the transmittance IS the shaft. So the ambient is
+ * averaged outright and the sun's own value mostly, which keeps a wide beam intact: averaging is the identity
+ * on anything wider than a voxel, and the only structures that soften are the ones the grid cannot carry
+ * anyway -- which is why this runs on the volume (once per voxel per frame) instead of in the march (once per
+ * tap per segment per bounce per sample).
+ *
+ * Only voxels that carry light contribute. A rejected voxel -- behind a surface, or in the air above a fully
+ * occluded region -- is skipped rather than averaged in, so the filter cannot drag daylight across a wall or
+ * soften the shadow edge that the depth bound just made.
+ */
+public void fogFilterSunFroxels(uint3 idx, uint3 dims) {
+    if (idx.z >= dims.z || dims.x == 0u || dims.y == 0u) {
+        return;
+    }
+    float4 src = sunFroxels[uint3(idx.xy, idx.z)];
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    float weight = 0.0;
+    int3 centre = int3(idx.xy, int(idx.z));
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int3 c = centre + int3(dx, dy, dz);
+                // Clamped on both axes: at the volume's own edge a voxel averages the edge rather than
+                // reaching outside the launch, which is also what keeps the screen border from filtering
+                // toward black. Depth is weighted down because adjacent slices are far apart in world units
+                // out there, and a shaft's own length already smooths along the view ray.
+                c.xy = clamp(c.xy, int2(0, 0), int2(dims.xy) - 1);
+                c.z = clamp(c.z, 0, int(dims.z) - 1);
+                float4 s = sunFroxels[uint3(c.xy, uint(c.z))];
+                float w = (any(s.rgb > 0.0) || s.a > 0.0) ? (dz == 0 ? 1.0 : FOG_FILTER_SLICE_WEIGHT) : 0.0;
+                sum += s * w;
+                weight += w;
+            }
+        }
+    }
+    float4 avg = weight > 0.0 ? sum / weight : src;
+    sunFroxelsFiltered[uint3(idx.xy, idx.z)] = lerp(src, avg, float4(FOG_FILTER_SUN_WEIGHT,
+            FOG_FILTER_SUN_WEIGHT, FOG_FILTER_SUN_WEIGHT, FOG_FILTER_AMBIENT_WEIGHT));
+}
+
+/**
+ * Fog diagnostics for the current thread, live only while the debug view is on: the module-static pattern the
+ * indirect trace already uses for its dominant light, because the two things that need them (the march, and
+ * the raygen that stores the frame) are four functions apart and widening `fogIntegrateSegment`'s signature a
+ * second time for an inspection feature would be the worse trade.
+ */
+public static float3 fogDbgScatter;
+public static float fogDbgExtinct;
+public static float fogDbgSlice;
+public static float fogDbgScale;
+
+/** Start a path's fog diagnostics. `invSamples` keeps the reported values independent of the sample count. */
+public void fogDebugBegin(float invSamples) {
+    fogDbgScatter = float3(0.0, 0.0, 0.0);
+    fogDbgExtinct = 0.0;
+    fogDbgSlice = 0.0;
+    fogDbgScale = invSamples;
+}
+
+/**
+ * The fog's own contribution to a path, as the debug view wants it: in-scatter (red), the fraction of the
+ * ray's light the medium removed (green), and the volume's slice the last sample came from (blue).
+ */
+public float3 fogDebugColour() {
+    // Log-mapped: the scatter term is scene radiance and spans many orders of magnitude, and a linear map
+    // would show only the pixels next to the sun.
+    float scatter = dot(fogDbgScatter, FOG_LUMA) * max(fogDbgScale, 0.0);
+    return float3(log2(1.0 + max(scatter, 0.0)) / 8.0, saturate(fogDbgExtinct * max(fogDbgScale, 0.0)),
+            fogDbgSlice);
+}
+
 static float4 fogFroxelTexel(int2 c, int slice, float2 dims) {
     // Clamped on both axes rather than only where the weight is nonzero: a zero-weight out-of-range index is
     // still out of range, and the edge texels replicating is what keeps a tap near the screen border from
     // reading whatever the allocator left there.
     int2 cc = clamp(c, int2(0, 0), int2(dims) - 1);
     int s = clamp(slice, 0, fogFroxelSlices() - 1);
-    return sunFroxels[uint3(cc, uint(s))];
+    return sunFroxelsFiltered[uint3(cc, uint(s))];
 }
 
 /**
@@ -365,6 +448,9 @@ public float4 fogSunFroxels(float3 p, float2 renderSize, float reach) {
             / ratio * slices - 0.5;
     float zfrac = zf - floor(zf);
     int z0 = int(floor(zf));
+    // Reported by the debug view so a wrong VALUE and a wrong MAPPING are distinguishable on screen: this is
+    // the slice the tap landed in, normalised over the volume's depth; its steps are the slice boundaries.
+    fogDbgSlice = (float(z0) + 0.5) / max(float(fogFroxelSlices()), 1.0);
     // Eight texels: bilinear in the column, linear across slices. That interpolation is what lets a coarse
     // grid carry a soft boundary — the march asks for a point, not for a texel, so a shaft edge lands where
     // it lands rather than on whichever slice it fell into.
@@ -455,7 +541,13 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
         // divides by a small number.
         float segmentT = exp(-sigma * dt);
         float4 lit = fogSunFroxels(tapMid, size, f.reach);
-        S += T * fogScatterAt(f, sun, sigma, phase, lit.rgb, lit.a) * (1.0 - segmentT);
+        float3 litAt = fogScatterAt(f, sun, sigma, phase, lit.rgb, lit.a) * (1.0 - segmentT);
+        S += T * litAt;
+        // Both diagnostics are what the *ray* lost or gained at this segment, so they use the same T the
+        // real terms do and stay in the same units the pixel is composed in: scatter in radiance, the
+        // extinct term as a fraction of the light that reached this far.
+        fogDbgScatter += T * litAt;
+        fogDbgExtinct += dot(T, FOG_LUMA) * (1.0 - segmentT);
         T *= segmentT;
     }
 
@@ -465,7 +557,13 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
         float sigma = fogDensityAt(f, farMid);
         float segmentT = exp(-sigma * far);
         float4 lit = fogSunFroxels(farMid, size, f.reach);
-        S += T * fogScatterAt(f, sun, sigma, phase, lit.rgb, lit.a) * (1.0 - segmentT);
+        float3 litAt = fogScatterAt(f, sun, sigma, phase, lit.rgb, lit.a) * (1.0 - segmentT);
+        S += T * litAt;
+        // Both diagnostics are what the *ray* lost or gained at this segment, so they use the same T the
+        // real terms do and stay in the same units the pixel is composed in: scatter in radiance, the
+        // extinct term as a fraction of the light that reached this far.
+        fogDbgScatter += T * litAt;
+        fogDbgExtinct += dot(T, FOG_LUMA) * (1.0 - segmentT);
         T *= segmentT;
     }
 }

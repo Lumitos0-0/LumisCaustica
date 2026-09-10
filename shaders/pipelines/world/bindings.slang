@@ -20,6 +20,10 @@ import world_common;
 // a storage image in the world set's descriptor pool, and the pool is sized from that count.
 [[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture3D<float4> sunFroxels;
 
+// The spatially filtered copy of the volume above, which is what the march reads: written by
+// sun_froxels_filter.rgen from `sunFroxels`. Same G_ naming and the same reason for it.
+[[vk::binding(13, 0)]] [format("rgba16f")] public RWTexture3D<float4> sunFroxelsFiltered;
+
 [[vk::binding(2, 0)]] public Sampler2D blockAlbedoAtlas;
 [[vk::binding(9, 0)]] public Sampler2D celestialsAtlas;
 [[vk::binding(10, 0)]] public Sampler2D skyViewLut;

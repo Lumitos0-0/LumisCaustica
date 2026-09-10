@@ -445,6 +445,7 @@ void main() {
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
+    fogDebugBegin(1.0 / float(spp));
     uint recordIndex = pixelIndex;
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
@@ -471,5 +472,21 @@ void main() {
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.
     float3 stored = frameRadiance * (worldPush.preExposure / float(spp));
-    outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
+    // The fog debug view (10): what the medium itself put into this path, not the scene behind it. Written
+    // into the radiance target so the guides, the denoiser and the exposure path all stay untouched -- a
+    // debug mode that edits an input to DLSS-RR would be inspecting a different renderer than the one it is
+    // meant to explain. With DLSS-RR on this is denoised and upscaled like any other content; for the
+    // pixel-exact version turn RR off, which makes the blit 1:1. The lattice of dimmed lines is the light
+    // volume's own cell border, so the grid resolution is readable straight off the image.
+    if ((worldPush.flags & 0b1000000u) != 0u) {
+        float2 perCell = max(float2(dimensions) / max(worldPush.fogVolume.x, 1.0), float2(1.0, 1.0));
+        // A cell border is where frac of the cell coordinate is within a pixel and a half of the start.
+        float2 onBorder = step(frac((float2(pix) + 0.5) / max(worldPush.fogVolume.x, 1.0)),
+                float2(1.5) / perCell);
+        float3 fogDebug = fogDebugColour();
+        fogDebug.rg *= 1.0 - 0.75 * max(onBorder.x, onBorder.y);
+        outImage[pix] = float4(clamp(fogDebug, float3(0.0), float3(1.0)), 1.0);
+    } else {
+        outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
+    }
 }
