@@ -258,18 +258,18 @@ public final class RtComposite {
     // but the same lifetime and the same rebinding path.
     private RtImage gSunFroxels;
 
-    // Voxels per axis: one per SUN_FROXEL_DIVISOR screen pixels, floored down. The floor is what makes
-    // dims * DIVISOR <= render extent true, and the gather relies on that: it reads this voxel's cell out of
-    // the depth guides at idx * DIVISOR, so a grid wider than the frame divided by the divisor would index
-    // past them. The rule has to match fog.slang's fogFroxelDims, which is where the march derives the same
-    // extent from the same size — nothing pushes it, so nothing can disagree silently.
-    private static final int SUN_FROXEL_DIVISOR = 16;
-    private static final int SUN_FROXEL_SLICES = 32;
+    // Voxels per axis: one per configured screen pixels, floored down (see CausticaConfig for the setting).
+    // The floor is what makes dims * divisor <= render extent true, and the gather relies on that: it reads
+    // this voxel's cell out of the depth guides at idx * divisor, so a grid wider than the frame divided by
+    // the divisor would index past them. The value is pushed to the shaders as fogVolume.x rather than
+    // mirrored in a constant, so the image and the march cannot disagree about which grid they share.
     /** Third raygen record of the world pipeline; see the list in {@link #ensureWorld}. */
     private static final int SUN_FROXEL_RAYGEN_INDEX = 2;
 
     private int sunFroxelW;
     private int sunFroxelH;
+    private int sunFroxelDivisor;
+    private int sunFroxelSlices;
     // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
     // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
     private RtImage rrOutput;
@@ -875,8 +875,8 @@ public final class RtComposite {
         }
     }
 
-    private static int fogFroxelExtent(int pixels) {
-        return Math.max(1, pixels / SUN_FROXEL_DIVISOR);
+    private static int fogFroxelExtent(int pixels, int divisor) {
+        return Math.max(1, pixels / divisor);
     }
 
     /** Bind the guide buffers into the world pipeline's extra storage-image slots. */
@@ -938,7 +938,11 @@ public final class RtComposite {
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
                 && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
+                // The light volume's extent is derived from the render size and this setting, so a setting
+                // change alone has to rebuild the image or the shaders would index a grid that is not there.
+                && sunFroxelDivisor == CausticaConfig.Rt.Fog.GRID_DIVISOR.value()
+                && sunFroxelSlices == CausticaConfig.Rt.Fog.GRID_SLICES.value()) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -1008,11 +1012,13 @@ public final class RtComposite {
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Both extents come from the render size by the same rule fog.slang applies when it indexes the
         // volume, so no dimension has to travel through the push constants.
-        sunFroxelW = fogFroxelExtent(renderW);
-        sunFroxelH = fogFroxelExtent(renderH);
-        gSunFroxels = ctx.createStorageImage3D(sunFroxelW, sunFroxelH, SUN_FROXEL_SLICES,
+        sunFroxelDivisor = CausticaConfig.Rt.Fog.GRID_DIVISOR.value();
+        sunFroxelSlices = CausticaConfig.Rt.Fog.GRID_SLICES.value();
+        sunFroxelW = fogFroxelExtent(renderW, sunFroxelDivisor);
+        sunFroxelH = fogFroxelExtent(renderH, sunFroxelDivisor);
+        gSunFroxels = ctx.createStorageImage3D(sunFroxelW, sunFroxelH, sunFroxelSlices,
                 VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                "fog froxels " + sunFroxelW + "x" + sunFroxelH + "x" + SUN_FROXEL_SLICES);
+                "fog froxels " + sunFroxelW + "x" + sunFroxelH + "x" + sunFroxelSlices);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -1215,7 +1221,11 @@ public final class RtComposite {
                             level != null ? level.getSeaLevel() : FOG_SEA_LEVEL_FALLBACK,
                             CausticaConfig.Rt.Fog.ANISOTROPY.value()),
                     new Float4(CausticaConfig.Rt.Fog.SCATTER_ALBEDO.value(), CausticaConfig.Rt.Fog.REACH.value(),
-                            terrain.blockY, CausticaConfig.Rt.Fog.STEPS.value())
+                            terrain.blockY, CausticaConfig.Rt.Fog.STEPS.value()),
+                    // Volume geometry: the divisor Java sized the image with, so the march indexes the grid it
+                    // shares with the gather instead of re-deriving it from a constant both sides duplicate.
+                    new Float4(CausticaConfig.Rt.Fog.GRID_DIVISOR.value(),
+                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), 0f, 0f)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1273,7 +1283,7 @@ public final class RtComposite {
             if ((flags & 0b100000) != 0) {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog froxels");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceFroxels")) {
-                    active.traceVolume(cmd, sunFroxelW, sunFroxelH, SUN_FROXEL_SLICES, pushConstants,
+                    active.traceVolume(cmd, sunFroxelW, sunFroxelH, sunFroxelSlices, pushConstants,
                             SUN_FROXEL_RAYGEN_INDEX);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // froxel writes visible to the fog march

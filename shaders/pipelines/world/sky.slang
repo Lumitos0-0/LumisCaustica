@@ -247,6 +247,18 @@ public float horizonZenithCos(float viewerRadiusKm) {
 // symmetric about, so two angles describe the whole sphere. The elevation mapping is split at the
 // geometric horizon and squared on each side, putting the most texels exactly where the sky's gradient is
 // steepest, keeping the horizon continuous and well resolved.
+/**
+ * Both slices of this frame's sky-view LUT for a world direction: the atmosphere's in-scatter of the sun and
+ * of the moon, exactly as the miss shader reads them. Shared so that the sky a ray sees and the sky any other
+ * consumer samples are the same two fetches, and so a second reader cannot invent its own sky.
+ */
+public void skyDomeUv(float3 dir, SkyState state, out float2 sunUv, out float2 moonUv) {
+    sunUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, state.sunDir), SKY_VIEW_BODY_SUN);
+    moonUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, state.moonDir), SKY_VIEW_BODY_MOON);
+}
+
 public float2 skyViewLutUv(float viewerRadiusKm, float viewZenithCos, float lightViewCos, int body) {
     float horizonSin = sqrt(max(viewerRadiusKm * viewerRadiusKm
             - ATMOS_BOTTOM_KM * ATMOS_BOTTOM_KM, 0.0)) / max(viewerRadiusKm, 1.0e-6);

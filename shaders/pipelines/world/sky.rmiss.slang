@@ -92,10 +92,9 @@ float3 stars(float3 dir, SkyState state, float3 extinction) {
 
 /** Atmosphere in-scatter for a world direction: both bodies' slices of this frame's sky-view LUT. */
 float3 skyDome(float3 dir, SkyState state) {
-    float2 sunUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
-            lightViewCosine(dir, state.sunDir), SKY_VIEW_BODY_SUN);
-    float2 moonUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
-            lightViewCosine(dir, state.moonDir), SKY_VIEW_BODY_MOON);
+    float2 sunUv;
+    float2 moonUv;
+    skyDomeUv(dir, state, sunUv, moonUv);
     return skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
 }
 

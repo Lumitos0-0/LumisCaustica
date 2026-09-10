@@ -97,6 +97,10 @@ public struct WorldPush {
     // WorldPush flags bit 5.
     public float4   fogParams;        // x density (1/block), y scale height, z reference altitude, w HG g
     public float4   fogTuning;        // x scatter albedo, y reach, z rebase origin Y, w max steps
+    // The light volume's geometry, pushed rather than duplicated because two things must agree on it: Java
+    // sizes the image from it and the march indexes the image with it. x = screen pixels per voxel edge,
+    // y = log-depth slices.
+    public float4   fogVolume;        // x pixels per voxel edge, y slices, zw reserved
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

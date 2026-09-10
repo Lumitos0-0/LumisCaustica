@@ -142,38 +142,57 @@ public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
  * with the frame's jitter, and the answer differs by a whole unit of light between the two possibilities.
  *
  * <p>So the volume holds one float4 per (screen column, log-depth slice): rgb is the transmittance to the
- * sun, alpha is how much of the sky the voxel can see. Both are estimated from a few FIXED directions,
- * which is what lets the march sample a coarse structure without noise or crawl, and the whole frame pays
- * `FOG_FROXEL_SUN_TAPS + FOG_FROXEL_SKY_TAPS` rays per voxel instead of one per tap per bounce per sample.
+ * sun, and alpha is the sky's own contribution -- the mean of (transmittance along a direction) times (this
+ * frame's sky-view LUT in that direction) over the whole sphere, which is the isotropic term of the same
+ * integral the body's lobe is normalised against. Both are estimated from a few FIXED directions, which is
+ * what lets the march sample a coarse structure without noise or crawl, and the whole frame pays
+ * `FOG_FROXEL_SUN_TAPS + FOG_FROXEL_DOME_TAPS` rays per voxel instead of one per tap per bounce per sample.
  *
  * <p>Screen-aligned columns, world-correct contents: a voxel is defined by the view ray through its column
- * at a given depth, so the grid thins out with distance the way the eye needs it to (a near voxel is
+ * at a given depth, and the pixels-per-voxel divisor comes in through the push (fogVolume.x) rather than
+ * being mirrored here and in Java, so the setting that trades grid size for cost cannot desync the two. The
+ * grid thins out with distance the way the eye needs it to (a near voxel is
  * centimetres wide, a far one is many blocks) and no reprojection is involved — the grid is rebuilt every
  * frame from the current camera, so nothing has to be revalidated when the player turns.
  */
-public static const int FOG_FROXEL_SLICES = 32;      // log-depth slices; Java's volume depth
-public static const int FOG_FROXEL_DIVISOR = 16;     // screen pixels per voxel edge, both axes
 public static const int FOG_FROXEL_SUN_TAPS = 4;
-public static const int FOG_FROXEL_SKY_TAPS = 4;
+public static const int FOG_FROXEL_DOME_TAPS = 8;    // directions over the whole sphere, not the dome
 public static const float FOG_FROXEL_Z_NEAR = 1.0;   // blocks: the first slice's inner edge
-// The sky's share of in-scattering, for the light that arrives from every direction except the body's.
-// Fog ambient is a veil rather than a light source, so it is estimated from the sky's openness alone: a
-// cool tint at a fixed fraction of the dominant body's illuminance, which follows the body from noon to
-// moonlight without a second colour term, and which needs no occlusion test to be right about a sealed room
-// because the openness estimate already is that test.
-public static const float FOG_SKY_LUMINANCE = 0.06;
+// Shortest distance a march tap covers. Light is now looked up per tap, so a step sized as a share of
+// `reach` (512/8 = 64 blocks) gave every segment inside a room a single sample: the medium resolved as flat
+// panels whose edges followed the volume's grid. This is the floor under that; long views still fall back on
+// `reach / steps` so the tap budget stays bounded by `steps`.
+public static const float FOG_TAP_MIN = 2.0;
 // BT.709 weights, the same ones the sky module uses to decide which body is brighter.
 public static const float3 FOG_LUMA = float3(0.2126, 0.7152, 0.0722);
+// Only the *mean* of the dome's radiance survives in one fp16 channel, so the veil is tinted by the sky's
+// average colour rather than by whatever each direction actually brought. The body's own path keeps its full
+// per-direction tint, because that is the term with a lobe and the one shafts are made of.
 public static const float3 FOG_SKY_TINT = float3(0.62, 0.75, 1.0);
 
 /**
- * The volume's extent in voxels. Both sides derive it from the render size, so it needs no push field. The
- * floor is load-bearing beyond tidiness: the gather looks up this voxel's cell in the depth guides at
- * `idx * DIVISOR`, and a grid that ever came out wider than the frame divided by the divisor would read
+ * The volume's extent in voxels, from the pushed divisor rather than a constant, because Java sizes the image
+ * from the same number and a setting that only one side obeyed would index the wrong grid silently. The floor
+ * is load-bearing beyond tidiness: the gather looks up this voxel's cell in the depth guides at
+ * `idx * divisor`, and a grid that ever came out wider than the frame divided by the divisor would read
  * outside them, so the minimum is one voxel rather than a nicer-looking 32.
  */
-public float2 fogFroxelDims(float2 renderSize) {
-    return max(float2(1.0, 1.0), floor(renderSize / float(FOG_FROXEL_DIVISOR)));
+public float2 fogFroxelDims(float2 renderSize, float divisor) {
+    return max(float2(1.0, 1.0), floor(renderSize / max(divisor, 1.0)));
+}
+
+/** The divisor this frame's volume was built with, from the push. */
+public float fogFroxelDivisor(WorldPush push) {
+    return max(push.fogVolume.x, 1.0);
+}
+
+/**
+ * How many slices the volume has, from the push for the same reason as the divisor. Read through the module
+ * static rather than threaded through the three lookup helpers, because the image's own depth is the only
+ * other authority and the launch takes it from Java.
+ */
+public int fogFroxelSlices() {
+    return (int)max(worldPush.fogVolume.y, 1.0);
 }
 
 /**
@@ -191,7 +210,7 @@ public float fogFroxelSliceDepth(int slice, int slices, float reach) {
  */
 public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     FogMedium f = fogMedium(worldPush);
-    if (!f.active || idx.z >= uint(FOG_FROXEL_SLICES) || dims.x == 0u || dims.y == 0u) {
+    if (!f.active || idx.z >= dims.z || dims.x == 0u || dims.y == 0u) {
         return;
     }
     // The ray is the one the primary pass walks, minus the jitter: this grid is the frustum itself,
@@ -223,9 +242,14 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     // reads those neighbours -- so a shell of falsely-lit voxels around every surface in view was smearing
     // into the medium as light that seemed to come from no object at all. Behind the surface there is no air
     // to scatter, which is also the honest answer, so the voxel is written as nothing rather than left stale.
+    float divisor = fogFroxelDivisor(worldPush);
+    // How much of this voxel's light survives the depth bound: 1 in air, fading to 0 past a surface. Hoisted
+    // out of the block below because both of the ray loops scale by it, and a voxel whose cell cannot be
+    // looked up (an absurdly tiny render target) simply keeps 1.
+    float bound = 1.0;
     if (dims.x > 1u && dims.y > 1u) {
-        uint2 lo = idx.xy * uint(FOG_FROXEL_DIVISOR);
-        uint2 hi = lo + uint2(FOG_FROXEL_DIVISOR - 1u, FOG_FROXEL_DIVISOR - 1u);
+        uint2 lo = idx.xy * uint(divisor);
+        uint2 hi = lo + uint2(float2(divisor)) - 1u;
         float4 cornerZ = float4(gDepth[lo], gDepth[uint2(hi.x, lo.y)],
                 gDepth[uint2(lo.x, hi.y)], gDepth[hi]);
         // The farthest surface in the cell, not the nearest: a cell that straddles an edge must not reject
@@ -243,7 +267,15 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
             // footprint, which grows with depth at the same rate. Below a block it stops mattering, so the
             // floor keeps the near field from clipping against the geometry it is attached to.
             float slop = max(1.0, 0.25 * max(dot(surfRel - nearP, along), 0.0));
-            if (dot(voxelRel - surfRel, along) > slop) {
+            float past = dot(voxelRel - surfRel, along) - slop;
+            // Faded rather than cut: a per-cell hard zero would put the grid's own edges back into the
+            // medium, which is the artefact this bound exists to remove. Over one slop's worth of distance
+            // past the surface the voxel goes from full light to none, so a boundary between two cells is a
+            // ramp the march's own interpolation can follow.
+            bound = 1.0 - saturate(past / slop);
+            if (bound <= 0.0) {
+                // Past the fade, and behind a surface there is no air to scatter: written as nothing rather
+                // than left holding whatever the last frame put here.
                 sunFroxels[uint3(idx.xy, idx.z)] = float4(0.0, 0.0, 0.0, 0.0);
                 return;
             }
@@ -267,22 +299,30 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
             float3 dir = sampleSquare(sun.dir, sun.halfAngle, s);
             sum += visibility(voxel, dir, f.reach).transmittance;
         }
-        sunVis = sum / float(FOG_FROXEL_SUN_TAPS);
+        sunVis = sum * (bound / float(FOG_FROXEL_SUN_TAPS));
     }
-    // Sky openness, cosine weighted so a voxel under a canopy reports the light it can actually gather
-    // rather than the fraction of the dome it can see. Uniform hemisphere directions, golden-angle spread.
-    float open = 0.0;
-    for (int i = 0; i < FOG_FROXEL_SKY_TAPS; i++) {
-        float cosTheta = sqrt((float(i) + 0.5) / float(FOG_FROXEL_SKY_TAPS));
+    // What the sky itself delivers here, as an in-scattering source: the mean radiance over the whole sphere
+    // of (transmittance along the direction) x (the frame's sky-view LUT in that direction). That mean IS
+    // the isotropic term of the phase integral -- 1/4pi of the incoming radiance, which is the normalisation
+    // fogPhase already carries for the body -- so the two terms need no relative fudge factor, and the LUT
+    // already holds the atmosphere's own forward scattering, which is why haze brightens toward the sun
+    // without the sun's disc being in it. The disc is not in the LUT at all, so there is nothing to
+    // double-count against the direct term above.
+    SkyState sky = skyState(worldPush);
+    float3 ambient = float3(0.0, 0.0, 0.0);
+    for (int i = 0; i < FOG_FROXEL_DOME_TAPS; i++) {
+        float cosTheta = 1.0 - 2.0 * (float(i) + 0.5) / float(FOG_FROXEL_DOME_TAPS);
         float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
-        float azimuth = 6.28318530718 * (float(i) * 0.618034 + 0.5);
+        float azimuth = 6.28318530718 * (float(i) * 0.618034);
         float3 dir = float3(cos(azimuth) * sinTheta, cosTheta, sin(azimuth) * sinTheta);
-        // Reduced to one number, unlike the sun's transmittance: the ambient's colour is this pass's tint
-        // rather than whatever glass happens to be overhead, because four directions through a dome is not a
-        // spectrum worth keeping and the veil it produces would not show one.
-        open += dot(visibility(voxel, dir, f.reach).transmittance, FOG_LUMA) * cosTheta;
+        float2 sunUv;
+        float2 moonUv;
+        skyDomeUv(dir, sky, sunUv, moonUv);
+        float3 inSky = skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
+        ambient += visibility(voxel, dir, f.reach).transmittance * inSky;
     }
-    sunFroxels[uint3(idx.xy, idx.z)] = float4(sunVis, open / float(FOG_FROXEL_SKY_TAPS));
+    sunFroxels[uint3(idx.xy, idx.z)] = float4(sunVis,
+            bound * dot(ambient, FOG_LUMA) / float(FOG_FROXEL_DOME_TAPS));
 }
 
 static float4 fogFroxelTexel(int2 c, int slice, float2 dims) {
@@ -290,7 +330,7 @@ static float4 fogFroxelTexel(int2 c, int slice, float2 dims) {
     // still out of range, and the edge texels replicating is what keeps a tap near the screen border from
     // reading whatever the allocator left there.
     int2 cc = clamp(c, int2(0, 0), int2(dims) - 1);
-    int s = clamp(slice, 0, FOG_FROXEL_SLICES - 1);
+    int s = clamp(slice, 0, fogFroxelSlices() - 1);
     return sunFroxels[uint3(cc, uint(s))];
 }
 
@@ -314,12 +354,12 @@ public float4 fogSunFroxels(float3 p, float2 renderSize, float reach) {
         clip.w = 1.0e-4;
     }
     float2 ndc = clip.xy / clip.w;
-    float2 dims = fogFroxelDims(renderSize);
+    float2 dims = fogFroxelDims(renderSize, fogFroxelDivisor(worldPush));
     float2 g = clamp((ndc * 0.5 + 0.5) * dims - 0.5, float2(0.0, 0.0), dims - 1.0);
     float2 bf = floor(g);
     float2 w = g - bf;
     int2 b = int2(bf);
-    float slices = float(FOG_FROXEL_SLICES);
+    float slices = float(fogFroxelSlices());
     float ratio = log(max(reach, FOG_FROXEL_Z_NEAR * 2.0)) - log(FOG_FROXEL_Z_NEAR);
     float zf = clamp(log(max(clip.w, FOG_FROXEL_Z_NEAR)) - log(FOG_FROXEL_Z_NEAR), 0.0, ratio)
             / ratio * slices - 0.5;
@@ -342,18 +382,20 @@ public float4 fogSunFroxels(float3 p, float2 renderSize, float reach) {
  * see: a roof, a wall, sixty blocks of hillside.
  */
 public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float phase, float3 sunVis,
-        float skyOpen) {
+        float domeRadiance) {
     // The sun's own path through the medium is the analytic column; the volume says what geometry leaves of
     // it here. The two are multiplied rather than merged because they answer for different things, and a
     // reader that saw only one of them would read the other as a bug: the column is what tints a tap that
     // happens to sit behind a pane, the volume is what keeps a sealed room's air from glowing.
     float3 direct = phase * sun.illuminance * fogColumnToLight(f, sigma, sun.dir) * sunVis;
-    // Attenuated by the medium above the tap, which for this profile is exactly sigma times the scale
-    // height: the vertical integral of an exponential is itself. Without it, thick fog would keep receiving
-    // its full skylight from a sky it can no longer see, and the veil would glow at the density settings
-    // where the sun's own term has correctly gone to nothing.
-    float3 ambient = FOG_SKY_TINT * (FOG_SKY_LUMINANCE * sun.illuminance) * skyOpen
-            * exp(-sigma * f.scaleHeight);
+    // `domeRadiance` is the gather's mean of (transmittance x sky) over the whole sphere, which is already
+    // 1/4pi of the incoming radiance -- the same normalisation fogPhase carries -- so the two terms need no
+    // factor between them: this is first-order in-scatter from the sky, not a guess at its brightness. It is
+    // attenuated by the medium above the tap, which for this profile is exactly sigma times the scale height:
+    // the vertical integral of an exponential is itself. Without that, thick fog would keep receiving its
+    // full skylight from a sky it can no longer see and would glow at the density settings where the sun's
+    // own term has correctly gone to nothing.
+    float3 ambient = FOG_SKY_TINT * domeRadiance * exp(-sigma * f.scaleHeight);
     return f.albedo * (direct + ambient);
 }
 
@@ -394,7 +436,7 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
     // The phase depends only on the segment's direction, so it is evaluated once for the whole march; the
     // profile and the sun column are what genuinely vary from tap to tap.
     float phase = fogPhase(f, dot(-rd, sun.dir));
-    float tapLen = max(f.reach / float(f.maxSteps), 1.0e-3);
+    float tapLen = clamp(t / float(f.maxSteps), FOG_TAP_MIN, max(f.reach / float(f.maxSteps), FOG_TAP_MIN));
     float resolved = min(t, tapLen * float(f.maxSteps));
     int steps = min(max((int)ceil(resolved / tapLen), 1), f.maxSteps);
     float dt = resolved / float(steps);

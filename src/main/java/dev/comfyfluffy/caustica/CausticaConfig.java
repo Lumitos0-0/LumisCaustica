@@ -630,6 +630,19 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.fog.reach", "fog.reach", 512.0f, 16.0f, 4096.0f);
             public static final IntSetting STEPS =
                     clampedInt("caustica.rt.fog.steps", "fog.steps", 8, 1, 32);
+            // Screen pixels per edge of a light-volume voxel. The volume is where the medium learns what light
+            // arrives at a particular bit of air, so this is the resolution of every shaft edge: a beam that is
+            // narrower than a voxel is smoothed into a ramp rather than resolved. Lower costs rays -- the gather
+            // is a fixed set per voxel, once per frame -- and 8 already quadruples the voxel count over 16. The
+            // "frame.traceFroxels" line in the F3 stats is that cost, measured.
+            public static final IntSetting GRID_DIVISOR =
+                    clampedInt("caustica.rt.fog.gridDivisor", "fog.grid-divisor", 16, 4, 32);
+            // Depth slices of the same volume, log-spaced between a block and `reach`. This is the resolution
+            // of a shaft ALONG the view ray: two taps that land in the same slice share a bilinear layer, so
+            // a beam that ends or starts between slices is positioned by the interpolation between them. 64
+            // doubles the gather's voxel count exactly like halving the divisor does.
+            public static final IntSetting GRID_SLICES =
+                    clampedInt("caustica.rt.fog.gridSlices", "fog.grid-slices", 32, 8, 64);
 
             private Fog() {
             }
