@@ -105,6 +105,22 @@ public final class RtComposite {
     // generated from the same Slang module and owns this second ABI as well. debugView is no longer
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
     private static final long PATH_RECORD_BYTES = 48L;
+    /**
+     * How much of last frame's light volume this frame keeps. Two things make this blend safe to run in a
+     * screen-locked grid without reprojection: rotation costs nothing, because a texel turns with the camera,
+     * and translation is bounded by the voxel's own size, so the camera's per-frame motion is the whole
+     * validity test. The fade completing at a bit over one block per frame means walking and sprinting keep
+     * nearly the full history while an elytra ride or a teleport keeps almost none.
+     */
+    private float fogHistoryWeight() {
+        if (!fogHistoryHasPrev) {
+            return 0f;
+        }
+        float move = (float) Math.sqrt(mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY
+                + mvCamDeltaZ * mvCamDeltaZ);
+        return FOG_HISTORY_WEIGHT * Mth.clamp(1f - move / FOG_HISTORY_FADE_BLOCKS, 0f, 1f);
+    }
+
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -266,6 +282,15 @@ public final class RtComposite {
     // the divisor would index past them. The value is pushed to the shaders as fogVolume.x rather than
     // mirrored in a constant, so the image and the march cannot disagree about which grid they share.
     /** Third raygen record of the world pipeline; see the list in {@link #ensureWorld}. */
+    // Exponential blend for the light volume: 22% of a voxel's value is this frame's, so a term that answers
+    // only 4-bit questions per frame converges to the gradient the eye wants within a few. Deliberately short
+    // of what a static scene would allow -- this volume is screen-locked, so every frame it keeps is also a
+    // frame of error wherever the camera moved.
+    private static final float FOG_HISTORY_WEIGHT = 0.78f;
+    // Camera motion at which that history is worth nothing, in blocks per frame. One voxel is a bit over a
+    // block wide by the time the frustum is 64 blocks deep, so this is "history dies when the camera outruns
+    // the grid", not a tuning knob.
+    private static final float FOG_HISTORY_FADE_BLOCKS = 1.25f;
     private static final int SUN_FROXEL_RAYGEN_INDEX = 2;
     /** Fourth: the filter pass over the volume the third one filled. */
     private static final int SUN_FROXEL_FILTER_RAYGEN_INDEX = 3;
@@ -303,6 +328,10 @@ public final class RtComposite {
     private float mvCamDeltaY;
     private float mvCamDeltaZ;
     private boolean mvHasPrev;
+    // Whether the light volume holds a previous frame worth blending. False on the frame after its images are
+    // recreated or the medium is switched off, which is how an uninitialised texel and a stale volume from
+    // before a resize both become this frame's zero history weight.
+    private boolean fogHistoryHasPrev;
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
     private long atlasSampler;
@@ -1038,6 +1067,7 @@ public final class RtComposite {
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
+        fogHistoryHasPrev = false; // and the light volume's history is undefined memory now
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
@@ -1246,7 +1276,7 @@ public final class RtComposite {
                     // Volume geometry: the divisor Java sized the image with, so the march indexes the grid it
                     // shares with the gather instead of re-deriving it from a constant both sides duplicate.
                     new Float4(CausticaConfig.Rt.Fog.GRID_DIVISOR.value(),
-                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), 0f, 0f)
+                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), fogHistoryWeight(), 0f)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1316,6 +1346,9 @@ public final class RtComposite {
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // filtered voxels visible to the fog march
             }
+            // Next frame may blend this one, but only if this frame actually wrote the volume: the gather is
+            // skipped with the medium off, and a volume that was not written is not history.
+            fogHistoryHasPrev = (flags & 0b100000) != 0;
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);

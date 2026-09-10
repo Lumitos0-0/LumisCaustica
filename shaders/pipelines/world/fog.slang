@@ -214,6 +214,27 @@ public float fogFroxelSliceDepth(int slice, int slices, float reach) {
  * Fill one voxel. `idx` is its position in the volume and `dims` the volume's own extent, so the launch is
  * the whole gather: one ray set per thread, no loop over slices.
  */
+/**
+ * Temporal accumulation, done in the gather's own write: the texel blends this frame's sample toward the
+ * value it held last frame, so a voxel that flips between lit and shadowed every frame because four taps can
+ * only ever answer four times settles into the gradient the eye actually expects. It is nearly free and needs
+ * no second image because the grid is screen-locked rather than world-locked: each thread reads the one texel
+ * it is about to write, so the volume IS its own history and there is nothing to reproject. Rotation is
+ * therefore exact -- texels turn with the camera -- and translation is the only thing that slides new world
+ * content into a texel, which is what the pushed weight in `fogVolume.z` is for: Java fades it out as the
+ * camera's per-frame motion approaches the size of a voxel, and pushes 0 on the frame after the volume is
+ * recreated, so an undefined first read is never trusted. MCRTX does the same in a separate pass
+ * (`AccumulateInscatter` plus `previousVolumetricsAreValid`); folding it into the gather is the one place a
+ * blend can be applied without a ping-pong pair, since the two must agree on the texel either way.
+ */
+static float4 fogAccumulateHistory(uint3 t, float4 fresh) {
+    float w = clamp(worldPush.fogVolume.z, 0.0, 0.98);
+    if (w <= 0.0) {
+        return fresh;
+    }
+    return lerp(fresh, sunFroxels[t], float4(w));
+}
+
 public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     FogMedium f = fogMedium(worldPush);
     if (!f.active || idx.z >= dims.z || dims.x == 0u || dims.y == 0u) {
@@ -227,6 +248,11 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
     float wn = nearH.w, wf = farH.w;
     if (wn == 0.0 || wf == 0.0) {
+        // A degenerate ray for this column. Written as nothing through the history blend rather than left
+        // alone: the volume is now persistent, so an early return here would pin whatever this texel held
+        // last frame into every frame after it, on a condition that is true every frame.
+        sunFroxels[uint3(idx.xy, idx.z)] = fogAccumulateHistory(uint3(idx.xy, idx.z),
+                float4(0.0, 0.0, 0.0, 0.0));
         return;
     }
     float3 nearP = nearH.xyz / wn;
@@ -281,8 +307,11 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
             bound = 1.0 - saturate(past / slop);
             if (bound <= 0.0) {
                 // Past the fade, and behind a surface there is no air to scatter: written as nothing rather
-                // than left holding whatever the last frame put here.
-                sunFroxels[uint3(idx.xy, idx.z)] = float4(0.0, 0.0, 0.0, 0.0);
+                // than left holding whatever the last frame put here. Through the history blend, which is why
+                // a shadow entering a voxel ramps in over a few frames instead of punching a hard hole in the
+                // medium at whatever depth the surface happened to cross this frame.
+                sunFroxels[uint3(idx.xy, idx.z)] = fogAccumulateHistory(uint3(idx.xy, idx.z),
+                        float4(0.0, 0.0, 0.0, 0.0));
                 return;
             }
         }
@@ -327,8 +356,8 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
         float3 inSky = skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
         ambient += visibility(voxel, dir, f.reach).transmittance * inSky;
     }
-    sunFroxels[uint3(idx.xy, idx.z)] = float4(sunVis,
-            bound * dot(ambient, FOG_LUMA) / float(FOG_FROXEL_DOME_TAPS));
+    sunFroxels[uint3(idx.xy, idx.z)] = fogAccumulateHistory(uint3(idx.xy, idx.z), float4(sunVis,
+            bound * dot(ambient, FOG_LUMA) / float(FOG_FROXEL_DOME_TAPS)));
 }
 
 /**

@@ -100,7 +100,10 @@ public struct WorldPush {
     // The light volume's geometry, pushed rather than duplicated because two things must agree on it: Java
     // sizes the image from it and the march indexes the image with it. x = screen pixels per voxel edge,
     // y = log-depth slices.
-    public float4   fogVolume;        // x pixels per voxel edge, y slices, zw reserved
+    // z is the light volume's history weight (0 = trust nothing, so the first frame after the volume is
+    // recreated or the medium is switched on self-corrects), and it is pushed rather than held because only
+    // the CPU knows this frame's camera motion and whether the images were just reallocated.
+    public float4   fogVolume;        // x pixels per voxel edge, y slices, z history weight, w reserved
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
