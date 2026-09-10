@@ -18,6 +18,12 @@
 // lighting, which collapses a shaft onto the patch of floor it lands on and flips between a leaf and the
 // gap beside it as the frame's jitter moves. A volume can do neither, and costs a fraction of the rays.
 //
+// Its numbers are vanilla's too, as far as they can be read: the per-biome `volumetric` fog settings in
+// Bedrock's resource pack author density as a 0..1 factor over per-channel scattering and absorption, and the
+// temperate entry is 0.05 x 0.04 scattering with absorption 0 at Henyey-Greenstein g = 0.6 -- which is what
+// the shipped defaults are. Jungles and swamps run to 0.06 at g = 0.4, clear dry air to g = 0.75; the
+// height pair is degenerate in every vanilla biome (both 320), so the falloff here is ours.
+//
 // Density is a function of ABSOLUTE world altitude: path positions are rebased to the terrain origin,
 // which moves as the camera travels, so every altitude goes through `rebaseY` (that origin's block Y,
 // pushed per frame). An exponential would otherwise slide with the player. The profile is flat at and
@@ -146,7 +152,7 @@ public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
  * frame's sky-view LUT in that direction) over the whole sphere, which is the isotropic term of the same
  * integral the body's lobe is normalised against. Both are estimated from a few FIXED directions, which is
  * what lets the march sample a coarse structure without noise or crawl, and the whole frame pays
- * `FOG_FROXEL_SUN_TAPS + FOG_FROXEL_DOME_TAPS` rays per voxel instead of one per tap per bounce per sample.
+ * the pushed sun and sky ray counts of rays per voxel instead of one per tap per bounce per sample.
  *
  * <p>Screen-aligned columns, world-correct contents: a voxel is defined by the view ray through its column
  * at a given depth, and the pixels-per-voxel divisor comes in through the push (fogVolume.x) rather than
@@ -155,14 +161,32 @@ public static const float FOG_NEGLIGIBLE_LIGHT = 1.0e-3;
  * centimetres wide, a far one is many blocks) and no reprojection is involved — the grid is rebuilt every
  * frame from the current camera, so nothing has to be revalidated when the player turns.
  */
-public static const int FOG_FROXEL_SUN_TAPS = 4;
-// How much of the filtered value replaces the gathered one, per channel: the ambient is a veil and takes the
-// filter fully, the sun's transmittance keeps a quarter of its edge so a shaft stays a shaft. Slice
-// neighbours count for less than same-slice ones, since one slice step is a long way at distance.
+// Rays per voxel, toward the sun and over the sky, are pushed (`caustica.rt.fog.sunRays` and `skyRays`) and
+// taken exactly: zero is a meaningful answer and not an unset lane, since "no direct sun in the fog at
+// all" is how you see what the shafts are made of. These are the ceilings a hand-edited config cannot pass.
+public static const int FOG_MAX_SUN_RAYS = 16;
+public static const int FOG_MAX_SKY_RAYS = 32;    // directions over the whole sphere, not the dome
+// How much of the filtered value replaces the gathered one, per channel, times the pushed filter strength:
+// the ambient is a veil and takes the filter fully, the sun's transmittance keeps a quarter of its edge so a
+// shaft stays a shaft. That asymmetry is MCRTX's -- `BlurGIInscatter` exists for the GI volume and nothing
+// blurs the sun's in-scatter -- and it is the reason a wide beam survives the filter at all. Slice neighbours
+// count for less than same-slice ones, since one slice step is a long way at distance.
 public static const float FOG_FILTER_AMBIENT_WEIGHT = 1.0;
 public static const float FOG_FILTER_SUN_WEIGHT = 0.75;
 public static const float FOG_FILTER_SLICE_WEIGHT = 0.35;
-public static const int FOG_FROXEL_DOME_TAPS = 8;    // directions over the whole sphere, not the dome
+// A wide kernel is what MCRTX's own comment asks for -- "separable 2D box blur with kernel size depending on
+// history length" -- so the pushed strength buys radius past 1.0 rather than only more blending: a long
+// history has already averaged the noise in time and can afford to spend the spatial taps on a wider detail.
+public static const int FOG_FILTER_MAX_RADIUS = 2;
+
+/** The gather's per-voxel ray budget, from the push. */
+public int fogSunRays() {
+    return clamp((int)round(worldPush.fogGather.x), 0, FOG_MAX_SUN_RAYS);
+}
+
+public int fogSkyRays() {
+    return clamp((int)round(worldPush.fogGather.y), 0, FOG_MAX_SKY_RAYS);
+}
 public static const float FOG_FROXEL_Z_NEAR = 1.0;   // blocks: the first slice's inner edge
 // Shortest distance a march tap covers. Light is now looked up per tap, so a step sized as a share of
 // `reach` (512/8 = 64 blocks) gave every segment inside a room a single sample: the medium resolved as flat
@@ -328,13 +352,14 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     // The cheap-out is about not tracing at all, since these are the frame's expensive rays: air whose own
     // column says no direct light arrives already has the answer. Occlusion by geometry is the case that
     // needs the rays, and it gets them.
-    if (fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
+    int sunRays = fogSunRays();
+    if (sunRays > 0 && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
         float3 sum = float3(0.0, 0.0, 0.0);
-        for (int i = 0; i < FOG_FROXEL_SUN_TAPS; i++) {
+        for (int i = 0; i < sunRays; i++) {
             float3 dir = sampleSquare(sun.dir, sun.halfAngle, s);
             sum += visibility(voxel, dir, f.reach).transmittance;
         }
-        sunVis = sum * (bound / float(FOG_FROXEL_SUN_TAPS));
+        sunVis = sum * (bound / float(sunRays));
     }
     // What the sky itself delivers here, as an in-scattering source: the mean radiance over the whole sphere
     // of (transmittance along the direction) x (the frame's sky-view LUT in that direction). That mean IS
@@ -345,8 +370,9 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     // double-count against the direct term above.
     SkyState sky = skyState(worldPush);
     float3 ambient = float3(0.0, 0.0, 0.0);
-    for (int i = 0; i < FOG_FROXEL_DOME_TAPS; i++) {
-        float cosTheta = 1.0 - 2.0 * (float(i) + 0.5) / float(FOG_FROXEL_DOME_TAPS);
+    int skyRays = fogSkyRays();
+    for (int i = 0; i < skyRays; i++) {
+        float cosTheta = 1.0 - 2.0 * (float(i) + 0.5) / float(skyRays);
         float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
         float azimuth = 6.28318530718 * (float(i) * 0.618034);
         float3 dir = float3(cos(azimuth) * sinTheta, cosTheta, sin(azimuth) * sinTheta);
@@ -357,7 +383,7 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
         ambient += visibility(voxel, dir, f.reach).transmittance * inSky;
     }
     sunFroxels[uint3(idx.xy, idx.z)] = fogAccumulateHistory(uint3(idx.xy, idx.z), float4(sunVis,
-            bound * dot(ambient, FOG_LUMA) / float(FOG_FROXEL_DOME_TAPS)));
+            skyRays > 0 ? bound * dot(ambient, FOG_LUMA) / float(skyRays) : 0.0));
 }
 
 /**
@@ -372,21 +398,26 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
  * anyway -- which is why this runs on the volume (once per voxel per frame) instead of in the march (once per
  * tap per segment per bounce per sample).
  *
- * Only voxels that carry light contribute. A rejected voxel -- behind a surface, or in the air above a fully
- * occluded region -- is skipped rather than averaged in, so the filter cannot drag daylight across a wall or
- * soften the shadow edge that the depth bound just made.
+ * It is a plain weighted box, empties included: a blur that ignores the voxels holding nothing would lift
+ * shadow toward light instead of averaging it, which is a contrast loss dressed as a denoiser.
  */
 public void fogFilterSunFroxels(uint3 idx, uint3 dims) {
     if (idx.z >= dims.z || dims.x == 0u || dims.y == 0u) {
         return;
     }
     float4 src = sunFroxels[uint3(idx.xy, idx.z)];
+    float strength = clamp(worldPush.fogGather.z, 0.0, 2.0);
+    if (strength <= 0.0) {
+        sunFroxelsFiltered[uint3(idx.xy, idx.z)] = src;
+        return;
+    }
+    int radius = strength > 1.0 ? FOG_FILTER_MAX_RADIUS : 1;
     float4 sum = float4(0.0, 0.0, 0.0, 0.0);
     float weight = 0.0;
     int3 centre = int3(idx.xy, int(idx.z));
-    for (int dz = -1; dz <= 1; dz++) {
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
+    for (int dz = -radius; dz <= radius; dz++) {
+        for (int dy = -radius; dy <= radius; dy++) {
+            for (int dx = -radius; dx <= radius; dx++) {
                 int3 c = centre + int3(dx, dy, dz);
                 // Clamped on both axes: at the volume's own edge a voxel averages the edge rather than
                 // reaching outside the launch, which is also what keeps the screen border from filtering
@@ -394,16 +425,21 @@ public void fogFilterSunFroxels(uint3 idx, uint3 dims) {
                 // out there, and a shaft's own length already smooths along the view ray.
                 c.xy = clamp(c.xy, int2(0, 0), int2(dims.xy) - 1);
                 c.z = clamp(c.z, 0, int(dims.z) - 1);
-                float4 s = sunFroxels[uint3(c.xy, uint(c.z))];
-                float w = (any(s.rgb > 0.0) || s.a > 0.0) ? (dz == 0 ? 1.0 : FOG_FILTER_SLICE_WEIGHT) : 0.0;
-                sum += s * w;
-                weight += w;
+                float s = (dz == 0) ? 1.0 : FOG_FILTER_SLICE_WEIGHT;
+                sum += sunFroxels[uint3(c.xy, uint(c.z))] * s;
+                weight += s;
             }
         }
     }
-    float4 avg = weight > 0.0 ? sum / weight : src;
-    sunFroxelsFiltered[uint3(idx.xy, idx.z)] = lerp(src, avg, float4(FOG_FILTER_SUN_WEIGHT,
-            FOG_FILTER_SUN_WEIGHT, FOG_FILTER_SUN_WEIGHT, FOG_FILTER_AMBIENT_WEIGHT));
+    // Every voxel in the box contributes, empties included. Skipping the empty ones -- which is what an
+    // "adaptive" filter tempts you into -- is not a blur but a max-pool toward light: a shadowed voxel next
+    // to one lit neighbour would take that neighbour's value at full weight, so a shaft's dark edge filled in
+    // and the lit voxels around it spread, which is precisely the halo this filter was written to remove.
+    float4 avg = sum / max(weight, 1.0e-4);
+    float sunW = FOG_FILTER_SUN_WEIGHT * strength;
+    float skyW = FOG_FILTER_AMBIENT_WEIGHT * min(strength, 1.0);
+    sunFroxelsFiltered[uint3(idx.xy, idx.z)] = lerp(src, avg,
+            float4(sunW, sunW, sunW, skyW));
 }
 
 /**
@@ -529,6 +565,13 @@ public float3 fogScatterAt(FogMedium f, CelestialLight sun, float sigma, float p
  * most of the atmosphere inside a single tap and band the horizon, while the error left in the far field
  * sits where transmittance has already gone to nothing.
  */
+/** Where tap `i` ends, on a square law over the resolved part of a segment: near taps are dense, far ones
+ * are sparse, and one tap alone still covers the whole stretch exactly as an even split would. */
+static float fogTapEdge(float resolved, int steps, int i) {
+    float u = clamp(float(i) / float(max(steps, 1)), 0.0, 1.0);
+    return resolved * u * u;
+}
+
 public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight sun,
                          float3 ro, float3 rd, float t, float2 size,
                          out float3 T, out float3 S) {
@@ -554,7 +597,11 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
     float tapLen = clamp(t / float(f.maxSteps), FOG_TAP_MIN, max(f.reach / float(f.maxSteps), FOG_TAP_MIN));
     float resolved = min(t, tapLen * float(f.maxSteps));
     int steps = min(max((int)ceil(resolved / tapLen), 1), f.maxSteps);
-    float dt = resolved / float(steps);
+    // Taps are placed on a quadratic in the segment, not evenly: density and the sun column both change
+    // fastest where the ray starts, and a march that spends its budget where the light varies needs no random
+    // offset to look continuous -- EscheridiaRT's march jitters its steps because it accumulates the whole
+    // image for hundreds of frames, and a deterministic bias is the half of that which costs no noise here.
+    // `fogTapEdge(i)` is the far edge of tap i, so tap i covers [edge(i-1), edge(i)] and samples its middle.
 
     // Light is looked up per tap rather than per segment, which is the entire point of the volume: a
     // stretch of air that starts in a sunbeam and ends in a building's shade has to scatter accordingly at
@@ -563,7 +610,10 @@ public void fogIntegrateSegment(MediumStack medium, FogMedium f, CelestialLight 
     // once per voxel for the frame instead of once per tap per bounce per sample.
 
     for (int i = 0; i < steps; i++) {
-        float3 tapMid = ro + rd * (dt * (float(i) + 0.5));
+        float t0 = fogTapEdge(resolved, steps, i);
+        float t1 = fogTapEdge(resolved, steps, i + 1);
+        float dt = max(t1 - t0, 1.0e-3);
+        float3 tapMid = ro + rd * (0.5 * (t0 + t1));
         float sigma = fogDensityAt(f, tapMid);
         // exp(-sigma*dt) and (1 - exp(-sigma*dt)) are the constant-medium transmittance and the same
         // integral divided by sigma, so a thin tap costs the same expression as a thick one and neither

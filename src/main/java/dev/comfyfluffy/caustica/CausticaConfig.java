@@ -607,19 +607,26 @@ public final class CausticaConfig {
          */
         public static final class Fog {
             public static final BooleanSetting ENABLED = bool("caustica.rt.fog.enabled", "fog.enabled", false);
+            // Per-block extinction at the reference altitude. Vanilla's temperate biomes author this as
+            // max_density 0.05 times a scattering coefficient of 0.04, i.e. 0.002, which is what a
+            // "reasonable haze over a valley" turns out to mean in Bedrock's own numbers; jungles use 0.06.
             public static final FloatSetting DENSITY =
-                    clampedFloat("caustica.rt.fog.density", "fog.density", 0.0015f, 0.0f, 0.05f);
+                    clampedFloat("caustica.rt.fog.density", "fog.density", 0.002f, 0.0f, 0.05f);
             public static final FloatSetting SCALE_HEIGHT =
                     clampedFloat("caustica.rt.fog.scaleHeight", "fog.scale-height", 96.0f, 4.0f, 4096.0f);
             // Fraction of extinction that scatters instead of being absorbed: at 1.0 the medium is pure
             // haze and stays bright at the horizon, at 0.5 it turns smoky and darkens what it covers.
+            // Vanilla's air entries set absorption to zero, i.e. an albedo of exactly 1.0 -- a pure
+            // redistributor that never loses energy. It stops short here because our skylight is a per-voxel
+            // dome integral rather than their one global light meter, and a lossless medium makes that term
+            // the only thing left in a sealed room.
             public static final FloatSetting SCATTER_ALBEDO =
-                    clampedFloat("caustica.rt.fog.scatterAlbedo", "fog.scatter-albedo", 0.9f, 0.0f, 1.0f);
-            // Forward lobe of the phase function. Kept off 1.0 by the clamp because that lobe's peak grows
-            // as 1/(1-g)^2: past ~0.9 the pixels around the sun stop being bright haze and become a
-            // saturated blob, which no exposure or denoiser recovers.
+                    clampedFloat("caustica.rt.fog.scatterAlbedo", "fog.scatter-albedo", 0.95f, 0.0f, 1.0f);
+            // Forward lobe of the phase function, at the value every temperate vanilla biome uses. Kept off
+            // 1.0 by the clamp because that lobe's peak grows as 1/(1-g)^2: past ~0.9 the pixels around the
+            // sun stop being bright haze and become a saturated blob, which no exposure or denoiser recovers.
             public static final FloatSetting ANISOTROPY =
-                    clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.35f, -0.9f, 0.9f);
+                    clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.6f, -0.9f, 0.9f);
             // Distance a segment is resolved into STEPS taps, the vertical extent of the sun column, and
             // how far the light volume's rays look for occluders. Not a "how far fog reaches": a path's whole
             // length is always integrated, only its near field is finely sampled, so raising REACH buys
@@ -628,8 +635,10 @@ public final class CausticaConfig {
             // cheap to raise, and it is the knob that decides how far away a shaft can still be lit.
             public static final FloatSetting REACH =
                     clampedFloat("caustica.rt.fog.reach", "fog.reach", 512.0f, 16.0f, 4096.0f);
+            // 16, which is what a march of this shape wants: the taps are placed on a square law, so the
+            // extra budget goes into the first stretch of the segment rather than spreading the error out.
             public static final IntSetting STEPS =
-                    clampedInt("caustica.rt.fog.steps", "fog.steps", 8, 1, 32);
+                    clampedInt("caustica.rt.fog.steps", "fog.steps", 16, 1, 32);
             // Screen pixels per edge of a light-volume voxel. The volume is where the medium learns what light
             // arrives at a particular bit of air, so this is the resolution of every shaft edge: a beam that is
             // narrower than a voxel is smoothed into a ramp rather than resolved. Lower costs rays -- the gather
@@ -643,6 +652,30 @@ public final class CausticaConfig {
             // doubles the gather's voxel count exactly like halving the divisor does.
             public static final IntSetting GRID_SLICES =
                     clampedInt("caustica.rt.fog.gridSlices", "fog.grid-slices", 32, 8, 64);
+            // Rays per voxel toward the sun. MCRTX exposes one `rayCountMultiplier` for the whole march; this
+            // is split in two because the sun's rays are the ones whose count shows up as shaft detail, while
+            // the sky's are a veil that averages down cheaply. Zero sun rays means "no direct term at all",
+            // which is the fastest way to see what the volume is contributing.
+            public static final IntSetting SUN_RAYS = clampedInt("caustica.rt.fog.sunRays", "fog.sun-rays", 4, 0, 16);
+            // Sky directions over the whole sphere, each with a ray of its own: this is the ambient term, and
+            // halving it is the cheapest thing to try when the gather's cost line is the complaint.
+            public static final IntSetting SKY_RAYS = clampedInt("caustica.rt.fog.skyRays", "fog.sky-rays", 8, 0, 32);
+            // How many frames the light volume averages over, named after MCRTX's `maxHistoryLength` because
+            // it means the same thing. 1 is off -- every voxel reports only this frame's rays, which is where
+            // the puffs between leaves come from; the blend weight it implies is (N-1)/(N+1), the standard
+            // moving average over N frames, so 8 is the 78% history the volume shipped with.
+            public static final IntSetting HISTORY_FRAMES =
+                    clampedInt("caustica.rt.fog.history", "fog.history-frames", 8, 1, 32);
+            // Spatial filter over the volume: 0 off, 1 a 3x3x3 box, above 1 a wider 5x5x5 rather than a
+            // stronger blend, which is MCRTX's rule for the GI blur ("kernel size depending on history
+            // length"): volume that has already been averaged in time can afford to be averaged in space.
+            public static final FloatSetting FILTER =
+                    clampedFloat("caustica.rt.fog.filter", "fog.filter", 1.0f, 0.0f, 2.0f);
+            // Rain deepens the medium, the participating-medium version of what vanilla does by swapping to
+            // its `weather` fog entry: this is the multiplier at a full downpour, ramped by the rain level, so
+            // 2.0 means a dry day is unchanged and a storm doubles the extinction.
+            public static final FloatSetting RAIN_DENSITY_FACTOR =
+                    clampedFloat("caustica.rt.fog.rainDensity", "fog.rain-density-factor", 2.0f, 1.0f, 8.0f);
 
             private Fog() {
             }

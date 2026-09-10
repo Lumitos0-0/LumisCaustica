@@ -50,6 +50,17 @@ public final class RtVideoOptions {
             particles(),
             waterWaves(),
             volumetricFog(),
+            // The fog dials live here as well as in the config because the medium is a look, not a switch:
+            // each one is a question that can only be answered by watching the world change, and the answers
+            // are per-map and per-taste. They take effect on the next frame; the two grid ones rebuild the
+            // light volume, which is why they are the slow ones.
+            fogDensity(),
+            fogAnisotropy(),
+            fogSteps(),
+            fogSunRays(),
+            fogHistory(),
+            fogFilter(),
+            fogGridDivisor(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -208,6 +219,66 @@ public final class RtVideoOptions {
             new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), Codec.INT),
             Math.clamp(setting.value(), 0, 10),
             setting::set);
+    }
+
+    /**
+     * A float setting shown as a scaled integer slider, the same shape manualEv() and gamma() use: the step
+     * is the config's own resolution, and no Float range/codec has to be trusted to round-trip a value that
+     * the TOML file is the authority on.
+     */
+    private static OptionInstance<Integer> fogScaledFloat(String key, FloatSetting setting, float scale,
+            int min, int max, String format) {
+        return new OptionInstance<>(
+            "caustica.options.rt." + key,
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt." + key + ".tooltip")),
+            (caption, stepped) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, format, stepped / scale))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value() * scale), min, max),
+            stepped -> setting.set(stepped / scale));
+    }
+
+    /** An int setting on its own domain, with a unit in the label so the number means something on screen. */
+    private static OptionInstance<Integer> fogSteppedInt(String key, IntSetting setting, int min, int max,
+            String format) {
+        return new OptionInstance<>(
+            "caustica.options.rt." + key,
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt." + key + ".tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, format, value))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(setting.value(), min, max),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        // 0.05 is where the medium stops being air and becomes a wall, which is also config's own ceiling.
+        return fogScaledFloat("fogDensity", CausticaConfig.Rt.Fog.DENSITY, 10000.0f, 0, 500, "%.4f /block");
+    }
+
+    private static OptionInstance<Integer> fogAnisotropy() {
+        // Vanilla's own spread: 0.4 in jungle and swamp, 0.6 in temperate air, 0.75 in dry clear air.
+        return fogScaledFloat("fogAnisotropy", CausticaConfig.Rt.Fog.ANISOTROPY, 100.0f, -90, 90, "%.2f");
+    }
+
+    private static OptionInstance<Integer> fogSteps() {
+        return fogSteppedInt("fogSteps", CausticaConfig.Rt.Fog.STEPS, 1, 32, "%d taps");
+    }
+
+    private static OptionInstance<Integer> fogSunRays() {
+        return fogSteppedInt("fogSunRays", CausticaConfig.Rt.Fog.SUN_RAYS, 0, 16, "%d rays");
+    }
+
+    private static OptionInstance<Integer> fogHistory() {
+        return fogSteppedInt("fogHistory", CausticaConfig.Rt.Fog.HISTORY_FRAMES, 1, 32, "%d frames");
+    }
+
+    private static OptionInstance<Integer> fogFilter() {
+        return fogScaledFloat("fogFilter", CausticaConfig.Rt.Fog.FILTER, 100.0f, 0, 200, "%.2f");
+    }
+
+    private static OptionInstance<Integer> fogGridDivisor() {
+        return fogSteppedInt("fogGridDivisor", CausticaConfig.Rt.Fog.GRID_DIVISOR, 4, 32, "1/%d px");
     }
 
     private static OptionInstance<Boolean> bool(String captionKey, BooleanSetting setting) {

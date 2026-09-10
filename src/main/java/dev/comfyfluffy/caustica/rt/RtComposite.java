@@ -113,12 +113,13 @@ public final class RtComposite {
      * nearly the full history while an elytra ride or a teleport keeps almost none.
      */
     private float fogHistoryWeight() {
-        if (!fogHistoryHasPrev) {
+        int frames = CausticaConfig.Rt.Fog.HISTORY_FRAMES.value();
+        if (!fogHistoryHasPrev || frames <= 1) {
             return 0f;
         }
         float move = (float) Math.sqrt(mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY
                 + mvCamDeltaZ * mvCamDeltaZ);
-        return FOG_HISTORY_WEIGHT * Mth.clamp(1f - move / FOG_HISTORY_FADE_BLOCKS, 0f, 1f);
+        return (frames - 1f) / (frames + 1f) * Mth.clamp(1f - move / FOG_HISTORY_FADE_BLOCKS, 0f, 1f);
     }
 
     private static int debugView() {
@@ -276,25 +277,20 @@ public final class RtComposite {
     // The spatially filtered copy the march reads, written by the filter record from the volume above.
     private RtImage gSunFroxelsFiltered;
 
+    // Camera motion at which the light volume's history is worth nothing, in blocks per frame. One voxel is a
+    // bit over a block wide by the time the frustum is 64 blocks deep, so this is "history dies when the camera
+    // outruns the grid"; how much history to keep at all is the `rt.fog.history` setting.
+    private static final float FOG_HISTORY_FADE_BLOCKS = 1.25f;
+    /** Third raygen record of the world pipeline; see the list in {@link #ensureWorld}. */
+    private static final int SUN_FROXEL_RAYGEN_INDEX = 2;
+    /** Fourth: the filter pass over the volume the third one filled. */
+    private static final int SUN_FROXEL_FILTER_RAYGEN_INDEX = 3;
+
     // Voxels per axis: one per configured screen pixels, floored down (see CausticaConfig for the setting).
     // The floor is what makes dims * divisor <= render extent true, and the gather relies on that: it reads
     // this voxel's cell out of the depth guides at idx * divisor, so a grid wider than the frame divided by
     // the divisor would index past them. The value is pushed to the shaders as fogVolume.x rather than
     // mirrored in a constant, so the image and the march cannot disagree about which grid they share.
-    /** Third raygen record of the world pipeline; see the list in {@link #ensureWorld}. */
-    // Exponential blend for the light volume: 22% of a voxel's value is this frame's, so a term that answers
-    // only 4-bit questions per frame converges to the gradient the eye wants within a few. Deliberately short
-    // of what a static scene would allow -- this volume is screen-locked, so every frame it keeps is also a
-    // frame of error wherever the camera moved.
-    private static final float FOG_HISTORY_WEIGHT = 0.78f;
-    // Camera motion at which that history is worth nothing, in blocks per frame. One voxel is a bit over a
-    // block wide by the time the frustum is 64 blocks deep, so this is "history dies when the camera outruns
-    // the grid", not a tuning knob.
-    private static final float FOG_HISTORY_FADE_BLOCKS = 1.25f;
-    private static final int SUN_FROXEL_RAYGEN_INDEX = 2;
-    /** Fourth: the filter pass over the volume the third one filled. */
-    private static final int SUN_FROXEL_FILTER_RAYGEN_INDEX = 3;
-
     private int sunFroxelW;
     private int sunFroxelH;
     private int sunFroxelDivisor;
@@ -1175,6 +1171,11 @@ public final class RtComposite {
             if (waterWaves()) {
                 flags |= 0b10000; // animated water wave normals
             }
+            // Rain deepens the medium the way vanilla's `weather` fog entry closes the world, by the pushed
+            // factor at a full downpour. Read every frame, so a storm arriving is a storm getting hazier.
+            float fogRain = level != null ? Math.max(level.getRainLevel(1.0F), 0.0F) : 0.0F;
+            float fogDensity = CausticaConfig.Rt.Fog.DENSITY.value()
+                    * (1.0f + (CausticaConfig.Rt.Fog.RAIN_DENSITY_FACTOR.value() - 1.0f) * fogRain);
             if (volumetricFog()) {
                 flags |= 0b100000; // aerial medium: in-scatter and its own transmittance, per segment
             }
@@ -1268,7 +1269,7 @@ public final class RtComposite {
                     // profile is evaluated at rebased positions, so the terrain origin's Y has to travel
                     // with them or the layer would slide as the camera moves; blockY is already a multiple
                     // of the section height, so it costs nothing to pin.
-                    new Float4(CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.SCALE_HEIGHT.value(),
+                    new Float4(fogDensity, CausticaConfig.Rt.Fog.SCALE_HEIGHT.value(),
                             level != null ? level.getSeaLevel() : FOG_SEA_LEVEL_FALLBACK,
                             CausticaConfig.Rt.Fog.ANISOTROPY.value()),
                     new Float4(CausticaConfig.Rt.Fog.SCATTER_ALBEDO.value(), CausticaConfig.Rt.Fog.REACH.value(),
@@ -1276,7 +1277,12 @@ public final class RtComposite {
                     // Volume geometry: the divisor Java sized the image with, so the march indexes the grid it
                     // shares with the gather instead of re-deriving it from a constant both sides duplicate.
                     new Float4(CausticaConfig.Rt.Fog.GRID_DIVISOR.value(),
-                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), fogHistoryWeight(), 0f)
+                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), fogHistoryWeight(), 0f),
+                    // The gather's own budget. Both its dispatches and the filter read this from the push, so
+                    // a ray count cannot desync from the volume it is paying for, and the F3 cost line is the
+                    // price of these two numbers rather than of a constant only the shader knew.
+                    new Float4(CausticaConfig.Rt.Fog.SUN_RAYS.value(), CausticaConfig.Rt.Fog.SKY_RAYS.value(),
+                            CausticaConfig.Rt.Fog.FILTER.value(), 0f)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
