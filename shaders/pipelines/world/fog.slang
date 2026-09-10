@@ -58,6 +58,7 @@ public struct FogMedium {
     public float reach;       // distance the medium is integrated over: sun column, and the near field
     public float rebaseY;     // absolute altitude of rebased y = 0
     public int maxSteps;      // taps resolving a segment's near field
+    public float penumbra;    // half-angle, radians, of the square the sun's rays are spread over
     public bool active;
 };
 
@@ -78,6 +79,8 @@ public FogMedium fogMedium(WorldPush push) {
     f.reach = max(push.fogTuning.y, 1.0);
     f.rebaseY = push.fogTuning.z;
     f.maxSteps = max((int)push.fogTuning.w, 1);
+    // Configured as a full width in degrees; the sampler spreads to +/- half of it, like the body's own.
+    f.penumbra = max(push.fogShaft.x * 0.008726646, 0.0);
     f.active = (push.flags & FOG_ENABLED_BIT) != 0u && f.density > 0.0;
     return f;
 }
@@ -274,6 +277,34 @@ static uint fogHash(uint h) {
     return h;
 }
 
+/**
+ * The `i`th of `count` directions spread over the light's square, in the same horizon-levelled frame the sky
+ * uses to draw the body. Two things are deliberately different from a random sample of the disc. The spread is
+ * the wider of the body's own angular radius and `caustica.rt.fog.shaftSoftness`, because 0.27 degrees is
+ * smaller than a block at any distance a canopy lives at: rays confined to it always agree, and a shadow
+ * field that can only answer 0 or 1 per voxel is the puff this whole pass has been fighting. And the points
+ * are the R_2 low-discrepancy sequence rather than independent draws, so four rays tile the square instead of
+ * clustering by luck -- a shaft's edge is then decided by how much of the light the occluder covers, which is
+ * a gradient, rather than by whether four coins came up the same way. Offsetting the sequence by a hash of the
+ * voxel keeps neighbouring voxels from repeating one pattern, and the offset is a function of the world
+ * position rather than the frame, so nothing about it can crawl.
+ */
+static float3 fogLightSquare(FogMedium f, float3 axis, float halfAngle, uint seed, int i, int count) {
+    float spread = max(halfAngle, f.penumbra);
+    if (spread <= 0.0 || count <= 1) {
+        return axis;
+    }
+    float3 right;
+    float3 up;
+    celestialSquareFrame(axis, right, up);
+    float o1 = float(seed & 1023u) * (1.0 / 1024.0);
+    float o2 = float((seed >> 10) & 1023u) * (1.0 / 1024.0);
+    float u = frac(float(i + 1) * 1.324717957 + o1);
+    float v = frac(float(i + 1) * 1.465571232 + o2);
+    float t = tan(spread);
+    return normalize(axis + right * ((2.0 * u - 1.0) * t) + up * ((2.0 * v - 1.0) * t));
+}
+
 public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     FogMedium f = fogMedium(worldPush);
     if (!f.active || idx.z >= dims.z || dims.x == 0u || dims.y == 0u) {
@@ -359,9 +390,9 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     // fills it and a shadow field lagging a frame would show up as light that does not follow the sun.
     CelestialLight sun = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     // Fixed per HALF BLOCK OF WORLD, never per texel and never per frame. The grid is the frustum, so a seed
-    // from `idx` would hand the same air a different sun-disc offset every time the camera moved and the shaft
-    // edges would crawl; hashing the voxel's own position keeps the offset with the air it belongs to, which
-    // is the whole reason this pass can promise a flicker-free picture.
+    // from `idx` would hand the same air a different light-square offset every time the camera moved and the
+    // shaft edges would crawl; hashing the voxel's own position keeps the offset with the air it belongs to,
+    // which is the whole reason this pass can promise a flicker-free picture.
     int3 worldCell = int3(floor(voxel * 2.0));
     uint s = fogHash(uint(worldCell.x) * 1973u + uint(worldCell.y) * 9277u + uint(worldCell.z) * 26699u);
     float sigma = fogDensityAt(f, voxel);
@@ -373,7 +404,7 @@ public void fogGatherSunFroxels(uint3 idx, uint3 dims) {
     if (sunRays > 0 && fogColumnToLight(f, sigma, sun.dir) >= FOG_NEGLIGIBLE_LIGHT) {
         float3 sum = float3(0.0, 0.0, 0.0);
         for (int i = 0; i < sunRays; i++) {
-            float3 dir = sampleSquare(sun.dir, sun.halfAngle, s);
+            float3 dir = fogLightSquare(f, sun.dir, sun.halfAngle, s, i, sunRays);
             sum += visibility(voxel, dir, f.reach).transmittance;
         }
         sunVis = sum / float(sunRays);

@@ -55,12 +55,16 @@ public final class RtVideoOptions {
             // are per-map and per-taste. They take effect on the next frame; the two grid ones rebuild the
             // light volume, which is why they are the slow ones.
             fogDensity(),
+            fogScaleHeight(),
             fogAnisotropy(),
+            fogSoftness(),
+            fogSkyRays(),
             fogSteps(),
             fogSunRays(),
             fogHistory(),
             fogFilter(),
             fogFilterSun(),
+            fogRain(),
             fogGridDivisor(),
             dlssQuality()
         ));
@@ -276,6 +280,26 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> fogFilter() {
         return fogScaledFloat("fogFilter", CausticaConfig.Rt.Fog.FILTER, 100.0f, 0, 200, "%.2f");
+    }
+
+    private static OptionInstance<Integer> fogScaleHeight() {
+        // The e-folding height does double duty: how fast the medium thins with altitude, and how far the
+        // light volume's rays look for the ground that tells a shaft where the fog is allowed to be.
+        return fogScaledFloat("fogScaleHeight", CausticaConfig.Rt.Fog.SCALE_HEIGHT, 1.0f, 4, 512, "%.0f blocks");
+    }
+
+    private static OptionInstance<Integer> fogSoftness() {
+        // 0 is the sun's real 0.27-degree disc, which every ray agrees on; a few degrees is what gives a
+        // shaft's edge somewhere to live. Watch the far canopy, not the sun: that is where it shows.
+        return fogScaledFloat("fogSoftness", CausticaConfig.Rt.Fog.SHAFT_SOFTNESS, 10.0f, 0, 120, "%.1f deg");
+    }
+
+    private static OptionInstance<Integer> fogSkyRays() {
+        return fogSteppedInt("fogSkyRays", CausticaConfig.Rt.Fog.SKY_RAYS, 0, 32, "%d rays");
+    }
+
+    private static OptionInstance<Integer> fogRain() {
+        return fogScaledFloat("fogRain", CausticaConfig.Rt.Fog.RAIN_DENSITY_FACTOR, 10.0f, 10, 80, "%.1fx");
     }
 
     private static OptionInstance<Integer> fogFilterSun() {

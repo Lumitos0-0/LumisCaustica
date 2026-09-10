@@ -111,6 +111,11 @@ public struct WorldPush {
     // the density/height pair in its biome `volumetric` fog settings.
     public float4   fogGather;        // x sun rays, y sky rays, z spatial filter strength,
                                       // w the fog debug view this frame is asked to store
+    // How wide a shaft's edge is, which is a look rather than a physical constant: the body's real angular
+    // radius (0.27 degrees) makes every ray inside the light's square agree to within a third of a block, so
+    // the volume can only answer "lit" or "shadowed" per voxel and an edge has nowhere to live. Widening the
+    // sampled square is what gives the rays something to disagree about, which is what a penumbra is.
+    public float4   fogShaft;         // x half-angle in degrees, y..w reserved
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

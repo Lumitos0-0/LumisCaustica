@@ -622,11 +622,27 @@ public final class CausticaConfig {
             // the only thing left in a sealed room.
             public static final FloatSetting SCATTER_ALBEDO =
                     clampedFloat("caustica.rt.fog.scatterAlbedo", "fog.scatter-albedo", 0.95f, 0.0f, 1.0f);
-            // Forward lobe of the phase function, at the value every temperate vanilla biome uses. Kept off
-            // 1.0 by the clamp because that lobe's peak grows as 1/(1-g)^2: past ~0.9 the pixels around the
-            // sun stop being bright haze and become a saturated blob, which no exposure or denoiser recovers.
+            // Forward lobe of the phase function. Bedrock authors 0.6 for temperate air, and that is the right
+            // number for the medium vanilla's distance fog stands in for; it is the wrong one for a volume whose
+            // glow is added on top of an atmosphere that ALREADY forward-scatters, because the sky-view LUT the
+            // ambient term reads carries the sun's own glare. At g=0.6 the lobe is 23 degrees wide either side
+            // of the body, so the fog repeats that glare across a fifth of the frame and everything inside it --
+            // usually the canopy the shafts are supposed to come through -- saturates to one flat value. 0.8
+            // narrows it to about 10 degrees, which spends the same energy on the beams instead: three times
+            // brighter dead ahead and six times dimmer at 30 degrees off, so the haze stops erasing what it
+            // covers. Kept off 1.0 by the clamp because the peak grows as 1/(1-g)^2 and past ~0.9 the cone
+            // itself becomes a saturated blob no exposure or denoiser recovers.
             public static final FloatSetting ANISOTROPY =
-                    clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.6f, -0.9f, 0.9f);
+                    clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.8f, -0.9f, 0.9f);
+            // Full angular width, in degrees, the light volume's sun rays are spread over, when that is wider
+            // than the body's own disc (the shader takes the half-angle). The disc is 0.27 degrees across, so
+            // at 30 blocks it is a third of a block wide and every ray aimed at it agrees: the voxel answers
+            // lit or shadowed, and a shaft's edge cannot exist between the two. This is the dial that decides
+            // whether beams have soft or hard boundaries: 2.5 degrees is about a block of penumbra at 30 blocks
+            // and 4 at 120, which is contact hardening with no extra rays. 0 is physically correct and visually
+            // binary.
+            public static final FloatSetting SHAFT_SOFTNESS =
+                    clampedFloat("caustica.rt.fog.shaftSoftness", "fog.shaft-softness", 2.5f, 0.0f, 12.0f);
             // Distance a segment is resolved into STEPS taps, the vertical extent of the sun column, and
             // how far the light volume's rays look for occluders. Not a "how far fog reaches": a path's whole
             // length is always integrated, only its near field is finely sampled, so raising REACH buys

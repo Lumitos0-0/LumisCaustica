@@ -1324,7 +1324,11 @@ public final class RtComposite {
                     // a ray count cannot desync from the volume it is paying for, and the F3 cost line is the
                     // price of these two numbers rather than of a constant only the shader knew.
                     new Float4(CausticaConfig.Rt.Fog.SUN_RAYS.value(), CausticaConfig.Rt.Fog.SKY_RAYS.value(),
-                            CausticaConfig.Rt.Fog.FILTER.value(), fogDebugMode(debugView))
+                            CausticaConfig.Rt.Fog.FILTER.value(), fogDebugMode(debugView)),
+                    // How far the sun rays fan out per voxel. Pushed rather than baked because it is the dial
+                    // that trades a shaft's edge against its noise, and both failures are visible only against
+                    // the actual leaves: it is a look, so it belongs next to the ones that already are.
+                    new Float4(CausticaConfig.Rt.Fog.SHAFT_SOFTNESS.value(), 0f, 0f, 0f)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
