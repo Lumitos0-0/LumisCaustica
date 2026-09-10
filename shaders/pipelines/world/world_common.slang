@@ -103,12 +103,14 @@ public struct WorldPush {
     // z is the light volume's history weight (0 = trust nothing, so the first frame after the volume is
     // recreated or the medium is switched on self-corrects), and it is pushed rather than held because only
     // the CPU knows this frame's camera motion and whether the images were just reallocated.
-    public float4   fogVolume;        // x pixels per voxel edge, y slices, z history weight, w reserved
+    public float4   fogVolume;        // x pixels per voxel edge, y slices, z history weight,
+                                      // w how far the spatial filter reaches into the sun's channel
     // What the gather spends per voxel, pushed for the same reason the grid is: the gather and the filter are
     // two dispatches of one frame and cannot differ, and a ray budget that only one side could change would
     // make the F3 cost line meaningless against the setting. MCRTX's equivalents are `rayCountMultiplier` and
     // the density/height pair in its biome `volumetric` fog settings.
-    public float4   fogGather;        // x sun rays, y sky rays, z spatial filter strength, w reserved
+    public float4   fogGather;        // x sun rays, y sky rays, z spatial filter strength,
+                                      // w the fog debug view this frame is asked to store
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

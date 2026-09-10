@@ -666,11 +666,21 @@ public final class CausticaConfig {
             // moving average over N frames, so 8 is the 78% history the volume shipped with.
             public static final IntSetting HISTORY_FRAMES =
                     clampedInt("caustica.rt.fog.history", "fog.history-frames", 8, 1, 32);
-            // Spatial filter over the volume: 0 off, 1 a 3x3x3 box, above 1 a wider 5x5x5 rather than a
-            // stronger blend, which is MCRTX's rule for the GI blur ("kernel size depending on history
-            // length"): volume that has already been averaged in time can afford to be averaged in space.
+            // Spatial filter over the volume: 0 off, 1 a box across each slice, above 1 a wider one rather
+            // than a stronger blend, which is MCRTX's rule for the GI blur ("kernel size depending on history
+            // length"): volume that has already been averaged in time can afford to be averaged in space. It
+            // reaches across a slice's neighbours only in the sense that the read side interpolates between
+            // them -- blurring along the view ray would mix the air in front of a leaf with the air tens of
+            // blocks behind it, which is a wash rather than a soft edge.
             public static final FloatSetting FILTER =
                     clampedFloat("caustica.rt.fog.filter", "fog.filter", 1.0f, 0.0f, 2.0f);
+            // How much of that box replaces the sun's transmittance, as opposed to the sky's. Zero, because
+            // MCRTX blurs the GI volume and nothing at all blurs the sun's in-scatter: the transmittance IS
+            // the shaft, and averaging it with its own neighbours is how a canopy's shadow turns back into
+            // uniform haze. Raise it only when the volume's own lattice is more objectionable than the soft
+            // edges it buys, which is a look decision rather than a correctness one.
+            public static final FloatSetting FILTER_SUN =
+                    clampedFloat("caustica.rt.fog.filterSun", "fog.filter-sun", 0.0f, 0.0f, 1.0f);
             // Rain deepens the medium, the participating-medium version of what vanilla does by swapping to
             // its `weather` fog entry: this is the multiplier at a full downpour, ramped by the rain level, so
             // 2.0 means a dry day is unchanged and a storm doubles the extinction.

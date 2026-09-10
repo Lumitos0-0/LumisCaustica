@@ -42,7 +42,9 @@
 	"caustica.options.rt.fogHistory": "Fog Temporal Frames",
 	"caustica.options.rt.fogHistory.tooltip": "How many frames each voxel of the light volume averages. 1 is off: every voxel reports only this frame's rays, which reads as puffs between leaves because a few rays cannot answer a soft question. Long is smoother and lags when the camera moves fast; the volume fades its own history when the camera outruns a voxel, so this is a quality control and not a jitter control.",
 	"caustica.options.rt.fogFilter": "Fog Spatial Filter",
-	"caustica.options.rt.fogFilter.tooltip": "Smoothing across neighbouring voxels, applied to the sky term fully and to the sun's much less, because the sun term is the shaft and blurring it removes the thing you are looking at. Above 1.0 the kernel widens rather than the blend saturating. 0 leaves the volume's own grid visible as a lattice.",
+	"caustica.options.rt.fogFilter.tooltip": "Smoothing across the voxels beside each other in a slice, applied to the sky term in full. It does not reach along the view ray or into the sun's transmittance, because that IS the shaft: see Fog Shaft Filter. Above 1.0 the kernel widens rather than the blend strengthening, which is how Minecraft RTX sizes its own volume blur against its history length.",
+	"caustica.options.rt.fogFilterSun": "Fog Shaft Filter",
+	"caustica.options.rt.fogFilterSun.tooltip": "How much of the voxel smoothing reaches into the sun's own transmittance instead of only the sky term. 0 leaves a shaft exactly as sharp as the light volume can carry it, which is what Minecraft RTX does. Raise it when the lattice between voxels bothers you more than soft edges do.",
 	"caustica.options.rt.fogGridDivisor": "Fog Volume Resolution",
 	"caustica.options.rt.fogGridDivisor.tooltip": "Screen pixels per edge of a light-volume voxel, so this is the resolution of every shaft edge. Halving it quadruples the voxels and the gather's rays -- frame.traceFroxels in F3 is that cost, measured. Changing it rebuilds the volume, which stalls a frame.",
 
@@ -75,5 +77,7 @@
 	"caustica.options.rt.debugView.7": "Specular Motion",
 	"caustica.options.rt.debugView.8": "Exposure False Color",
 	"caustica.options.rt.debugView.9": "Metering Weight",
-	"caustica.options.rt.debugView.10": "Fog Contribution"
+	"caustica.options.rt.debugView.10": "Fog Contribution",
+	"caustica.options.rt.debugView.11": "Fog Light Volume",
+	"caustica.options.rt.debugView.12": "Fog Light Volume (Unfiltered)"
 }

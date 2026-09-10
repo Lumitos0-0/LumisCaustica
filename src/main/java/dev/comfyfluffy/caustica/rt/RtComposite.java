@@ -106,20 +106,37 @@ public final class RtComposite {
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
     private static final long PATH_RECORD_BYTES = 48L;
     /**
-     * How much of last frame's light volume this frame keeps. Two things make this blend safe to run in a
-     * screen-locked grid without reprojection: rotation costs nothing, because a texel turns with the camera,
-     * and translation is bounded by the voxel's own size, so the camera's per-frame motion is the whole
-     * validity test. The fade completing at a bit over one block per frame means walking and sprinting keep
-     * nearly the full history while an elytra ride or a teleport keeps almost none.
+     * How much of last frame's light volume this frame keeps. A texel of this grid keeps its SCREEN position,
+     * so a reprojection is not needed -- but that is not the same as keeping the same air, and the difference
+     * is the whole validity test. Stride moves a texel's world point by the stride; a TURN moves it by the
+     * turn's sine times however far away that texel's air is, which is many blocks for the distant half of the
+     * volume and is why measuring the camera's motion alone left the history trusted exactly when looking
+     * around: the shafts then trailed across the screen over the stale frames they carried. So the two are
+     * added, with the distance weighted by the volume's own median slice -- the geometric mean of a block and
+     * `reach`, which is where half the voxels are -- against a fade that completes at a bit over one block.
+     * Walking and sprinting still keep nearly all of it; so does standing still, which is where the
+     * accumulation is actually worth having.
      */
     private float fogHistoryWeight() {
         int frames = CausticaConfig.Rt.Fog.HISTORY_FRAMES.value();
         if (!fogHistoryHasPrev || frames <= 1) {
             return 0f;
         }
-        float move = (float) Math.sqrt(mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY
+        float stride = (float) Math.sqrt(mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY
                 + mvCamDeltaZ * mvCamDeltaZ);
+        float lever = (float) Math.sqrt(Math.max(CausticaConfig.Rt.Fog.REACH.value(), 1.0f));
+        float move = stride + lever * mvCamTurn;
         return (frames - 1f) / (frames + 1f) * Mth.clamp(1f - move / FOG_HISTORY_FADE_BLOCKS, 0f, 1f);
+    }
+
+    /**
+     * Which fog picture this frame should store in the radiance target, from the debug view: 0 none, and 1..3
+     * straight through to `fogDebugMode` in fog.slang. Views 11 and 2/3 there are the light volume itself,
+     * which is the only way to tell "the geometry is not occluding the sun's rays" from "the medium is not
+     * using the answer", and they cost nothing unless the view is selected.
+     */
+    private static int fogDebugMode(int debugView) {
+        return debugView >= 10 && debugView <= 12 ? debugView - 9 : 0;
     }
 
     private static int debugView() {
@@ -320,6 +337,12 @@ public final class RtComposite {
     private double mvPrevCamX;
     private double mvPrevCamY;
     private double mvPrevCamZ;
+    /** Radians the camera turned since the previous frame, for the light volume's history validity test. */
+    private float mvCamTurn;
+    private float mvPrevFwdX;
+    private float mvPrevFwdY;
+    private float mvPrevFwdZ;
+    private final float[] viewRotElems = new float[16];
     private float mvCamDeltaX;
     private float mvCamDeltaY;
     private float mvCamDeltaZ;
@@ -1095,17 +1118,35 @@ public final class RtComposite {
      */
     private void updateMotion() {
         mvCurProjView.set(frameProjection).mul(frameViewRotation);
+        // The view rotation's third row is the camera's own axis in world space. Its sign convention is not
+        // needed here -- only the angle between this frame's copy and last frame's is, and that is symmetric.
+        frameViewRotation.get(viewRotElems);
+        float fwdX = viewRotElems[2];
+        float fwdY = viewRotElems[6];
+        float fwdZ = viewRotElems[10];
+        float fwdLen = (float) Math.sqrt(fwdX * fwdX + fwdY * fwdY + fwdZ * fwdZ);
+        if (fwdLen > 1.0e-6f) {
+            fwdX /= fwdLen;
+            fwdY /= fwdLen;
+            fwdZ /= fwdLen;
+        }
         if (mvHasPrev) {
             mvPushMatrix.set(mvPrevProjView);
             mvCamDeltaX = (float) (camX - mvPrevCamX);
             mvCamDeltaY = (float) (camY - mvPrevCamY);
             mvCamDeltaZ = (float) (camZ - mvPrevCamZ);
+            mvCamTurn = (float) Math.acos(Mth.clamp(fwdX * mvPrevFwdX + fwdY * mvPrevFwdY
+                    + fwdZ * mvPrevFwdZ, -1f, 1f));
         } else {
             mvPushMatrix.set(mvCurProjView);
             mvCamDeltaX = 0f;
             mvCamDeltaY = 0f;
             mvCamDeltaZ = 0f;
+            mvCamTurn = 0f;
         }
+        mvPrevFwdX = fwdX;
+        mvPrevFwdY = fwdY;
+        mvPrevFwdZ = fwdZ;
         mvPrevProjView.set(mvCurProjView);
         mvPrevCamX = camX;
         mvPrevCamY = camY;
@@ -1179,7 +1220,7 @@ public final class RtComposite {
             if (volumetricFog()) {
                 flags |= 0b100000; // aerial medium: in-scatter and its own transmittance, per segment
             }
-            if (debugView == 10) {
+            if (fogDebugMode(debugView) != 0) {
                 // The medium's own contribution, stored in the radiance target instead of the guides: red is
                 // what it scattered into this path, green what it removed, blue which slice of the light volume
                 // that came from, over a dimmed lattice marking the volume's cell borders. See fogDebugColour
@@ -1277,12 +1318,13 @@ public final class RtComposite {
                     // Volume geometry: the divisor Java sized the image with, so the march indexes the grid it
                     // shares with the gather instead of re-deriving it from a constant both sides duplicate.
                     new Float4(CausticaConfig.Rt.Fog.GRID_DIVISOR.value(),
-                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), fogHistoryWeight(), 0f),
+                            CausticaConfig.Rt.Fog.GRID_SLICES.value(), fogHistoryWeight(),
+                            CausticaConfig.Rt.Fog.FILTER_SUN.value()),
                     // The gather's own budget. Both its dispatches and the filter read this from the push, so
                     // a ray count cannot desync from the volume it is paying for, and the F3 cost line is the
                     // price of these two numbers rather than of a constant only the shader knew.
                     new Float4(CausticaConfig.Rt.Fog.SUN_RAYS.value(), CausticaConfig.Rt.Fog.SKY_RAYS.value(),
-                            CausticaConfig.Rt.Fog.FILTER.value(), 0f)
+                            CausticaConfig.Rt.Fog.FILTER.value(), fogDebugMode(debugView))
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

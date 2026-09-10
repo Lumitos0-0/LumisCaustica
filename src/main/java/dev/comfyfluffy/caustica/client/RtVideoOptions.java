@@ -60,6 +60,7 @@ public final class RtVideoOptions {
             fogSunRays(),
             fogHistory(),
             fogFilter(),
+            fogFilterSun(),
             fogGridDivisor(),
             dlssQuality()
         ));
@@ -216,8 +217,8 @@ public final class RtVideoOptions {
             // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("caustica.options.rt.debugView." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), Codec.INT),
-            Math.clamp(setting.value(), 0, 10),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), Codec.INT),
+            Math.clamp(setting.value(), 0, 12),
             setting::set);
     }
 
@@ -275,6 +276,10 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> fogFilter() {
         return fogScaledFloat("fogFilter", CausticaConfig.Rt.Fog.FILTER, 100.0f, 0, 200, "%.2f");
+    }
+
+    private static OptionInstance<Integer> fogFilterSun() {
+        return fogScaledFloat("fogFilterSun", CausticaConfig.Rt.Fog.FILTER_SUN, 10.0f, 0, 10, "%.1f");
     }
 
     private static OptionInstance<Integer> fogGridDivisor() {
