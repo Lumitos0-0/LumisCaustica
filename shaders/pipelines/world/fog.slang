@@ -46,10 +46,3 @@ public float fogDensityNoise(float3 worldPos, float time) {
     float n = fogValueNoise(p) * 0.65 + fogValueNoise(p * 2.7 + 13.7) * 0.35;
     return clamp(n * 0.9 + 0.4, 0.0, 2.0);
 }
-
-// Interleaved gradient noise (Jimenez 2014): one dither value per froxel column for the in-slice sample
-// position. Static — not animated per frame — so the volume is temporally stable without a TAA pass to
-// integrate it; the apply pass's trilinear fetch diffuses the residual pattern.
-public float fogIgn(uint2 pix) {
-    return frac(52.9829189 * frac(dot(float2(pix) + 0.5, float2(0.06711056, 0.00583715))));
-}

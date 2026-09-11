@@ -32,8 +32,10 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
- * Fog apply pass: samples the froxel volume (baked by the world pipeline's {@code fog.rgen}) at each
- * pixel's scene depth and blends it over the render-res path-traced image, in place, before DLSS-RR.
+ * Fog apply pass: temporally accumulates the froxel volume (baked by the world pipeline's
+ * {@code fog.rgen}) at each pixel's scene depth and blends it over the render-res path-traced image,
+ * in place, before DLSS-RR. History lives in a ping-pong pair (read/write selected by frame parity
+ * in-shader), so descriptors are written once per resize and never rewritten per frame.
  * Reads camera + fog state from the frame's {@code WorldPush} slot through the shared {@code PushAddr}
  * block, like the sky LUT bakes.
  */
@@ -50,6 +52,9 @@ public final class RtFogPipeline {
     private long boundOutputView;
     private long boundDepthView;
     private long boundVolumeView;
+    private long boundHistAView;
+    private long boundHistBView;
+    private long boundMotionView;
     private boolean destroyed;
 
     private RtFogPipeline(RtContext ctx, long sampler, long dsl, long pool, long set, long layout,
@@ -87,6 +92,12 @@ public final class RtFogPipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(FOG_VOLUME).binding(FOG_VOLUME).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(FOG_HIST_A).binding(FOG_HIST_A).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(FOG_HIST_B).binding(FOG_HIST_B).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(FOG_MOTION).binding(FOG_MOTION).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -95,7 +106,8 @@ public final class RtFogPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "fog apply descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(2);
+            // Storage: output + depth + history ping-pong pair + motion. Sampler: froxel volume.
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(5);
             poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(fog apply)");
@@ -133,10 +145,15 @@ public final class RtFogPipeline {
         }
     }
 
-    /** Bind the trace color target (read-write), the guide depth, and the froxel volume (sampled). */
-    public void setImages(long outputImageView, long depthImageView, long volumeView) {
+    /**
+     * Bind the trace color target (read-write), the guide depth, the froxel volume (sampled), the
+     * history ping-pong pair (read-write), and the guide motion vectors.
+     */
+    public void setImages(long outputImageView, long depthImageView, long volumeView, long histAView,
+                          long histBView, long motionView) {
         if (boundOutputView == outputImageView && boundDepthView == depthImageView
-                && boundVolumeView == volumeView) {
+                && boundVolumeView == volumeView && boundHistAView == histAView
+                && boundHistBView == histBView && boundMotionView == motionView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -146,6 +163,12 @@ public final class RtFogPipeline {
             depthInfo.get(0).imageView(depthImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer volumeInfo = VkDescriptorImageInfo.calloc(1, stack);
             volumeInfo.get(0).imageView(volumeView).sampler(sampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer histAInfo = VkDescriptorImageInfo.calloc(1, stack);
+            histAInfo.get(0).imageView(histAView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer histBInfo = VkDescriptorImageInfo.calloc(1, stack);
+            histBInfo.get(0).imageView(histBView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer motionInfo = VkDescriptorImageInfo.calloc(1, stack);
+            motionInfo.get(0).imageView(motionView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(FOG_BINDING_COUNT, stack);
             writes.get(FOG_OUTPUT).sType$Default().dstSet(descriptorSet).dstBinding(FOG_OUTPUT)
@@ -154,11 +177,20 @@ public final class RtFogPipeline {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(depthInfo);
             writes.get(FOG_VOLUME).sType$Default().dstSet(descriptorSet).dstBinding(FOG_VOLUME)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(volumeInfo);
+            writes.get(FOG_HIST_A).sType$Default().dstSet(descriptorSet).dstBinding(FOG_HIST_A)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(histAInfo);
+            writes.get(FOG_HIST_B).sType$Default().dstSet(descriptorSet).dstBinding(FOG_HIST_B)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(histBInfo);
+            writes.get(FOG_MOTION).sType$Default().dstSet(descriptorSet).dstBinding(FOG_MOTION)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(motionInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
         boundDepthView = depthImageView;
         boundVolumeView = volumeView;
+        boundHistAView = histAView;
+        boundHistBView = histBView;
+        boundMotionView = motionView;
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, long worldPushAddress) {

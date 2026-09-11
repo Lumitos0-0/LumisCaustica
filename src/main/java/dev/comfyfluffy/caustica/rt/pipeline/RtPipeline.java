@@ -171,6 +171,9 @@ public final class RtPipeline {
                     .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_FOG_VOLUME).binding(WORLD_FOG_VOLUME).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_STBN).binding(WORLD_STBN)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
             check(VK10.vkCreateDescriptorSetLayout(vk, dslci, null, p), "vkCreateDescriptorSetLayout");
@@ -421,6 +424,11 @@ public final class RtPipeline {
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
         }
+    }
+
+    /** Bind the fog bake's spatiotemporal jitter texture (nearest sampler, owned by the texture). */
+    public void setStbn(long imageView, long sampler) {
+        writeAtlasBinding(WORLD_STBN, imageView, sampler);
     }
 
     /** Write one DLSS-RR guide image into its canonical world binding across every ring slot. */

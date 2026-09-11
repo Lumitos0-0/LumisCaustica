@@ -44,8 +44,20 @@ void main() {
     SkyState sky = skyState(worldPush);
     float viewerAltBlocks = worldPush.skyLook2.z * 100.0;
 
+    // Spatiotemporal jitter (see RtStbn): the column's sub-froxel XY offset and in-slice sample
+    // position vary every frame; the apply pass integrates the sequence over time while single
+    // frames keep blue-noise spatial character. W is reserved for phase-2 ray jitter.
+    uint stbnW;
+    uint stbnH;
+    uint stbnD;
+    stbnTex.GetDimensions(stbnW, stbnH, stbnD);
+    float2 stbnXY = float2(float(stbnW), float(stbnH));
+    float stbnZ = float(max(stbnD, 1u));
+    float4 stbn = stbnTex.SampleLevel(
+            float3((float2(dispatchIndex) + 0.5) / stbnXY, (float(worldPush.frameIndex % max(stbnD, 1u)) + 0.5) / stbnZ),
+            0.0);
     int2 pix = int2(dispatchIndex);
-    float2 uv = (float2(pix) + 0.5) / float2(float(fogW), float(fogH));
+    float2 uv = (float2(pix) + 0.5 + (stbn.xy - 0.5)) / float2(float(fogW), float(fogH));
     float2 ndc = uv * 2.0 - 1.0;
     float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
     float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
@@ -81,7 +93,6 @@ void main() {
     float phaseSun = hg(clamp(dot(rd, sky.sunDir), -1.0, 1.0), aniso);
     float phaseMoon = hg(clamp(dot(rd, sky.moonDir), -1.0, 1.0), aniso);
 
-    float sliceDither = fogIgn(dispatchIndex);
     float sliceCount = float(fogD);
     float3 scatter = float3(0.0, 0.0, 0.0);
     float transmit = 1.0;
@@ -90,7 +101,7 @@ void main() {
         float s0 = float(iz);
         float z0 = fogSliceViewDepth(s0, sliceCount, maxDist);
         float z1 = fogSliceViewDepth(s0 + 1.0, sliceCount, maxDist);
-        float zm = fogSliceViewDepth(s0 + 0.5 + (sliceDither - 0.5) * 0.8, sliceCount, maxDist);
+        float zm = fogSliceViewDepth(s0 + 0.5 + (stbn.z - 0.5) * 0.9, sliceCount, maxDist);
         float3 pos = ro + rd * (zm / cosF);
         float dt = (z1 - z0) / cosF;
 
