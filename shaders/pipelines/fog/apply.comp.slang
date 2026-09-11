@@ -57,7 +57,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         fogAccum += tapFog * weight;
         wSum += weight;
     }
-    float4 fogSample = fogAccum / max(wSum, 1.0e-6);
+    // Fallback center tap: sub-pixel geometry (distant leaves, wires) can depth-reject all four
+    // taps, collapsing the blend to black; the epsilon-weighted center keeps those pixels' own fog.
+    float centerSlice = clamp(fogViewDepthToSlice(centerDepth, 1.0, maxDist), 0.0, 1.0);
+    float4 centerFog = fogVolume.SampleLevel(float3(pixF / fullRes, centerSlice), 0.0);
+    float4 fogSample = (fogAccum + centerFog * 0.01) / (wSum + 0.01);
     float4 scene = outputImage[pix];
     outputImage[pix] = float4(scene.rgb * fogSample.a + fogSample.rgb, scene.a);
 }
