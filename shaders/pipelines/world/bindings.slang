@@ -20,6 +20,11 @@ import world_common;
 [[vk::binding(10, 0)]] public Sampler2D skyViewLut;
 [[vk::binding(11, 0)]] public Sampler2D transmittanceLut;
 
+// Froxel fog volume (XYZ = frustum UV + exponential depth slice; RGB = pre-exposed integrated
+// scattering, A = transmittance), written by the fog.rgen bake and blended over the trace by
+// pipelines/fog/apply.comp.
+[[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture3D<float4> fogVolume;
+
 [[vk::binding(0, 1)]] public Sampler2D entityAlbedoTex[];
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];

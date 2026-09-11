@@ -49,6 +49,8 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            fog(),
+            fogDensity(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -133,6 +135,22 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    private static OptionInstance<Boolean> fog() {
+        return bool("caustica.options.rt.fog", CausticaConfig.Rt.Fog.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDensity.tooltip")),
+            (caption, tenThousandths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.4f", tenThousandths / 10000.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 10000.0f), 0, 200),
+            tenThousandths -> setting.set(tenThousandths / 10000.0f));
     }
 
     private static OptionInstance<Integer> dlssQuality() {

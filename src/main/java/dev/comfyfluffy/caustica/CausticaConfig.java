@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH, Rt.Fog.ENABLED,
         };
     }
 
@@ -95,6 +95,11 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("fog",
+                " Froxel volumetric fog: sun/moon single scattering with ray-traced occlusion, no shadow maps.\n"
+                        + " density is extinction per block (0 disables); anisotropy is the HG forward-scatter lobe\n"
+                        + " (-0.9 back to 0.9 forward); max-distance bounds the volume; height-falloff thins the fog\n"
+                        + " above sea level.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -565,6 +570,22 @@ public final class CausticaConfig {
                     bool("caustica.rt.blasCompaction", "terrain.blas-compaction", true);
 
             private Terrain() {
+            }
+        }
+
+        /** Froxel volumetric fog (sun/moon single scattering via ray-traced visibility). Disabled by {@code enabled = false} or {@code density = 0}. */
+        public static final class Fog {
+            public static final BooleanSetting ENABLED = bool("caustica.rt.fog", "fog.enabled", true);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.fogDensity", "fog.density", 0.004f, 0.0f, 0.1f);
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.55f, -0.9f, 0.9f);
+            public static final FloatSetting MAX_DISTANCE =
+                    clampedFloat("caustica.rt.fogMaxDistance", "fog.max-distance", 320f, 32f, 1024f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 48f, 4f, 256f);
+
+            private Fog() {
             }
         }
 
