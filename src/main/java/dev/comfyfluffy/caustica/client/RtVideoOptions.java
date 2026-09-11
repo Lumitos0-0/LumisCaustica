@@ -25,7 +25,9 @@ import net.minecraft.network.chat.Component;
  * left to the {@code -Dcaustica.*} startup surface. DLSS-RR quality is the exception: the render resolution
  * is queried from NGX for the chosen quality mode on every resize (see
  * {@code RtDlssRr.queryOptimalRenderSize}), and the RR feature itself is recreated live whenever
- * {@code quality} changes (see {@code RtDlssRr.ensureFeature}), so it is safe to expose here.
+ * {@code quality} changes (see {@code RtDlssRr.ensureFeature}), so it is safe to expose here. Fog quality
+ * is the same kind of exception: the froxel volume is reallocated on the next frame whenever the level
+ * changes (see {@code RtComposite.ensureOutput}), so it is equally safe to expose.
  */
 public final class RtVideoOptions {
     private RtVideoOptions() {
@@ -51,6 +53,7 @@ public final class RtVideoOptions {
             waterWaves(),
             fog(),
             fogDensity(),
+            fogQuality(),
             dlssQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
@@ -151,6 +154,19 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 200),
             Math.clamp(Math.round(setting.value() * 10000.0f), 0, 200),
             tenThousandths -> setting.set(tenThousandths / 10000.0f));
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Fog.QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
+            // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
+            (caption, value) -> Component.translatable("caustica.options.rt.fogQuality." + value),
+            new OptionInstance.Enum<>(List.of(0, 1, 2), Codec.INT),
+            Math.clamp(setting.value(), 0, 2),
+            setting::set);
     }
 
     private static OptionInstance<Integer> dlssQuality() {

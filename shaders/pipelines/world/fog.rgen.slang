@@ -92,8 +92,9 @@ void main() {
     float3 moonAces = bt709ToAcesCg(moonE);
     float phaseSun = hg(clamp(dot(rd, sky.sunDir), -1.0, 1.0), aniso);
     float phaseMoon = hg(clamp(dot(rd, sky.moonDir), -1.0, 1.0), aniso);
-    float3 ambient = bt709ToAcesCg(fogSkyAmbient(sky)) * ambientScale
-            + float3(sky.airglowLuminance);
+    // Split so the march can occlude the sky dome per slice (below) while the airglow floor stays.
+    float3 skyAmbient = bt709ToAcesCg(fogSkyAmbient(sky)) * ambientScale;
+    float3 airglow = float3(sky.airglowLuminance);
 
     float sliceDither = fogIgn(dispatchIndex);
     float sliceCount = float(fogD);
@@ -110,10 +111,17 @@ void main() {
 
         float aboveBase = (pos.y - worldPush.camOffset.y) + viewerAltBlocks - heightBase;
         float heightAtten = exp(-max(aboveBase, 0.0) / falloff);
-        float detail = lerp(1.0, fogDensityNoise(pos, time), noiseAmt);
+        // Detail noise fades in past the near field so nearby air stays smooth and only distant fog
+        // carries visible structure (which is also where the coarse volume hides it best).
+        float detail = lerp(1.0, fogDensityNoise(pos, time), noiseAmt * smoothstep(4.0, 12.0, zm));
         float sigmaT = density * (0.3 + 0.7 * heightAtten) * detail;
         if (sigmaT * dt > 1.0e-6 && transmit > 0.004) {
-            float3 inscatter = ambient;
+            // Skylight occlusion: one upward shadow ray per slice scales the sky ambient, so caves and
+            // interiors go dark while open air keeps the dome light — with a correct gradient through
+            // cave mouths. Tinted by whatever it crosses (stained glass tints the ambient for free);
+            // the 10% floor stands in for bounced light under partial cover like tree canopies.
+            float3 skyVis = visibility(pos, float3(0.0, 1.0, 0.0), 10000.0).transmittance;
+            float3 inscatter = skyAmbient * (0.1 + 0.9 * skyVis) + airglow;
             if (useSun) {
                 inscatter += sunAces * visibility(pos, sky.sunDir, 10000.0).transmittance * phaseSun;
             }

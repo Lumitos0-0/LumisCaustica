@@ -35,6 +35,11 @@
 
 	"caustica.options.rt.fogDensity": "Fog Density",
 	"caustica.options.rt.fogDensity.tooltip": "Fog extinction per block. 0 disables the fog; higher values thicken the air and strengthen light shafts.",
+	"caustica.options.rt.fogQuality": "Fog Quality",
+	"caustica.options.rt.fogQuality.tooltip": "Froxel volume resolution: Performance bakes an 8x-downsampled volume with 32 depth slices, Balanced 8x with 48, Quality 4x with 64. Higher levels sharpen light shafts and silhouettes. Takes effect on the next frame.",
+	"caustica.options.rt.fogQuality.0": "Performance",
+	"caustica.options.rt.fogQuality.1": "Balanced",
+	"caustica.options.rt.fogQuality.2": "Quality",
 
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",

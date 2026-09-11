@@ -38,12 +38,13 @@ public float fogValueNoise(float3 p) {
              lerp(fogHash(i + float3(0.0, 1.0, 1.0)), fogHash(i + float3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
 }
 
-// Large-scale density variation around a mean of ~1: two value-noise octaves over 28-block cells,
-// drifting slowly on the wind so shafts evolve instead of sitting still.
+// Gentle density variation around a mean of ~1: two value-noise octaves over 10-block cells,
+// drifting slowly on the wind so shafts evolve instead of sitting still. Kept low-contrast — coarse
+// near-field blobs read as smoke rather than air — and faded out near the camera by the bake.
 public float fogDensityNoise(float3 worldPos, float time) {
-    float3 p = worldPos * (1.0 / 28.0) + float3(time * 0.008, 0.0, time * 0.003);
+    float3 p = worldPos * (1.0 / 10.0) + float3(time * 0.022, 0.0, time * 0.008);
     float n = fogValueNoise(p) * 0.65 + fogValueNoise(p * 2.7 + 13.7) * 0.35;
-    return clamp(n * 1.4 + 0.15, 0.0, 2.0);
+    return clamp(n * 0.9 + 0.4, 0.0, 2.0);
 }
 
 // Interleaved gradient noise (Jimenez 2014): one dither value per froxel column for the in-slice sample
