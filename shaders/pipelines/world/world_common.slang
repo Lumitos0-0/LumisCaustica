@@ -95,6 +95,7 @@ public struct WorldPush {
     public float4   fogParams0;       // x base density (1/block), y HG anisotropy, z max distance (blocks), w height falloff (blocks)
     public float4   fogParams1;       // x height base vs sea level (blocks), y animation time (s), z reserved, w detail-noise amount 0..1
     public float4   fogParams2;       // xyz scattering albedo (linear ACEScg), w fog history valid (1 = blend, 0 = reset)
+    public float4x4 prevInvViewProj;  // previous-frame clip -> view (fog accumulate: surface depth for slice mapping)
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
