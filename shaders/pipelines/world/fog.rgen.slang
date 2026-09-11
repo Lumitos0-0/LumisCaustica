@@ -1,5 +1,5 @@
 // Froxel-bake pass of the volumetric fog: one thread per froxel column marches its depth slices
-// front-to-back, accumulating single-scattered sun/moonlight plus sky ambient, and stores the integrated
+// front-to-back, accumulating single-scattered sun/moonlight, and stores the integrated
 // scattering + transmittance of every slice. pipelines/fog/apply.comp samples the volume at each pixel's
 // scene depth and blends it over the path-traced image.
 //
@@ -14,17 +14,6 @@ import math;
 import sky;
 import trace;
 import fog;
-
-// Sky ambient for the in-scatter integral: the baked dome sampled straight up (both bodies' slices), in
-// linear BT.709 like every other sky.slang output; the caller converts to the ACEScg transport basis.
-float3 fogSkyAmbient(SkyState state) {
-    float3 up = float3(0.0, 1.0, 0.0);
-    float2 sunUv = skyViewLutUv(state.viewerRadiusKm, 1.0,
-            lightViewCosine(up, state.sunDir), SKY_VIEW_BODY_SUN);
-    float2 moonUv = skyViewLutUv(state.viewerRadiusKm, 1.0,
-            lightViewCosine(up, state.moonDir), SKY_VIEW_BODY_MOON);
-    return skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
-}
 
 [shader("raygeneration")]
 void main() {
@@ -44,7 +33,6 @@ void main() {
     float falloff = max(worldPush.fogParams0.w, 1.0e-3);
     float heightBase = worldPush.fogParams1.x;
     float time = worldPush.fogParams1.y;
-    float ambientScale = max(worldPush.fogParams1.z, 0.0);
     float noiseAmt = clamp(worldPush.fogParams1.w, 0.0, 1.0);
     float3 albedo = clamp(worldPush.fogParams2.xyz, 0.0, 1.0);
     bool submerged = (worldPush.flags & 1u) != 0u;
@@ -92,9 +80,6 @@ void main() {
     float3 moonAces = bt709ToAcesCg(moonE);
     float phaseSun = hg(clamp(dot(rd, sky.sunDir), -1.0, 1.0), aniso);
     float phaseMoon = hg(clamp(dot(rd, sky.moonDir), -1.0, 1.0), aniso);
-    // Split so the march can occlude the sky dome per slice (below) while the airglow floor stays.
-    float3 skyAmbient = bt709ToAcesCg(fogSkyAmbient(sky)) * ambientScale;
-    float3 airglow = float3(sky.airglowLuminance);
 
     float sliceDither = fogIgn(dispatchIndex);
     float sliceCount = float(fogD);
@@ -116,12 +101,9 @@ void main() {
         float detail = lerp(1.0, fogDensityNoise(pos, time), noiseAmt * smoothstep(4.0, 12.0, zm));
         float sigmaT = density * (0.3 + 0.7 * heightAtten) * detail;
         if (sigmaT * dt > 1.0e-6 && transmit > 0.004) {
-            // Skylight occlusion: one upward shadow ray per slice scales the sky ambient, so caves and
-            // interiors go dark while open air keeps the dome light — with a correct gradient through
-            // cave mouths. Tinted by whatever it crosses (stained glass tints the ambient for free);
-            // the 10% floor stands in for bounced light under partial cover like tree canopies.
-            float3 skyVis = visibility(pos, float3(0.0, 1.0, 0.0), 10000.0).transmittance;
-            float3 inscatter = skyAmbient * (0.1 + 0.9 * skyVis) + airglow;
+            // No ambient or airglow fill: unlit fog adds no light (it only attenuates), so caves and
+            // night air go fully dark and occlusion reads exactly.
+            float3 inscatter = float3(0.0, 0.0, 0.0);
             if (useSun) {
                 inscatter += sunAces * visibility(pos, sky.sunDir, 10000.0).transmittance * phaseSun;
             }

@@ -110,8 +110,8 @@ public final class RtComposite {
     // Froxel fog volume shape per quality level (see CausticaConfig.Rt.Fog.QUALITY): XY downsample
     // relative to the render resolution, and depth-slice count. The shaders read the volume's own
     // dimensions, so these only size the image — no shader constant to keep in sync.
-    private static final int[] FOG_DOWNSAMPLE = {8, 8, 4};
-    private static final int[] FOG_SLICES = {32, 48, 64};
+    private static final int[] FOG_DOWNSAMPLE = {8, 8, 4, 4, 4};
+    private static final int[] FOG_SLICES = {32, 48, 64, 96, 128};
     // Index of fog.rgen.spv in the world pipeline's raygen table (see ensureWorld): primary 0, indirect 1.
     private static final int FOG_RAYGEN_INDEX = 2;
     private static int debugView() {
@@ -1193,10 +1193,10 @@ public final class RtComposite {
                     exposure.preExposure(),
                     // Froxel fog, re-read every frame so density/anisotropy/range retune live. Height base
                     // is fixed at sea level, time reuses the wrapped water-animation clock, and the albedo
-                    // is fixed neutral white (the sun/moon/sky lighting carries the colour).
+                    // is fixed neutral white (the sun/moon lighting carries the colour).
                     new Float4(CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.ANISOTROPY.value(),
                             CausticaConfig.Rt.Fog.MAX_DISTANCE.value(), CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value()),
-                    new Float4(0f, waterWaveTime, 0.6f, 0.3f),
+                    new Float4(0f, waterWaveTime, 0f, 0.3f),
                     new Float4(1f, 1f, 1f, 0f)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
@@ -1357,7 +1357,7 @@ public final class RtComposite {
 
     /** Quality level the fog volume is (or should be) allocated for, as an index into the shape tables. */
     private static int fogQualityIndex() {
-        return Math.clamp(CausticaConfig.Rt.Fog.QUALITY.value(), 0, 2);
+        return Math.clamp(CausticaConfig.Rt.Fog.QUALITY.value(), 0, 4);
     }
 
     /** Whether this frame bakes + applies volumetric fog (a disabled or zero-density fog is identity). */

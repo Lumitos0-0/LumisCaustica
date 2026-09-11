@@ -164,8 +164,8 @@ public final class RtVideoOptions {
             // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("caustica.options.rt.fogQuality." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2), Codec.INT),
-            Math.clamp(setting.value(), 0, 2),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4), Codec.INT),
+            Math.clamp(setting.value(), 0, 4),
             setting::set);
     }
 

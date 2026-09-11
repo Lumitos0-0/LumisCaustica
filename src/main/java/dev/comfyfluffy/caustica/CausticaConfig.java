@@ -585,7 +585,7 @@ public final class CausticaConfig {
             public static final FloatSetting HEIGHT_FALLOFF =
                     clampedFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 48f, 4f, 256f);
             public static final IntSetting QUALITY =
-                    clampedInt("caustica.rt.fogQuality", "fog.quality", 1, 0, 2);
+                    clampedInt("caustica.rt.fogQuality", "fog.quality", 1, 0, 4);
 
             private Fog() {
             }
