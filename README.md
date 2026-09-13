@@ -80,7 +80,8 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
-- [ ] Nether/End sky, weather, volumetric fog/clouds
+- [x] Froxel volumetric fog (sun/moon scattering via ray-traced visibility, no shadow maps)
+- [ ] Nether/End sky, weather, volumetric clouds
 - [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD
 - [ ] ReSTIR

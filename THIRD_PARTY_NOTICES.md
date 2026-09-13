@@ -30,3 +30,13 @@ Bundled NVIDIA SDK runtime libraries may include files matching:
 
 Caustica's `ngxshim` native library is project-owned glue code and follows
 Caustica's project license unless otherwise noted.
+
+## Blue noise textures (CC0)
+
+The fog bake's spatiotemporal jitter volume
+(`caustica/noise/bluenoise64_rgba.bin`) is repacked from Christoph Peters'
+3D blue noise (`64_64_64/HDR_LA.raw`, mirrored at
+<https://github.com/Calinou/free-blue-noise-textures>), dedicated to the
+public domain under CC0 1.0 Universal
+(<https://creativecommons.org/publicdomain/zero/1.0/>). Repacking is done
+offline by `tools/repack_bluenoise64.py`; see `RtStbn` for the texel layout.

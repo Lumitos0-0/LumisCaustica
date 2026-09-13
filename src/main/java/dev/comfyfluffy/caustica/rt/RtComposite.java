@@ -51,6 +51,7 @@ import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
+import dev.comfyfluffy.caustica.rt.accel.RtVolume;
 import dev.comfyfluffy.caustica.rt.entity.RtEntities;
 import dev.comfyfluffy.caustica.rt.entity.RtEntityTextures;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
@@ -59,7 +60,9 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtFogPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
+import dev.comfyfluffy.caustica.rt.pipeline.RtStbn;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -105,6 +108,16 @@ public final class RtComposite {
     // generated from the same Slang module and owns this second ABI as well. debugView is no longer
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
     private static final long PATH_RECORD_BYTES = 48L;
+    // Froxel fog volume shape: fixed 256x128 XY at every quality level (the world-space
+    // reprojection grid doubles as a noise filter, so tying XY to the render resolution only costs
+    // memory), with the depth-slice count from the quality level (see CausticaConfig.Rt.Fog.QUALITY).
+    // The shaders read the volume's own dimensions, so these only size the images — no shader
+    // constant to keep in sync.
+    private static final int FOG_VOLUME_W = 256;
+    private static final int FOG_VOLUME_H = 128;
+    private static final int[] FOG_SLICES = {32, 48, 64, 96, 128};
+    // Index of fog.rgen.spv in the world pipeline's raygen table (see ensureWorld): primary 0, indirect 1.
+    private static final int FOG_RAYGEN_INDEX = 2;
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -174,6 +187,34 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtFogPipeline fogPipeline;
+    // Froxel fog FRESH volume (frustum UV x depth slices; RGB = pre-exposed integrated
+    // scattering, A = transmittance). Fixed 256x128 XY, slice count from the fog quality level, and
+    // always allocated — toggling fog at runtime then skips dispatches instead of rebuilding images.
+    private RtVolume fogVolume;
+    private int fogVolumeQuality = -1;
+    // Temporally accumulated fog volumes, ping-ponged by frame parity (even frames resolve FRESH +
+    // B into A, odd frames FRESH + A into B), with per-voxel history-age counters and a render-res
+    // previous-depth snapshot for the occlusion check. fogHistoryValid tracks whether the pair holds
+    // last frame's result: cleared by every (re)build, every frame the fog skips, and every camera
+    // teleport; set once the accumulate pass has written. The shader reads it through fogParams2.w.
+    private RtVolume fogVolumeA;
+    private RtVolume fogVolumeB;
+    private RtVolume fogAgeA;
+    private RtVolume fogAgeB;
+    private RtImage fogPrevDepth;
+    private boolean fogHistoryValid;
+    // Last slice-mapping pushed to the shaders: range, distribution mode, exponent. Any change
+    // re-assigns every voxel's depth, so history sampled under the old mapping must be dropped.
+    private float lastFogMaxDist;
+    private float lastFogSliceMode = -1f;
+    private float lastFogSliceExp;
+    // Previous frame's clip -> view matrix (fog accumulate: surface depth for slice mapping). Pushed
+    // as last frame's value while history is valid, else the current frame's (harmless: the shader
+    // only uses it when history is valid).
+    private final Matrix4f fogPrevInvViewProj = new Matrix4f();
+    // Spatiotemporal jitter for the fog bake (see RtStbn). Device-lifetime, bound once per pipeline.
+    private RtStbn stbn;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -594,6 +635,9 @@ public final class RtComposite {
             if (bloomPipeline == null) {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
+            if (fogPipeline == null) {
+                fogPipeline = RtFogPipeline.create(ctx);
+            }
             if (skyLut == null) {
                 // Normally already created by ensureWorld before the pipeline exists at all; this only
                 // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
@@ -652,6 +696,8 @@ public final class RtComposite {
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
             bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
+            fogPipeline.setImages(output.view, gDepth.view, fogVolume.view, fogVolumeA.view,
+                    fogVolumeB.view, fogAgeA.view, fogAgeB.view, fogPrevDepth.view);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                     exposure.stateBuffer());
@@ -715,10 +761,14 @@ public final class RtComposite {
             if (skyLut == null) {
                 skyLut = RtSkyLut.create(ctx);
             }
+            if (stbn == null) {
+                stbn = RtStbn.create(ctx);
+            }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            "fog.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -733,7 +783,12 @@ public final class RtComposite {
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
+                if (fogVolume != null) {
+                    worldPipeline.setFogVolume(fogVolume.view);
+                }
             }
+            // Device-lifetime texture: independent of the render-res images, bound once per pipeline.
+            worldPipeline.setStbn(stbn.view(), stbn.sampler());
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
         }
@@ -896,9 +951,12 @@ public final class RtComposite {
         // the RR path whose render-resolution guide inputs the debug pass visualizes.
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
+        int fogQuality = fogQualityIndex();
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
-                && bloomLevels.length > 0 && exposure.ready()
+                && bloomLevels.length > 0 && fogVolume != null && fogVolumeQuality == fogQuality
+                && fogVolumeA != null && fogVolumeB != null && fogAgeA != null && fogAgeB != null
+                && fogPrevDepth != null && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
             return;
@@ -911,6 +969,24 @@ public final class RtComposite {
             hdrDisplayImage.destroy();
         }
         destroyBloomLevels();
+        if (fogVolume != null) {
+            fogVolume.destroy();
+        }
+        if (fogVolumeA != null) {
+            fogVolumeA.destroy();
+        }
+        if (fogVolumeB != null) {
+            fogVolumeB.destroy();
+        }
+        if (fogAgeA != null) {
+            fogAgeA.destroy();
+        }
+        if (fogAgeB != null) {
+            fogAgeB.destroy();
+        }
+        if (fogPrevDepth != null) {
+            fogPrevDepth.destroy();
+        }
         if (output != null) {
             output.destroy();
         }
@@ -970,6 +1046,21 @@ public final class RtComposite {
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        int fogSlices = FOG_SLICES[fogQuality];
+        fogVolume = ctx.createVolume(FOG_VOLUME_W, FOG_VOLUME_H, fogSlices, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "froxel fog volume " + FOG_VOLUME_W + "x" + FOG_VOLUME_H + "x" + fogSlices);
+        fogVolumeQuality = fogQuality;
+        fogVolumeA = ctx.createVolume(FOG_VOLUME_W, FOG_VOLUME_H, fogSlices, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "fog accumulated volume A " + FOG_VOLUME_W + "x" + FOG_VOLUME_H + "x" + fogSlices);
+        fogVolumeB = ctx.createVolume(FOG_VOLUME_W, FOG_VOLUME_H, fogSlices, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "fog accumulated volume B " + FOG_VOLUME_W + "x" + FOG_VOLUME_H + "x" + fogSlices);
+        fogAgeA = ctx.createVolume(FOG_VOLUME_W, FOG_VOLUME_H, fogSlices, VK10.VK_FORMAT_R16_SFLOAT,
+                "fog history age A " + FOG_VOLUME_W + "x" + FOG_VOLUME_H + "x" + fogSlices);
+        fogAgeB = ctx.createVolume(FOG_VOLUME_W, FOG_VOLUME_H, fogSlices, VK10.VK_FORMAT_R16_SFLOAT,
+                "fog history age B " + FOG_VOLUME_W + "x" + FOG_VOLUME_H + "x" + fogSlices);
+        fogPrevDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT,
+                "fog previous depth " + renderW + "x" + renderH);
+        fogHistoryValid = false; // fresh images hold garbage until the first accumulate writes
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
@@ -977,12 +1068,15 @@ public final class RtComposite {
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
+            worldPipeline.setFogVolume(fogVolume.view);
         }
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                 boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
         bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
+        fogPipeline.setImages(output.view, gDepth.view, fogVolume.view, fogVolumeA.view,
+                fogVolumeB.view, fogAgeA.view, fogAgeB.view, fogPrevDepth.view);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                 exposure.stateBuffer());
@@ -1020,6 +1114,23 @@ public final class RtComposite {
         mvPrevCamY = camY;
         mvPrevCamZ = camZ;
         mvHasPrev = true;
+        // Camera teleports (>5 blocks in one frame: dimension change, /tp, respawn) leave the
+        // world-space fog history sampling an unrelated frustum — reset accumulation.
+        float camJumpSq = mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY + mvCamDeltaZ * mvCamDeltaZ;
+        if (camJumpSq > 25.0f) {
+            fogHistoryValid = false;
+        }
+        // Slice-mapping changes (range, distribution, exponent) re-assign every voxel's depth:
+        // history sampled under the old mapping is garbage — reset accumulation.
+        float fogMaxDist = CausticaConfig.Rt.Fog.MAX_DISTANCE.value();
+        float fogSliceMode = (float) CausticaConfig.Rt.Fog.SLICE_MODE.value();
+        float fogSliceExp = CausticaConfig.Rt.Fog.SLICE_EXPONENT.value();
+        if (fogMaxDist != lastFogMaxDist || fogSliceMode != lastFogSliceMode || fogSliceExp != lastFogSliceExp) {
+            fogHistoryValid = false;
+            lastFogMaxDist = fogMaxDist;
+            lastFogSliceMode = fogSliceMode;
+            lastFogSliceExp = fogSliceExp;
+        }
     }
 
     private void recordFrame(RtContext ctx, RtPipeline active, GpuTexture nativeColor) {
@@ -1156,9 +1267,23 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    // Froxel fog, re-read every frame so density/anisotropy/range/distribution retune live.
+                    // Height base is fixed at sea level, time reuses the wrapped water-animation clock,
+                    // and the albedo is fixed neutral white (the sun/moon lighting carries the colour).
+                    new Float4(CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.ANISOTROPY.value(),
+                            CausticaConfig.Rt.Fog.MAX_DISTANCE.value(), CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value()),
+                    new Float4(0f, waterWaveTime, 0f,
+                            CausticaConfig.Rt.Fog.NOISE.value() ? 0.3f : 0f),
+                    new Float4(1f, 1f, 1f, fogHistoryValid ? 1f : 0f),
+                    new Float4((float) CausticaConfig.Rt.Fog.SLICE_MODE.value(),
+                            CausticaConfig.Rt.Fog.SLICE_EXPONENT.value(),
+                            CausticaConfig.Rt.Fog.WATER_ANISOTROPY.value(),
+                            CausticaConfig.Rt.Fog.DEPTH_OFFSET.value()),
+                    fogHistoryValid ? fogPrevInvViewProj : frameInvViewProj
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
+            fogPrevInvViewProj.set(frameInvViewProj); // this frame's clip -> view is next frame's previous
             // Upload any entity textures registered this frame into the bindless set before the trace.
             RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
             // Build the entity BLAS, the TLAS that references it and the terrain BLAS, then the trace.
@@ -1210,7 +1335,36 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to the fog bake's TLAS reads
+            // Froxel volumetric fog: bake this frame's jittered FRESH volume from TLAS shadow rays,
+            // temporally accumulate it in world space (FRESH + history -> resolved), then blend the
+            // resolved volume over the render-res trace at each pixel's scene depth — before DLSS-RR,
+            // so reconstruction and exposure metering see the finished (scene + fog) signal.
+            if (fogActive()) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog bake");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogBake")) {
+                    active.trace(cmd, fogVolume.width, fogVolume.height, pushConstants, FOG_RAYGEN_INDEX);
+                }
+                // Fresh writes visible to the accumulate pass; also covers last frame's resolved
+                // write and depth snapshot (same queue, in-order submission, full barrier).
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog accumulate");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogAccumulate")) {
+                    fogPipeline.dispatchAccumulate(cmd, fogVolume.width, fogVolume.height, fogVolume.depth,
+                            pushBuf.deviceAddress);
+                }
+                // Resolved writes visible to the apply pass.
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fog apply");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.fogApply")) {
+                    fogPipeline.dispatch(cmd, renderW, renderH, pushBuf.deviceAddress);
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack); // fogged color visible to DLSS reads
+                fogHistoryValid = true;
+            } else {
+                // No write landed this frame: the pair still holds an older frame (or garbage).
+                fogHistoryValid = false;
+            }
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1297,6 +1451,18 @@ public final class RtComposite {
         // every owner in this frame's manifest is protected through the final overlay consumer.
         RtEntities.INSTANCE.markGraphicsUse(frameEntities, graphicsUse);
         exposure.markStateReadbackUse(graphicsUse);
+    }
+
+    /** Quality level the fog volume is (or should be) allocated for, as an index into the shape tables. */
+    private static int fogQualityIndex() {
+        return Math.clamp(CausticaConfig.Rt.Fog.QUALITY.value(), 0, 4);
+    }
+
+    /** Whether this frame bakes + applies volumetric fog (a disabled or zero-density fog is identity). */
+    private boolean fogActive() {
+        return fogVolume != null && fogPipeline != null
+                && CausticaConfig.Rt.Fog.ENABLED.value()
+                && CausticaConfig.Rt.Fog.DENSITY.value() > 0.0f;
     }
 
     /**
@@ -1502,6 +1668,38 @@ public final class RtComposite {
         if (bloomPipeline != null) {
             bloomPipeline.destroy();
             bloomPipeline = null;
+        }
+        if (fogPipeline != null) {
+            fogPipeline.destroy();
+            fogPipeline = null;
+        }
+        if (fogVolume != null) {
+            fogVolume.destroy();
+            fogVolume = null;
+        }
+        if (fogVolumeA != null) {
+            fogVolumeA.destroy();
+            fogVolumeA = null;
+        }
+        if (fogVolumeB != null) {
+            fogVolumeB.destroy();
+            fogVolumeB = null;
+        }
+        if (fogAgeA != null) {
+            fogAgeA.destroy();
+            fogAgeA = null;
+        }
+        if (fogAgeB != null) {
+            fogAgeB.destroy();
+            fogAgeB = null;
+        }
+        if (fogPrevDepth != null) {
+            fogPrevDepth.destroy();
+            fogPrevDepth = null;
+        }
+        if (stbn != null) {
+            stbn.destroy();
+            stbn = null;
         }
         if (skyLut != null) {
             skyLut.destroy();
@@ -2062,6 +2260,18 @@ public final class RtComposite {
         for (RtImage img : fgInterp) {
             if (img != null) {
                 img.destroy();
+            }
+        }
+        fgInterp = new RtImage[count];
+        for (int i = 0; i < count; i++) {
+            fgInterp[i] = ctx.createStorageImage(w, h, fmt, "FG interp " + i + " " + w + "x" + h);
+        }
+        fgInterpW = w;
+        fgInterpH = h;
+        fgInterpFormat = fmt;
+    }
+}
+      img.destroy();
             }
         }
         fgInterp = new RtImage[count];
