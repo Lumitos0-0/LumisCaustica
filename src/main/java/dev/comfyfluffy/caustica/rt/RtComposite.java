@@ -2271,15 +2271,3 @@ public final class RtComposite {
         fgInterpFormat = fmt;
     }
 }
-      img.destroy();
-            }
-        }
-        fgInterp = new RtImage[count];
-        for (int i = 0; i < count; i++) {
-            fgInterp[i] = ctx.createStorageImage(w, h, fmt, "FG interp " + i + " " + w + "x" + h);
-        }
-        fgInterpW = w;
-        fgInterpH = h;
-        fgInterpFormat = fmt;
-    }
-}
