@@ -3,7 +3,7 @@
 // Why 3D: each voxel reprojects its own world position into the previous frame. A camera
 // rotation moves every voxel's history fetch coherently, so the volume stays converged
 // through rotation, translation, and zoom - there is no screen-space smear to reject and
-// no per-pixel reset. Slices are exponential in view depth (see fog.slang), so the fixed
+// no per-pixel reset. Slices follow the configured distribution (see fog.slang), so the fixed
 // 256x128 XY grid resolves near detail and distant silhouettes alike.
 //
 // Slots (see bindings.slang): FRESH holds this frame's jittered bake. A/B ping-pong by
@@ -68,7 +68,9 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float2 ndc = float2(fogUv.x * 2.0 - 1.0, fogUv.y * 2.0 - 1.0);
     float sliceCount = dimsF.z;
     float maxDist = max(push.fogParams0.z, FOG_NEAR + 1.0);
-    float viewDepth = fogSliceViewDepth(float(dispatchId.z) + 0.5, sliceCount, maxDist);
+    float sliceMode = push.fogParams3.x;
+    float sliceExp = max(push.fogParams3.y, 1.0);
+    float viewDepth = fogSliceViewDepth(float(dispatchId.z) + 0.5, sliceCount, maxDist, sliceMode, sliceExp);
 
     // World position of the voxel center: clip plane at view depth, unprojected.
     float projA = push.curViewProj[2][2];
@@ -85,7 +87,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float prevViewDepth = -prevViewH.z / prevViewH.w;
     float3 prevNdc = prevClip.xyz / prevClip.w;
     float2 prevFogUv = float2(prevNdc.x * 0.5 + 0.5, prevNdc.y * 0.5 + 0.5);
-    float3 prevUvz = float3(prevFogUv, fogViewDepthToSlice(prevViewDepth, sliceCount, maxDist) / sliceCount);
+    float3 prevUvz = float3(prevFogUv, fogViewDepthToSlice(prevViewDepth, sliceCount, maxDist, sliceMode, sliceExp) / sliceCount);
     bool inRange = prevClip.w > 1.0e-6 && prevViewH.w > 1.0e-6
         && all(prevUvz >= 0.0) && all(prevUvz <= 1.0);
 

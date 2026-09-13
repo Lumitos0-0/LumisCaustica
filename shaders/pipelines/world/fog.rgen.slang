@@ -28,8 +28,10 @@ void main() {
     }
 
     float density = worldPush.fogParams0.x;
-    float aniso = clamp(worldPush.fogParams0.y, -0.9, 0.9);
     float maxDist = max(worldPush.fogParams0.z, FOG_NEAR + 1.0);
+    float sliceMode = worldPush.fogParams3.x;
+    float sliceExp = max(worldPush.fogParams3.y, 1.0);
+    float waterAniso = worldPush.fogParams3.z;
     float falloff = max(worldPush.fogParams0.w, 1.0e-3);
     float heightBase = worldPush.fogParams1.x;
     float time = worldPush.fogParams1.y;
@@ -40,6 +42,8 @@ void main() {
         density *= 6.0;
         albedo = clamp(worldPush.waterParams.xyz, 0.0, 1.0);
     }
+    // Per-medium phase: air and water haze scatter differently, so each has its own anisotropy.
+    float aniso = clamp(submerged ? waterAniso : worldPush.fogParams0.y, -0.9, 0.9);
 
     SkyState sky = skyState(worldPush);
     float viewerAltBlocks = worldPush.skyLook2.z * 100.0;
@@ -99,9 +103,9 @@ void main() {
     float preExposure = worldPush.preExposure;
     for (uint iz = 0u; iz < fogD; ++iz) {
         float s0 = float(iz);
-        float z0 = fogSliceViewDepth(s0, sliceCount, maxDist);
-        float z1 = fogSliceViewDepth(s0 + 1.0, sliceCount, maxDist);
-        float zm = fogSliceViewDepth(s0 + 0.5 + (stbn.z - 0.5) * 0.9, sliceCount, maxDist);
+        float z0 = fogSliceViewDepth(s0, sliceCount, maxDist, sliceMode, sliceExp);
+        float z1 = fogSliceViewDepth(s0 + 1.0, sliceCount, maxDist, sliceMode, sliceExp);
+        float zm = fogSliceViewDepth(s0 + 0.5 + (stbn.z - 0.5) * 0.9, sliceCount, maxDist, sliceMode, sliceExp);
         float3 pos = ro + rd * (zm / cosF);
         float dt = (z1 - z0) / cosF;
 

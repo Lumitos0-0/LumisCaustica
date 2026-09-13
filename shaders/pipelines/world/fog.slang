@@ -8,16 +8,31 @@ import world_common;
 // geometry closer than this samples slice 0, which holds ~nothing.
 public static const float FOG_NEAR = 0.5;
 
-// Slice boundary s in [0, sliceCount] -> view depth. Exponential spacing (Frostbite-style froxels) keeps
-// slice thickness proportional to distance, matching perspective foreshortening and depth precision.
-public float fogSliceViewDepth(float s, float sliceCount, float maxDist) {
-    return FOG_NEAR * pow(maxDist / FOG_NEAR, s / sliceCount);
+// Slice-distribution modes (fogParams3.x). Exponential is the legacy Frostbite-style mapping: slice
+// thickness proportional to distance, matching perspective foreshortening. Power is the RTX Remix
+// mapping: view depth follows (s/N)^exponent, spreading slices toward the horizon so far voxels stay
+// small — paid for out of the near range's generous slice budget (fixed-slice conservation).
+public static const float FOG_SLICE_EXPONENTIAL = 0.0;
+public static const float FOG_SLICE_POWER = 1.0;
+
+// Slice boundary s in [0, sliceCount] -> view depth.
+public float fogSliceViewDepth(float s, float sliceCount, float maxDist, float sliceMode, float sliceExp) {
+    if (sliceMode < 0.5) {
+        return FOG_NEAR * pow(maxDist / FOG_NEAR, s / sliceCount);
+    }
+    float t = clamp(s / sliceCount, 0.0, 1.0);
+    return FOG_NEAR + (maxDist - FOG_NEAR) * pow(t, sliceExp);
 }
 
-// View depth -> slice coordinate in [0, sliceCount]. The apply pass normalizes this by sliceCount and
-// samples the volume; clamping past the last slice keeps distant geometry fully fogged.
-public float fogViewDepthToSlice(float viewDepth, float sliceCount, float maxDist) {
-    return sliceCount * log(max(viewDepth, 1.0e-3) / FOG_NEAR) / log(maxDist / FOG_NEAR);
+// View depth -> slice coordinate in [0, sliceCount]. The apply pass calls this with sliceCount = 1 to
+// get a normalized coordinate and samples the volume; clamping past the last slice keeps distant
+// geometry fully fogged.
+public float fogViewDepthToSlice(float viewDepth, float sliceCount, float maxDist, float sliceMode, float sliceExp) {
+    if (sliceMode < 0.5) {
+        return sliceCount * log(max(viewDepth, 1.0e-3) / FOG_NEAR) / log(maxDist / FOG_NEAR);
+    }
+    float t = clamp((viewDepth - FOG_NEAR) / max(maxDist - FOG_NEAR, 1.0e-3), 0.0, 1.0);
+    return sliceCount * pow(t, 1.0 / max(sliceExp, 1.0e-3));
 }
 
 // Dave Hoskins' hash without the sine (same family as the starfield hash in sky.rmiss).

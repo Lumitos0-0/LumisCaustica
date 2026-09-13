@@ -38,6 +38,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // Read slot mirrors the accumulate write side: even frames resolved into A, odd into B.
     bool evenFrame = (push.frameIndex & 1u) == 0u;
     float maxDist = max(push.fogParams0.z, FOG_NEAR + 1.0);
+    float sliceMode = push.fogParams3.x;
+    float sliceExp = max(push.fogParams3.y, 1.0);
+    // Composite-depth bias toward the camera, in slices (Remix depthOffset): sampling just in front
+    // of the surface keeps fog stored behind a wall from bleeding onto it.
+    float sliceBias = push.fogParams3.w / max(float(fogD), 1.0);
     // Reversed-Z hardware depth (near = 1, far = 0) -> view depth through the projection's third row:
     // depth = (A * viewZ + B) / -viewZ, so -viewZ = B / (depth + A).
     float projA = push.curViewProj[2][2];
@@ -48,7 +53,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float2 fullRes = float2(float(w), float(h));
     // Joint-bilateral 2x2: each tap fetches the resolved volume at its own pixel's depth and is
     // weighted by view-depth similarity to the center pixel, so fog never bleeds across silhouettes.
-    float centerSlice = clamp(fogViewDepthToSlice(centerDepth, 1.0, maxDist), 0.0, 1.0);
+    float centerSlice = clamp(fogViewDepthToSlice(centerDepth, 1.0, maxDist, sliceMode, sliceExp) - sliceBias, 0.0, 1.0);
     float3 centerUvz = float3(pixF / fullRes, centerSlice);
     float4 centerFog = evenFrame ? volA.SampleLevel(centerUvz, 0.0) : volB.SampleLevel(centerUvz, 0.0);
     float4 fogAccum = float4(0.0, 0.0, 0.0, 0.0);
@@ -57,7 +62,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float2 tapPixF = clamp(pixF + (float2(float(i & 1), float(i >> 1)) - 0.5) * fogTexel,
                 float2(0.5, 0.5), fullRes - 0.5);
         float tapDepth = projB / max(depthImage[int2(tapPixF)] + projA, 1.0e-6);
-        float tapSlice = clamp(fogViewDepthToSlice(tapDepth, 1.0, maxDist), 0.0, 1.0);
+        float tapSlice = clamp(fogViewDepthToSlice(tapDepth, 1.0, maxDist, sliceMode, sliceExp) - sliceBias, 0.0, 1.0);
         float3 tapUvz = float3(tapPixF / fullRes, tapSlice);
         float4 tapFog = evenFrame ? volA.SampleLevel(tapUvz, 0.0) : volB.SampleLevel(tapUvz, 0.0);
         // Symmetric tolerance in log view-depth: ~2% off keeps ~full weight, ~10% off keeps ~20%.

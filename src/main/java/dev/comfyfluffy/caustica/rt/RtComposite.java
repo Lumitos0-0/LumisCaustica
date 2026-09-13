@@ -188,7 +188,7 @@ public final class RtComposite {
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
     private RtFogPipeline fogPipeline;
-    // Froxel fog FRESH volume (frustum UV x exponential depth slices; RGB = pre-exposed integrated
+    // Froxel fog FRESH volume (frustum UV x depth slices; RGB = pre-exposed integrated
     // scattering, A = transmittance). Fixed 256x128 XY, slice count from the fog quality level, and
     // always allocated — toggling fog at runtime then skips dispatches instead of rebuilding images.
     private RtVolume fogVolume;
@@ -204,6 +204,11 @@ public final class RtComposite {
     private RtVolume fogAgeB;
     private RtImage fogPrevDepth;
     private boolean fogHistoryValid;
+    // Last slice-mapping pushed to the shaders: range, distribution mode, exponent. Any change
+    // re-assigns every voxel's depth, so history sampled under the old mapping must be dropped.
+    private float lastFogMaxDist;
+    private float lastFogSliceMode = -1f;
+    private float lastFogSliceExp;
     // Previous frame's clip -> view matrix (fog accumulate: surface depth for slice mapping). Pushed
     // as last frame's value while history is valid, else the current frame's (harmless: the shader
     // only uses it when history is valid).
@@ -1115,6 +1120,17 @@ public final class RtComposite {
         if (camJumpSq > 25.0f) {
             fogHistoryValid = false;
         }
+        // Slice-mapping changes (range, distribution, exponent) re-assign every voxel's depth:
+        // history sampled under the old mapping is garbage — reset accumulation.
+        float fogMaxDist = CausticaConfig.Rt.Fog.MAX_DISTANCE.value();
+        float fogSliceMode = (float) CausticaConfig.Rt.Fog.SLICE_MODE.value();
+        float fogSliceExp = CausticaConfig.Rt.Fog.SLICE_EXPONENT.value();
+        if (fogMaxDist != lastFogMaxDist || fogSliceMode != lastFogSliceMode || fogSliceExp != lastFogSliceExp) {
+            fogHistoryValid = false;
+            lastFogMaxDist = fogMaxDist;
+            lastFogSliceMode = fogSliceMode;
+            lastFogSliceExp = fogSliceExp;
+        }
     }
 
     private void recordFrame(RtContext ctx, RtPipeline active, GpuTexture nativeColor) {
@@ -1252,13 +1268,18 @@ public final class RtComposite {
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
                     exposure.preExposure(),
-                    // Froxel fog, re-read every frame so density/anisotropy/range retune live. Height base
-                    // is fixed at sea level, time reuses the wrapped water-animation clock, and the albedo
-                    // is fixed neutral white (the sun/moon lighting carries the colour).
+                    // Froxel fog, re-read every frame so density/anisotropy/range/distribution retune live.
+                    // Height base is fixed at sea level, time reuses the wrapped water-animation clock,
+                    // and the albedo is fixed neutral white (the sun/moon lighting carries the colour).
                     new Float4(CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.ANISOTROPY.value(),
                             CausticaConfig.Rt.Fog.MAX_DISTANCE.value(), CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value()),
-                    new Float4(0f, waterWaveTime, 0f, 0.3f),
+                    new Float4(0f, waterWaveTime, 0f,
+                            CausticaConfig.Rt.Fog.NOISE.value() ? 0.3f : 0f),
                     new Float4(1f, 1f, 1f, fogHistoryValid ? 1f : 0f),
+                    new Float4((float) CausticaConfig.Rt.Fog.SLICE_MODE.value(),
+                            CausticaConfig.Rt.Fog.SLICE_EXPONENT.value(),
+                            CausticaConfig.Rt.Fog.WATER_ANISOTROPY.value(),
+                            CausticaConfig.Rt.Fog.DEPTH_OFFSET.value()),
                     fogHistoryValid ? fogPrevInvViewProj : frameInvViewProj
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
@@ -2239,6 +2260,18 @@ public final class RtComposite {
         for (RtImage img : fgInterp) {
             if (img != null) {
                 img.destroy();
+            }
+        }
+        fgInterp = new RtImage[count];
+        for (int i = 0; i < count; i++) {
+            fgInterp[i] = ctx.createStorageImage(w, h, fmt, "FG interp " + i + " " + w + "x" + h);
+        }
+        fgInterpW = w;
+        fgInterpH = h;
+        fgInterpFormat = fmt;
+    }
+}
+      img.destroy();
             }
         }
         fgInterp = new RtImage[count];

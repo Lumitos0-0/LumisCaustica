@@ -579,13 +579,22 @@ public final class CausticaConfig {
             public static final FloatSetting DENSITY =
                     clampedFloat("caustica.rt.fogDensity", "fog.density", 0.004f, 0.0f, 0.1f);
             public static final FloatSetting ANISOTROPY =
-                    clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.55f, -0.9f, 0.9f);
+                    clampedFloat("caustica.rt.fogAnisotropy", "fog.anisotropy", 0.0f, -0.9f, 0.9f);
             public static final FloatSetting MAX_DISTANCE =
                     clampedFloat("caustica.rt.fogMaxDistance", "fog.max-distance", 320f, 32f, 1024f);
             public static final FloatSetting HEIGHT_FALLOFF =
                     clampedFloat("caustica.rt.fogHeightFalloff", "fog.height-falloff", 48f, 4f, 256f);
             public static final IntSetting QUALITY =
                     clampedInt("caustica.rt.fogQuality", "fog.quality", 1, 0, 4);
+            public static final FloatSetting WATER_ANISOTROPY =
+                    clampedFloat("caustica.rt.fogWaterAnisotropy", "fog.water-anisotropy", 0.55f, -0.9f, 0.9f);
+            public static final IntSetting SLICE_MODE =
+                    clampedInt("caustica.rt.fogSliceMode", "fog.slice-mode", 1, 0, 1);
+            public static final FloatSetting SLICE_EXPONENT =
+                    clampedFloat("caustica.rt.fogSliceExponent", "fog.slice-exponent", 2.0f, 1.0f, 3.0f);
+            public static final BooleanSetting NOISE = bool("caustica.rt.fogNoise", "fog.noise", true);
+            public static final FloatSetting DEPTH_OFFSET =
+                    clampedFloat("caustica.rt.fogDepthOffset", "fog.depth-offset", 0.5f, 0.0f, 1.0f);
 
             private Fog() {
             }

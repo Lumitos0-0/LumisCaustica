@@ -92,9 +92,10 @@ public struct WorldPush {
     // base is fixed at sea level, time reuses the wrapped water-animation clock, and the albedo is fixed
     // neutral white (the lighting carries the colour). The bake multiplies scattering by preExposure so
     // the volume matches the trace's stored units.
-    public float4   fogParams0;       // x base density (1/block), y HG anisotropy, z max distance (blocks), w height falloff (blocks)
+    public float4   fogParams0;       // x base density (1/block), y air HG anisotropy, z max distance (blocks), w height falloff (blocks)
     public float4   fogParams1;       // x height base vs sea level (blocks), y animation time (s), z reserved, w detail-noise amount 0..1
     public float4   fogParams2;       // xyz scattering albedo (linear ACEScg), w fog history valid (1 = blend, 0 = reset)
+    public float4   fogParams3;       // x slice-distribution mode (0 exponential, 1 power), y power exponent, z water HG anisotropy, w apply depth offset (slices)
     public float4x4 prevInvViewProj;  // previous-frame clip -> view (fog accumulate: surface depth for slice mapping)
 };
 

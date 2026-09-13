@@ -53,6 +53,11 @@ public final class RtVideoOptions {
             waterWaves(),
             fog(),
             fogDensity(),
+            fogAnisotropy(),
+            fogMaxDistance(),
+            fogSliceMode(),
+            fogSliceExponent(),
+            fogNoise(),
             fogQuality(),
             dlssQuality()
         ));
@@ -154,6 +159,57 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 200),
             Math.clamp(Math.round(setting.value() * 10000.0f), 0, 200),
             tenThousandths -> setting.set(tenThousandths / 10000.0f));
+    }
+
+    private static OptionInstance<Integer> fogAnisotropy() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.ANISOTROPY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogAnisotropy",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogAnisotropy.tooltip")),
+            (caption, biased) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", (biased - 18) / 20.0f))),
+            new OptionInstance.IntRange(0, 36),
+            Math.clamp(Math.round(setting.value() * 20.0f) + 18, 0, 36),
+            biased -> setting.set((biased - 18) / 20.0f));
+    }
+
+    private static OptionInstance<Integer> fogMaxDistance() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.MAX_DISTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogMaxDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogMaxDistance.tooltip")),
+            (caption, blocks) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%d", blocks))),
+            new OptionInstance.IntRange(32, 1024),
+            Math.clamp(Math.round(setting.value()), 32, 1024),
+            blocks -> setting.set((float) blocks));
+    }
+
+    private static OptionInstance<Integer> fogSliceMode() {
+        IntSetting setting = CausticaConfig.Rt.Fog.SLICE_MODE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogSliceMode",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogSliceMode.tooltip")),
+            (caption, value) -> Component.translatable("caustica.options.rt.fogSliceMode." + value),
+            new OptionInstance.Enum<>(List.of(0, 1), Codec.INT),
+            Math.clamp(setting.value(), 0, 1),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> fogSliceExponent() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.SLICE_EXPONENT;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogSliceExponent",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogSliceExponent.tooltip")),
+            (caption, twentieths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", twentieths / 20.0f))),
+            new OptionInstance.IntRange(20, 60),
+            Math.clamp(Math.round(setting.value() * 20.0f), 20, 60),
+            twentieths -> setting.set(twentieths / 20.0f));
+    }
+
+    private static OptionInstance<Boolean> fogNoise() {
+        return bool("caustica.options.rt.fogNoise", CausticaConfig.Rt.Fog.NOISE);
     }
 
     private static OptionInstance<Integer> fogQuality() {
