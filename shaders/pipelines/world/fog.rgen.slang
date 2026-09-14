@@ -5,8 +5,10 @@
 //
 // Occlusion comes from TLAS shadow rays (visibility(), the same query surface NEE uses), so fog shadows
 // match surface shadows exactly — including stained-glass tinting and cutout alpha — with no shadow maps.
-// The bake runs unjittered at 1/8 render resolution; the per-column slice dither is a static hash, keeping
-// the volume temporally stable with or without DLSS-RR.
+// Sampling is depth-only jitter on exact froxel centres, one grid-wide R1 offset per frame; shadow rays
+// pick a grid-wide R2 direction inside each light's disc. No XY jitter and no per-froxel RNG: with
+// binary ray-traced visibility the temporal blend cannot converge walked silhouette edges (flicker),
+// and neighbouring columns keyed apart disagree in lattice-sized blotches.
 import world_common;
 import world_core;
 import bindings;
@@ -48,20 +50,15 @@ void main() {
     SkyState sky = skyState(worldPush);
     float viewerAltBlocks = worldPush.skyLook2.z * 100.0;
 
-    // Spatiotemporal jitter (see RtStbn): the column's sub-froxel XY offset and in-slice sample
-    // position vary every frame; the apply pass integrates the sequence over time while single
-    // frames keep blue-noise spatial character. W is reserved for phase-2 ray jitter.
-    uint stbnW;
-    uint stbnH;
-    uint stbnD;
-    stbnTex.GetDimensions(stbnW, stbnH, stbnD);
-    float2 stbnXY = float2(float(stbnW), float(stbnH));
-    float stbnZ = float(max(stbnD, 1u));
-    float4 stbn = stbnTex.SampleLevel(
-            float3((float2(dispatchIndex) + 0.5) / stbnXY, (float(worldPush.frameIndex % max(stbnD, 1u)) + 0.5) / stbnZ),
-            0.0);
+    // Depth-only, grid-wide shared sampling (see fog.slang): columns sit on exact froxel centres,
+    // one R1 offset picks the in-slice depth for the whole grid, and one R2 point per body picks the
+    // shadow direction inside its disc. Successive frames integrate the sequences via the accumulate
+    // pass. (The STBN volume stays bound for future use; fog no longer consumes it.)
     int2 pix = int2(dispatchIndex);
-    float2 uv = (float2(pix) + 0.5 + (stbn.xy - 0.5)) / float2(float(fogW), float(fogH));
+    float2 uv = (float2(pix) + 0.5) / float2(float(fogW), float(fogH));
+    float sliceJitter = fogSliceJitter(worldPush.frameIndex);
+    float2 sunDiscU = fogFrameSample(worldPush.frameIndex, 0.0);
+    float2 moonDiscU = fogFrameSample(worldPush.frameIndex, 0.5);
     float2 ndc = uv * 2.0 - 1.0;
     float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
     float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
@@ -96,6 +93,11 @@ void main() {
     float3 moonAces = bt709ToAcesCg(moonE);
     float phaseSun = hg(clamp(dot(rd, sky.sunDir), -1.0, 1.0), aniso);
     float phaseMoon = hg(clamp(dot(rd, sky.moonDir), -1.0, 1.0), aniso);
+    // Penumbra: one shadow direction per light per frame inside the body's disc. Phase keeps the
+    // unjittered disc centre (it varies slowly); only the binary visibility test integrates the
+    // disc over frames, which is what softens shaft edges without extra rays.
+    float3 sunTraceDir = fogSampleLightCone(sky.sunDir, sky.sunAngularRadius, sunDiscU);
+    float3 moonTraceDir = fogSampleLightCone(sky.moonDir, sky.moonAngularRadius, moonDiscU);
 
     float sliceCount = float(fogD);
     float3 scatter = float3(0.0, 0.0, 0.0);
@@ -105,7 +107,7 @@ void main() {
         float s0 = float(iz);
         float z0 = fogSliceViewDepth(s0, sliceCount, maxDist, sliceMode, sliceExp);
         float z1 = fogSliceViewDepth(s0 + 1.0, sliceCount, maxDist, sliceMode, sliceExp);
-        float zm = fogSliceViewDepth(s0 + 0.5 + (stbn.z - 0.5) * 0.9, sliceCount, maxDist, sliceMode, sliceExp);
+        float zm = fogSliceViewDepth(s0 + sliceJitter, sliceCount, maxDist, sliceMode, sliceExp);
         float3 pos = ro + rd * (zm / cosF);
         float dt = (z1 - z0) / cosF;
 
@@ -120,13 +122,18 @@ void main() {
             // night air go fully dark and occlusion reads exactly.
             float3 inscatter = float3(0.0, 0.0, 0.0);
             if (useSun) {
-                inscatter += sunAces * visibility(pos, sky.sunDir, 10000.0).transmittance * phaseSun;
+                inscatter += sunAces * visibility(pos, sunTraceDir, 10000.0).transmittance * phaseSun;
             }
             if (useMoon) {
-                inscatter += moonAces * visibility(pos, sky.moonDir, 10000.0).transmittance * phaseMoon;
+                inscatter += moonAces * visibility(pos, moonTraceDir, 10000.0).transmittance * phaseMoon;
             }
-            scatter += transmit * (sigmaT * albedo) * inscatter * dt;
-            transmit *= exp(-sigmaT * dt);
+            // Analytic slice integral for constant coefficients over the slice: exact at any optical
+            // thickness, where point-sampling pumps brightness as the camera moves.
+            float sliceTransmittance = exp(-sigmaT * dt);
+            float3 sliceScattering = (sigmaT * albedo) * inscatter
+                    * ((1.0 - sliceTransmittance) / max(sigmaT, 1.0e-6));
+            scatter += transmit * sliceScattering;
+            transmit *= sliceTransmittance;
         }
         fogVolume[int3(pix.x, pix.y, int(iz))] = float4(scatter * preExposure, transmit);
     }

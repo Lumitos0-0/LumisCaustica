@@ -587,7 +587,7 @@ public final class CausticaConfig {
             public static final IntSetting QUALITY =
                     clampedInt("caustica.rt.fogQuality", "fog.quality", 1, 0, 4);
             public static final FloatSetting WATER_ANISOTROPY =
-                    clampedFloat("caustica.rt.fogWaterAnisotropy", "fog.water-anisotropy", 0.55f, -0.9f, 0.9f);
+                    clampedFloat("caustica.rt.fogWaterAnisotropy", "fog.water-anisotropy", 0.82f, -0.9f, 0.9f);
             public static final IntSetting SLICE_MODE =
                     clampedInt("caustica.rt.fogSliceMode", "fog.slice-mode", 1, 0, 1);
             public static final FloatSetting SLICE_EXPONENT =

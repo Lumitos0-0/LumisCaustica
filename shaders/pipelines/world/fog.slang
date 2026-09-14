@@ -61,3 +61,49 @@ public float fogDensityNoise(float3 worldPos, float time) {
     float n = fogValueNoise(p) * 0.65 + fogValueNoise(p * 2.7 + 13.7) * 0.35;
     return clamp(n * 0.9 + 0.4, 0.0, 2.0);
 }
+
+// ---- Sampling sequences (ported from the previous engine) ------------------------------------------
+//
+// Depth-only jitter, grid-wide shared sequences, zero per-froxel spatial variation. XY jitter walks
+// each column's sample across block silhouettes frame to frame, and with binary ray-traced visibility
+// the temporal blend cannot converge walked edges — it flickers; per-froxel RNG makes neighbours
+// disagree in blotches the size of the lattice. So one R1 offset picks the in-slice depth for the whole
+// grid each frame, one R2 point picks the shadow direction inside each light's disc, and the accumulate
+// pass integrates both sequences over time.
+
+/**
+ * Golden-ratio (R1) offset of this frame's slice centres within their slice, shared by the whole grid.
+ * Successive frames evaluate a different depth inside every froxel, and the temporal blend turns that
+ * sequence into an integral over the cell, dissolving the layered slabs a fixed centre produces.
+ */
+public float fogSliceJitter(uint frameIndex) {
+    return frac(float(frameIndex) * 0.6180339887498949);
+}
+
+/**
+ * The frame's sample position in a unit square, from the R2 low-discrepancy sequence, shared by every
+ * froxel. Keyed on the frame, the whole grid answers the same question at once and the temporal blend
+ * integrates the domain over successive frames, leaving no spatial pattern to notice.
+ */
+public float2 fogFrameSample(uint frameIndex, float offset) {
+    // Reciprocal powers of the plastic constant: the 2D generalisation of the golden ratio.
+    const float2 R2 = float2(0.7548776662466927, 0.5698402909980532);
+    return frac(float(frameIndex) * R2 + offset);
+}
+
+/**
+ * A direction inside the light's own angular radius, from two uniform numbers. The sun and moon are
+ * discs, not points: one jittered ray per column per frame, resolved by the temporal filter, integrates
+ * the disc over time, so shaft edges go soft without extra rays.
+ */
+public float3 fogSampleLightCone(float3 lightDir, float halfAngle, float2 u) {
+    float cosMax = cos(clamp(halfAngle, 0.0, 0.2));
+    float cosTheta = lerp(cosMax, 1.0, u.x);
+    float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+    float phi = 2.0 * 3.14159265 * u.y;
+    float3 up = abs(lightDir.y) < 0.95 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    float3 tangent = normalize(cross(up, lightDir));
+    float3 bitangent = cross(lightDir, tangent);
+    return normalize(lightDir * cosTheta
+            + tangent * (sinTheta * cos(phi)) + bitangent * (sinTheta * sin(phi)));
+}
