@@ -89,7 +89,7 @@ public final class RtFogPipeline {
             // history must be reconstructed by filtering, not snapped to the nearest voxel.
             long linearSampler = createSampler(vk, stack, ctx, VK10.VK_FILTER_LINEAR,
                     "fog volume linear sampler");
-            // Nearest: the fresh bake (exact texels for the change-detection box), the age
+            // Nearest: the fresh bake (exact texels for delta change detection), the age
             // counters (per-voxel integers, never interpolated), and the previous depth
             // (each voxel validates against its own texel, not a blend).
             long nearestSampler = createSampler(vk, stack, ctx, VK10.VK_FILTER_NEAREST,

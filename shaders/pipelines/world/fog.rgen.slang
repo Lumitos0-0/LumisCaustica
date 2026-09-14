@@ -53,7 +53,7 @@ void main() {
     // Depth-only, grid-wide shared sampling (see fog.slang): columns sit on exact froxel centres,
     // one R1 offset picks the in-slice depth for the whole grid, and one R2 point per body picks the
     // shadow direction inside its disc. Successive frames integrate the sequences via the accumulate
-    // pass. (The STBN volume stays bound for future use; fog no longer consumes it.)
+    // pass. (Analytic R1/R2 sequences replaced the STBN volume, which was removed.)
     int2 pix = int2(dispatchIndex);
     float2 uv = (float2(pix) + 0.5) / float2(float(fogW), float(fogH));
     float sliceJitter = fogSliceJitter(worldPush.frameIndex);

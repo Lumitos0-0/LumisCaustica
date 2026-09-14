@@ -12,10 +12,11 @@
 // prevDepth (written by the apply pass) rejects voxels whose reprojection lands behind
 // different occluders than last frame.
 //
-// The box clamp comes from FRESH neighbors, not history: history must never veto new
-// signal (a torch turning on would be suppressed for seconds). Instead the 7-tap fresh
-// cross bounds the history fetch, so stale voxels get pulled toward the new signal
-// while noise averages out over frames.
+// Change detection is delta-based, not a spatial box: under grid-wide shared sampling neighbours
+// agree, so a fresh-neighbourhood box collapses onto today's value and clamping history into it
+// would erase the temporal integral (raw per-frame jumps then show as global shake). Instead small
+// deltas — the R1/R2 integration signal — always blend, while a large delta (lighting step, missed
+// disocclusion) fast-tracks by capping the effective age instead of resetting to zero.
 
 import world_common;
 import bindings;
@@ -23,9 +24,17 @@ import fog;
 
 [[vk::push_constant]] PushAddr pcAddr;
 
-// Running-average window: 31 frames of history (~0.5s at 60fps) cuts STBN noise to
-// invisibility on smooth gradients; the cap bounds ghosting after lighting steps.
+// Running-average window: 31 frames of history (~0.5s at 60fps) integrates the R1/R2 sampling
+// sequences into smooth shafts; the cap bounds ghosting after lighting steps.
 static const float ACCUM_MAX_AGE = 31.0;
+// Change detection: relative delta plus absolute floors (pre-exposed scatter / transmittance).
+// A fresh sample this far outside history (lighting step, missed disocclusion) fast-tracks by
+// capping the effective age instead of resetting to zero — responsive without single-frame pops
+// on penumbra fringes, where sparse bright flips would otherwise strobe.
+static const float ACCUM_DELTA_REL = 3.0;
+static const float ACCUM_DELTA_ABS_RGB = 1.0e-2;
+static const float ACCUM_DELTA_ABS_T = 5.0e-2;
+static const float ACCUM_TRACK_AGE = 3.0;
 // Occlusion validation: a voxel's reprojected depth is rejected when it moved behind
 // the previous surface by more than 10% + 5cm. Fresh noise (cm-scale slice jitter on
 // near voxels) never trips the absolute term; real disocclusions (meters) always do.
@@ -43,24 +52,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     }
     const bool evenFrame = (push.frameIndex & 1u) == 0u;
 
-    // Fresh sample + 7-tap cross (center plus 6 face neighbors): exact texels, no
-    // filtering. The cross bounds the history fetch below (change detection).
+    // Fresh sample: exact texel, no filtering. (No neighbourhood box: under grid-wide shared
+    // sampling neighbours agree, so a fresh box collapses onto today's value and clamping
+    // history into it would erase the temporal integral.)
     float3 dimsF = float3(dims);
-    int3 hi = int3(dims - uint3(1, 1, 1));
     float3 centerUv = (float3(dispatchId) + 0.5) / dimsF;
     float4 fresh = freshVol.SampleLevel(centerUv, 0.0);
-    float4 boxLo = fresh;
-    float4 boxHi = fresh;
-    for (int axis = 0; axis < 3; axis++) {
-        for (int dir = -1; dir <= 1; dir += 2) {
-            int3 off = int3(0, 0, 0);
-            off[axis] = dir;
-            float3 uvz = (float3(clamp(int3(dispatchId) + off, int3(0, 0, 0), hi)) + 0.5) / dimsF;
-            float4 tap = freshVol.SampleLevel(uvz, 0.0);
-            boxLo = min(boxLo, tap);
-            boxHi = max(boxHi, tap);
-        }
-    }
 
     // Voxel ray: NDC of this column, slice range mapped to view depth (fog.slang).
     // Slices have no UV flip: the bake wrote fogUv unflipped, accumulate reads it back.
@@ -70,6 +67,9 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float maxDist = max(push.fogParams0.z, FOG_NEAR + 1.0);
     float sliceMode = push.fogParams3.x;
     float sliceExp = max(push.fogParams3.y, 1.0);
+    // Exposure compensation (previous engine's historyScale): the volume stores pre-exposed
+    // values, so last frame's history is rescaled into this frame's exposure before blending.
+    float historyScale = push.fogParams1.z;
     float viewDepth = fogSliceViewDepth(float(dispatchId.z) + 0.5, sliceCount, maxDist, sliceMode, sliceExp);
 
     // World position of the voxel center: clip plane at view depth, unprojected.
@@ -103,19 +103,25 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float4 hist = evenFrame ? volB.SampleLevel(prevUvz, 0.0) : volA.SampleLevel(prevUvz, 0.0);
     float histAge = evenFrame ? ageBRo.SampleLevel(prevUvz, 0.0).x : ageARo.SampleLevel(prevUvz, 0.0).x;
 
-    // Running average: the box lets fresh signal through instantly while history
-    // converges; the age cap (31) bounds the blend window. Invalid history resets
-    // the voxel to fresh with age 0.
-    float4 clampedHist = clamp(hist, boxLo, boxHi);
+    // Running average over the exposure-corrected history, with delta-based change tracking:
+    // small deltas (the R1/R2 integration signal) always blend, while a large delta caps the
+    // effective age so lighting steps converge in a few frames instead of the full window.
+    // Invalid history resets the voxel to fresh with age 0.
+    float4 histScaled = float4(hist.rgb * historyScale, hist.a);
+    float4 delta = abs(fresh - histScaled);
+    float4 absFloor = float4(ACCUM_DELTA_ABS_RGB, ACCUM_DELTA_ABS_RGB, ACCUM_DELTA_ABS_RGB, ACCUM_DELTA_ABS_T);
+    float4 threshold = max(abs(histScaled) * ACCUM_DELTA_REL, absFloor);
+    bool bigDelta = useHistory && any(delta > threshold);
     float newAge = useHistory ? min(histAge + 1.0, ACCUM_MAX_AGE) : 0.0;
-    float count = newAge + 1.0;
-    float4 resolved = useHistory ? fresh * (1.0 / count) + clampedHist * (newAge / count) : fresh;
+    float trackAge = bigDelta ? min(newAge, ACCUM_TRACK_AGE) : newAge;
+    float count = trackAge + 1.0;
+    float4 resolved = useHistory ? fresh * (1.0 / count) + histScaled * (trackAge / count) : fresh;
 
     if (evenFrame) {
         volARw[dispatchId] = resolved;
-        ageARw[dispatchId] = newAge;
+        ageARw[dispatchId] = trackAge;
     } else {
         volBRw[dispatchId] = resolved;
-        ageBRw[dispatchId] = newAge;
+        ageBRw[dispatchId] = trackAge;
     }
 }

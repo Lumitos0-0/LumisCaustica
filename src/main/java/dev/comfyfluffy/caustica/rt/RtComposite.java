@@ -62,7 +62,6 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtFogPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
-import dev.comfyfluffy.caustica.rt.pipeline.RtStbn;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -209,12 +208,12 @@ public final class RtComposite {
     private float lastFogMaxDist;
     private float lastFogSliceMode = -1f;
     private float lastFogSliceExp;
+    private float lastFogPreExposure;
+    private boolean lastFogSubmerged;
     // Previous frame's clip -> view matrix (fog accumulate: surface depth for slice mapping). Pushed
     // as last frame's value while history is valid, else the current frame's (harmless: the shader
     // only uses it when history is valid).
     private final Matrix4f fogPrevInvViewProj = new Matrix4f();
-    // Spatiotemporal jitter for the fog bake (see RtStbn). Device-lifetime, bound once per pipeline.
-    private RtStbn stbn;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -761,9 +760,6 @@ public final class RtComposite {
             if (skyLut == null) {
                 skyLut = RtSkyLut.create(ctx);
             }
-            if (stbn == null) {
-                stbn = RtStbn.create(ctx);
-            }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
@@ -787,8 +783,6 @@ public final class RtComposite {
                     worldPipeline.setFogVolume(fogVolume.view);
                 }
             }
-            // Device-lifetime texture: independent of the render-res images, bound once per pipeline.
-            worldPipeline.setStbn(stbn.view(), stbn.sampler());
             bindWorldTextures(ctx);
             reloadRebindRequested = false;
         }
@@ -1232,6 +1226,18 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            // Fog history maintenance: exposure compensation scale (previous engine's historyScale;
+            // 1.0 until two frames have run) and medium-transition reset (air <-> water lighting
+            // models must never blend — the old engine rejected those voxels for the same reason).
+            float preExposureNow = exposure.preExposure();
+            float fogHistoryScale = lastFogPreExposure > 1.0e-6f
+                    ? preExposureNow / lastFogPreExposure : 1.0f;
+            lastFogPreExposure = preExposureNow;
+            boolean fogSubmerged = (flags & 0b01) != 0;
+            if (fogSubmerged != lastFogSubmerged) {
+                fogHistoryValid = false;
+                lastFogSubmerged = fogSubmerged;
+            }
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1267,13 +1273,13 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure(),
+                    preExposureNow,
                     // Froxel fog, re-read every frame so density/anisotropy/range/distribution retune live.
                     // Height base is fixed at sea level, time reuses the wrapped water-animation clock,
                     // and the albedo is fixed neutral white (the sun/moon lighting carries the colour).
                     new Float4(CausticaConfig.Rt.Fog.DENSITY.value(), CausticaConfig.Rt.Fog.ANISOTROPY.value(),
                             CausticaConfig.Rt.Fog.MAX_DISTANCE.value(), CausticaConfig.Rt.Fog.HEIGHT_FALLOFF.value()),
-                    new Float4(0f, waterWaveTime, 0f,
+                    new Float4(0f, waterWaveTime, fogHistoryScale,
                             CausticaConfig.Rt.Fog.NOISE.value() ? 0.3f : 0f),
                     new Float4(1f, 1f, 1f, fogHistoryValid ? 1f : 0f),
                     new Float4((float) CausticaConfig.Rt.Fog.SLICE_MODE.value(),
@@ -1696,10 +1702,6 @@ public final class RtComposite {
         if (fogPrevDepth != null) {
             fogPrevDepth.destroy();
             fogPrevDepth = null;
-        }
-        if (stbn != null) {
-            stbn.destroy();
-            stbn = null;
         }
         if (skyLut != null) {
             skyLut.destroy();
