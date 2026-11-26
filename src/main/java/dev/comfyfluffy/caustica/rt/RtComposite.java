@@ -29,6 +29,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.MoonPhase;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.Matrix4f;
@@ -186,6 +187,7 @@ public final class RtComposite {
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
+    private final RtFroxelFog froxelFog = new RtFroxelFog();
     private RtImage displayImage;
     // Bloom pyramid, finest first: level 0 is half display resolution and each level halves again. The
     // display mapper reads level 0, which the upsample sweep leaves holding the sum of every band.
@@ -718,7 +720,8 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            "fog_integrate.rgen.spv", "fog_composite.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -732,6 +735,7 @@ public final class RtComposite {
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
+                worldPipeline.setFogTarget(rrOutput.view);
                 bindGuideImages();
             }
             bindWorldTextures(ctx);
@@ -976,6 +980,7 @@ public final class RtComposite {
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
+            worldPipeline.setFogTarget(rrOutput.view);
             bindGuideImages();
         }
         RtToneLut boundLookLut = lookLut;
@@ -1121,6 +1126,9 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            var fog = froxelFog.prepare(ctx, renderW, renderH,
+                    level != null && Level.OVERWORLD.equals(level.dimension()) && (flags & 1) == 0,
+                    terrain.blockY);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1156,7 +1164,8 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    fog.bufferAddress(), fog.options(), fog.froxelGrid(), fog.altitudeOffset()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1210,7 +1219,7 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT color and first-hit depth visible to fog or DLSS
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1234,6 +1243,12 @@ public final class RtComposite {
                 }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+
+            // Composite the current volume onto reconstructed scene color so surface motion vectors
+            // cannot reproject in-scattering onto a moving foreground silhouette.
+            if (fog.bufferAddress() != 0L) {
+                froxelFog.record(ctx, active, cmd, stack, pushConstants, fog.froxelGrid(), displayW, displayH);
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1494,6 +1509,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        froxelFog.destroy();
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();

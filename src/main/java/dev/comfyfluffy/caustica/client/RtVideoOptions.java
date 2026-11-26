@@ -49,7 +49,11 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
-            dlssQuality()
+            dlssQuality(),
+            fogEnabled(),
+            fogDensity(),
+            fogRange(),
+            fogQuality()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
             options.add(hdrEnabled());
@@ -148,6 +152,45 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, steps.size() - 1),
             initialPosition,
             position -> setting.set(steps.get(position)));
+    }
+
+    private static OptionInstance<Boolean> fogEnabled() {
+        BooleanSetting setting = CausticaConfig.Rt.Fog.ENABLED;
+        return OptionInstance.createBoolean(
+            "caustica.options.rt.fog",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fog.tooltip")),
+            setting.value(), setting::set);
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogDensity",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogDensity.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", value / 1000.0))),
+            new OptionInstance.IntRange(0, 60), Math.round(setting.value() * 1000f),
+            value -> setting.set(value / 1000f));
+    }
+
+    private static OptionInstance<Integer> fogRange() {
+        FloatSetting setting = CausticaConfig.Rt.Fog.RANGE;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogRange",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogRange.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + " m")),
+            new OptionInstance.IntRange(16, 88), Math.round(setting.value()),
+            value -> setting.set(value.floatValue()));
+    }
+
+    private static OptionInstance<Integer> fogQuality() {
+        IntSetting setting = CausticaConfig.Rt.Fog.QUALITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.fogQuality",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.fogQuality.tooltip")),
+            (caption, value) -> Component.translatable("caustica.options.rt.fogQuality." + value),
+            new OptionInstance.Enum<>(List.of(0, 1, 2), Codec.INT),
+            setting.value(), setting::set);
     }
 
     private static OptionInstance<Boolean> hdrEnabled() {
