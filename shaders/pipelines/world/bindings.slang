@@ -24,3 +24,5 @@ import world_common;
 [[vk::binding(1, 1)]] public Sampler2D materialSurface0Tex[];
 [[vk::binding(2, 1)]] public Sampler2D materialNormalAoTex[];
 [[vk::binding(3, 1)]] public Sampler2D materialSurface1Tex[];
+
+[[vk::binding(12, 0)]] [format("rgba16f")] public RWTexture2D<float4> fogTarget;

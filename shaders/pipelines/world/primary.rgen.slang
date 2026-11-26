@@ -65,7 +65,7 @@ public PathSegment tracePrimary(PathSegment seg,
 
         float3 n = payloadNormal();
         float3 hitPos = ro + rd * payload.hitT;
-        firstHitDistance = length(hitPos - worldPush.camOffset);
+        firstHitDistance = payload.hitT;
         uint material = payloadMaterial();
         if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) {
             float rough = material == MATERIAL_PARTICLE
@@ -227,12 +227,8 @@ void main() {
     float2 size = float2(dimensions);
     float2 uv = (float2(pix) + 0.5) / size;
     float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
-    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
-    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
-    float3 farP = farH.xyz / farH.w;
-    float3 origin = nearP + worldPush.camOffset;
-    float3 dir = normalize(farP - nearP);
+    float3 origin, dir;
+    worldCameraRay(worldPush, jndc, origin, dir);
     float rayConeSpread = primaryRayConeSpread(jndc, size, dir);
     uint seed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);

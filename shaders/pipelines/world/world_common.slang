@@ -90,13 +90,18 @@ public struct WorldPush {
     public float    preExposure;
     public uint64_t fogBufferAddr;    // 0 when the air volume is inactive
     public float4   fogOptions;       // extinction at sea level, range, anisotropy, height falloff
-    public float4   fogNearOrigin;    // rebased grid origin and world-space sample spacing
-    public float4   fogFarOrigin;
-    public int4     fogNearGrid;
-    public int4     fogFarGrid;
     public int4     fogGrid;          // froxel columns and radial slices
     public float    fogAltitudeOffset; // rebased Y to altitude above sea level
 };
+
+// Reverse-Z unprojection retains translations embedded in the projection by camera bobbing.
+public void worldCameraRay(WorldPush frame, float2 ndc, out float3 origin, out float3 direction) {
+    float4 nearH = mul(frame.invViewProj, float4(ndc, 1.0, 1.0));
+    float4 farH = mul(frame.invViewProj, float4(ndc, 0.0, 1.0));
+    origin = nearH.xyz / nearH.w + frame.camOffset;
+    direction = normalize(farH.xyz * nearH.w - nearH.xyz * farH.w);
+}
+
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
 // grid-relative owner section uses three unsigned 10-bit coordinates; the geometric normal is
