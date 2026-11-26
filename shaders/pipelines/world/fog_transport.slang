@@ -22,7 +22,9 @@ void integrateSegment(inout float4 volume, WorldPush frame, float3 origin, float
     volume.a += tau;
 }
 
-public float4 integrateFogRay(WorldPush frame, float2 uv, float depth) {
+public void integrateFogColumn(WorldPush frame, uint2 column, float limit) {
+    uint2 grid = uint2(frame.fogGrid.xy);
+    float2 uv = (float2(column) + 0.5) / float2(grid);
     float3 origin, dir;
     worldCameraRay(frame, uv * 2.0 - 1.0, origin, dir);
     CelestialLight light = dominantCelestialLight(skyState(frame), transmittanceLut);
@@ -31,29 +33,25 @@ public float4 integrateFogRay(WorldPush frame, float2 uv, float depth) {
     float3 incoming = bt709ToAcesCg(light.illuminance) * ((1.0 - g*g) / (12.5663706 * d * sqrt(d)));
     bool lit = any(incoming > 0.0);
     float range = frame.fogOptions.y;
-    float limit = clamp(depth, 0.0, range);
     uint slices = uint(frame.fogGrid.z);
+    uint stride = grid.x * grid.y;
+    uint index = column.y * grid.x + column.x;
+    DevicePtr<float4> volumeBuffer = DevicePtr<float4>(frame.fogBufferAddr);
     float4 volume = float4(0.0);
     float begin = 0.0;
-    float3 left = lit ? fogShadow(origin, light.dir) : float3(0.0);
-    for (uint i = 1u; i <= slices && begin < limit; ++i) {
-        float u = float(i) / float(slices);
-        float end = min(limit, range * u * (0.25 + 0.75 * u));
-        float mid = 0.5 * (begin + end);
-        float3 center = lit ? fogShadow(origin + mid * dir, light.dir) : float3(0.0);
-        // Stay inside the visible interval at the terminal opaque surface.
-        float inside = end - min(0.002, (end - begin) * 0.01);
-        float3 right = lit ? fogShadow(origin + inside * dir, light.dir) : float3(0.0);
-        if (any(max(abs(left - center), abs(right - center)) > 0.06)) {
-            float3 front = fogShadow(origin + 0.5 * (begin + mid) * dir, light.dir);
-            float3 back = fogShadow(origin + 0.5 * (mid + end) * dir, light.dir);
-            integrateSegment(volume, frame, origin, dir, begin, mid, incoming * front);
-            integrateSegment(volume, frame, origin, dir, mid, end, incoming * back);
-        } else {
-            integrateSegment(volume, frame, origin, dir, begin, end, incoming * center);
-        }
-        left = right;
+    // Deterministic stratification distributes shadow samples in depth across adjacent columns.
+    uint phase = (column.x & 1u) + 2u * (column.y & 1u);
+    for (uint i = 0u; i < slices; ++i) {
+        float end = fogBoundary(float(i + 1u) / float(slices), range);
+        float offset = (float((phase + 3u * i) & 3u) + 0.5) * 0.25;
+        float3 position = origin + lerp(begin, end, offset) * dir;
+        float3 shadow = lit ? fogShadow(position, light.dir) : float3(0.0);
+        integrateSegment(volume, frame, origin, dir, begin, end, incoming * shadow);
         begin = end;
+        if ((i & 3u) == 3u) {
+            volumeBuffer[index] = volume;
+            index += stride;
+            if (end > limit + 0.0001 * range) break;
+        }
     }
-    return volume;
 }

@@ -30,15 +30,15 @@ final class RtFroxelFog {
         }
 
         int quality = Fog.QUALITY.value();
-        int tile = 8 - 2 * quality;
+        double tile = (8 - 2 * quality) / Math.sqrt(2.0);
         // Bound the number of shadow-ray columns even at 4K and on ultrawide displays.
-        int maxColumns = 160 + 80 * quality;
+        int maxColumns = (int) Math.floor((160 + 80 * quality) * Math.sqrt(2.0));
         int maxRows = maxColumns * 9 / 16;
         double stride = Math.max(tile, Math.max((double) width / maxColumns, (double) height / maxRows));
         Int4 froxels = new Int4((int) Math.ceil(width / stride), (int) Math.ceil(height / stride),
-                40 + 24 * quality, 0);
-        // One integrated RGBA value per column, followed by first-hit distances at render resolution.
-        long bytes = 16L * froxels.x() * froxels.y() + 4L * width * height;
+                40 + 24 * quality, (40 + 24 * quality) / 4);
+        // One cumulative RGBA layer per four march intervals, then the full render-resolution depth buffer.
+        long bytes = 16L * froxels.x() * froxels.y() * froxels.w() + 4L * width * height;
         if (scratch == null || scratch.size < bytes) {
             if (scratch != null) {
                 ctx.waitIdle();
