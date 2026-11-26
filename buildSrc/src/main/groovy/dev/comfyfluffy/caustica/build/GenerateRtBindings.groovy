@@ -28,7 +28,7 @@ abstract class GenerateRtBindings extends DefaultTask {
 
     private static final List<Map> PIPELINES = [
             [prefix: "WORLD", source: "pipelines/world/indirect.rgen.slang", resources: [
-                    TLAS: "topLevelAS", OUTPUT: "outImage", BLOCK_ALBEDO: "blockAlbedoAtlas",
+                    TLAS: "topLevelAS", OUTPUT: "outImage", FOG_TARGET: "fogTarget", BLOCK_ALBEDO: "blockAlbedoAtlas",
                     G_NORMAL: "gNormal", G_ALBEDO: "gAlbedo", G_DEPTH: "gDepth", G_MOTION: "gMotion",
                     G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
                     CELESTIALS: "celestialsAtlas", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut",
@@ -120,7 +120,7 @@ abstract class GenerateRtBindings extends DefaultTask {
                 constants.WORLD_SET = ordinary.values().first().set
                 ordinary.each { suffix, location -> constants["WORLD_${suffix}"] = location.index }
                 def guides = ordinary.findAll { suffix, ignored -> (suffix as String).startsWith("G_") }
-                def storageImages = guides + ordinary.findAll { suffix, ignored -> suffix == "OUTPUT" }
+                def storageImages = guides + ordinary.findAll { suffix, ignored -> suffix in ["OUTPUT", "FOG_TARGET"] }
                 def samplers = ordinary.findAll { suffix, ignored -> suffix != "TLAS" && !storageImages.containsKey(suffix) }
                 constants.WORLD_GUIDE_COUNT = guides.size()
                 constants.WORLD_SET_BINDING_COUNT = ordinary.values()*.index.max() + 1

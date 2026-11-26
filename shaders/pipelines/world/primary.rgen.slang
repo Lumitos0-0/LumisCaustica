@@ -22,11 +22,13 @@ import segment;
 import water;
 import trace;
 import guides;
+import volume_grid;
 
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
-                                out uint nextRecord) {
+                                out uint nextRecord,
+                                out float firstHitDistance) {
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -37,6 +39,7 @@ public PathSegment tracePrimary(PathSegment seg,
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
     nextRecord = PATH_NO_NEXT;
+    firstHitDistance = 10000.0;
 
     {
         int bounce = seg.bounce;
@@ -62,6 +65,7 @@ public PathSegment tracePrimary(PathSegment seg,
 
         float3 n = payloadNormal();
         float3 hitPos = ro + rd * payload.hitT;
+        firstHitDistance = payload.hitT;
         uint material = payloadMaterial();
         if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) {
             float rough = material == MATERIAL_PARTICLE
@@ -223,12 +227,8 @@ void main() {
     float2 size = float2(dimensions);
     float2 uv = (float2(pix) + 0.5) / size;
     float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
-    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
-    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
-    float3 farP = farH.xyz / farH.w;
-    float3 origin = nearP + worldPush.camOffset;
-    float3 dir = normalize(farP - nearP);
+    float3 origin, dir;
+    worldCameraRay(worldPush, jndc, origin, dir);
     float rayConeSpread = primaryRayConeSpread(jndc, size, dir);
     uint seed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);
@@ -244,8 +244,15 @@ void main() {
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
     uint nextRecord;
+    float firstHitDistance;
     PathSegment terminal = tracePrimary(
-            current, queue, splitRecord, nextRecord);
+            current, queue, splitRecord, nextRecord, firstHitDistance);
+    if (worldPush.fogBufferAddr != 0u) {
+        DevicePtr<float> fogDepth = DevicePtr<float>(fogDepthAddress(worldPush));
+        float3 endpoint = origin - worldPush.camOffset + dir * min(firstHitDistance, 10000.0);
+        fogDepth[pixelIndex] = clamp(mul(worldPush.curViewProj, float4(endpoint, 1.0)).w,
+                                     0.0, worldPush.fogOptions.y);
+    }
     queue[pixelIndex] = packPathSegment(terminal, nextRecord);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);

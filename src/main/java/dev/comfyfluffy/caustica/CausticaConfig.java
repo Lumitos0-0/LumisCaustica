@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Fog.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -95,6 +95,9 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("fog",
+                " Overworld volumetric media. Air density is extinction per block at sea level.\n"
+                        + " quality is 0 (Low), 1 (Medium), or 2 (High). Sun and moon tints are six-digit sRGB hex.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -545,6 +548,54 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        public static final class Fog {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.fog.enabled", "fog.enabled", false);
+            public static final FloatSetting DENSITY =
+                    number("density", "density", 0.012f, 0.0f, 0.06f);
+            public static final FloatSetting RANGE =
+                    number("range", "range", 64f, 16f, 88f);
+            public static final FloatSetting ANISOTROPY =
+                    number("anisotropy", "anisotropy", 0.68f, 0f, 0.85f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    number("heightFalloff", "height-falloff", 0.012f, 0f, 0.1f);
+            public static final IntSetting QUALITY =
+                    clampedInt("caustica.rt.fog.quality", "fog.quality", 1, 0, 2);
+
+            public static final FloatSetting SUN_STRENGTH =
+                    number("sunStrength", "sun.strength", 1f, 0f, 4f);
+            public static final StringSetting SUN_TINT = tint("sunTint", "sun.tint");
+            public static final FloatSetting MOON_STRENGTH =
+                    number("moonStrength", "moon.strength", 1f, 0f, 8f);
+            public static final StringSetting MOON_TINT = tint("moonTint", "moon.tint");
+            public static final FloatSetting WATER_DENSITY =
+                    number("waterDensity", "water.density", 0.035f, 0f, 0.15f);
+            public static final FloatSetting WATER_RANGE =
+                    number("waterRange", "water.range", 40f, 8f, 96f);
+            public static final FloatSetting WATER_PHASE =
+                    number("waterPhase", "water.anisotropy", 0.72f, 0f, 0.9f);
+            public static final FloatSetting WAVE_FOCUS =
+                    number("waveFocus", "water.wave-focus", 0.75f, 0f, 1f);
+            public static final FloatSetting HISTORY =
+                    number("history", "history", 0.78f, 0f, 0.94f);
+
+            private static FloatSetting number(String key, String path, float fallback, float min, float max) {
+                return new FloatSetting("caustica.rt.fog." + key, "fog." + path, fallback,
+                        v -> v, v -> v, v -> Double.isFinite(v) ? Math.clamp(v, min, max) : fallback);
+            }
+
+            private static StringSetting tint(String key, String path) {
+                return string("caustica.rt.fog." + key, "fog." + path, "ffffff", input -> {
+                    String hex = input.trim();
+                    if (hex.startsWith("#")) hex = hex.substring(1);
+                    return hex.matches("[0-9a-fA-F]{6}") ? hex.toLowerCase(java.util.Locale.ROOT) : "ffffff";
+                });
+            }
+
+            private Fog() {
             }
         }
 

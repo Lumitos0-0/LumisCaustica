@@ -208,6 +208,21 @@ float3 applyBreaking(float3 albedo709, uint rayCone, float3 rayOrigin, float3 ra
 
 [shader("closesthit")]
 void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+    if (payload.flags == PAYLOAD_WATER_INTERFACE_QUERY) {
+        // The visibility probe needs only the nearest outward-facing fluid boundary.
+        payload.flags = MATERIAL_OPAQUE;
+        payload.hitT = RayTCurrent();
+        if ((InstanceID() & (ENTITY_BIT | PARTICLE_BIT)) == 0u && GeometryIndex() == BUCKET_WATER) {
+            Section section = ConstPtr<Section>(pc.tableAddr)[InstanceID()];
+            uint index = section.triBase[BUCKET_WATER] + PrimitiveIndex();
+            float3 outward = normalize(ConstPtr<TerrainPrim>(section.primAddr)[index].normal.xyz);
+            if (dot(outward, WorldRayDirection()) > 0.0) {
+                payload.flags = MATERIAL_WATER;
+                packNormal(payload, outward);
+            }
+        }
+        return;
+    }
     float2 attribs = attr.barycentrics;
     uint rayCone = payload.rayCone;
 

@@ -88,7 +88,22 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    public uint64_t fogBufferAddr;    // 0 when the camera medium is inactive
+    public float4   fogOptions;       // extinction at sea level, range, anisotropy, height falloff
+    public int4     fogGrid;          // columns, rows, axial slices, current visibility bank
+    public float4   fogTemporal;      // history weight, wave focus, altitude offset, allow interleaved lighting
+    public float4   fogSun;           // linear BT.709 tint, independent radiance multiplier
+    public float4   fogMoon;
 };
+
+// Reverse-Z unprojection retains translations embedded in the projection by camera bobbing.
+public void worldCameraRay(WorldPush frame, float2 ndc, out float3 origin, out float3 direction) {
+    float4 nearH = mul(frame.invViewProj, float4(ndc, 1.0, 1.0));
+    float4 farH = mul(frame.invViewProj, float4(ndc, 0.0, 1.0));
+    origin = nearH.xyz / nearH.w + frame.camOffset;
+    direction = normalize(farH.xyz * nearH.w - nearH.xyz * farH.w);
+}
+
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
 // grid-relative owner section uses three unsigned 10-bit coordinates; the geometric normal is
@@ -175,6 +190,7 @@ public struct Payload {
     public uint   rayCone;     // packHalf2x16(width, spread)
 };
 
+public static const uint PAYLOAD_WATER_INTERFACE_QUERY = 256u;
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
 // Set by world.rchit on a terrain hit whose prim carries TERRAIN_PRIM_IN_LIGHT_BUFFER: this emitter is
 // RIS-sampled, so raygen gates its direct-hit emission on diffuse continuation rays (no double count).

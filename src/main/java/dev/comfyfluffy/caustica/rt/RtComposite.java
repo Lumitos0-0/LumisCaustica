@@ -29,6 +29,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.MoonPhase;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.Matrix4f;
@@ -186,6 +187,7 @@ public final class RtComposite {
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
+    private final RtVolumetricFog volumetricFog = new RtVolumetricFog();
     private RtImage displayImage;
     // Bloom pyramid, finest first: level 0 is half display resolution and each level halves again. The
     // display mapper reads level 0, which the upsample sweep leaves holding the sum of every band.
@@ -718,7 +720,9 @@ public final class RtComposite {
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
-                            RtDeviceBringup.worldRaygenShader()},
+                            RtDeviceBringup.worldRaygenShader(),
+                            "volume_bounds.rgen.spv", "volume_inject.rgen.spv",
+                            "volume_integrate.rgen.spv", "volume_resolve.rgen.spv"},
                     new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
                     "closest_hit.rchit.spv", "any_hit.rahit.spv",
                     WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
@@ -732,6 +736,7 @@ public final class RtComposite {
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
+                worldPipeline.setFogTarget(rrOutput.view);
                 bindGuideImages();
             }
             bindWorldTextures(ctx);
@@ -972,10 +977,12 @@ public final class RtComposite {
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
         exposure.ensureResources(ctx);
 
+        volumetricFog.invalidate();
         mvHasPrev = false; // recreated images -> first MV frame is zero
         waterWaveTimeValid = false;
         if (worldPipeline != null) {
             worldPipeline.setStorageImage(output.view);
+            worldPipeline.setFogTarget(rrOutput.view);
             bindGuideImages();
         }
         RtToneLut boundLookLut = lookLut;
@@ -1121,6 +1128,11 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            var fog = volumetricFog.prepare(ctx, renderW, renderH,
+                    level != null && Level.OVERWORLD.equals(level.dimension()) ? level : null,
+                    flags, level == null ? 0 : terrain.blockY - level.getSeaLevel(), frameCounter,
+                    mvCamDeltaX * mvCamDeltaX + mvCamDeltaY * mvCamDeltaY + mvCamDeltaZ * mvCamDeltaZ,
+                    sky.celestial(), waterParams);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1156,7 +1168,8 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    fog.address(), fog.options(), fog.grid(), fog.temporal(), fog.sun(), fog.moon()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1210,7 +1223,7 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT color and first-hit depth visible to fog or DLSS
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -1234,6 +1247,12 @@ public final class RtComposite {
                 }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+
+            // Composite the current volume onto reconstructed scene color so surface motion vectors
+            // cannot reproject in-scattering onto a moving foreground silhouette.
+            if (fog.address() != 0L) {
+                volumetricFog.record(ctx, active, cmd, stack, pushConstants, fog.grid(), displayW, displayH);
+            }
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -1293,6 +1312,7 @@ public final class RtComposite {
             throw new IllegalStateException("vkEndCommandBuffer(rt composite) failed");
         }
         encoder.execute(cmd); // deferred into the frame's submission — correct for per-frame work
+        volumetricFog.submitted(frameCounter);
         // Do not attach a merely reserved token: failed recording may never signal it. Once execute succeeds,
         // every owner in this frame's manifest is protected through the final overlay consumer.
         RtEntities.INSTANCE.markGraphicsUse(frameEntities, graphicsUse);
@@ -1494,6 +1514,7 @@ public final class RtComposite {
             continuationQueue = null;
         }
         destroyGuideImages();
+        volumetricFog.destroy();
         exposure.destroy();
         if (displayPipeline != null) {
             displayPipeline.destroy();
