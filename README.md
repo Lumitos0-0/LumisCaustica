@@ -25,6 +25,7 @@ changes while the renderer is being built.
 - Dynamic entity rendering in the ray-traced scene
 - LabPBR-style material support
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations
+- Volumetric air and underwater light shafts, with ray-traced colored shadows and independent sun and moon settings
 
 ## Requirements
 
@@ -46,6 +47,7 @@ changes while the renderer is being built.
 ## Usage Notes
 
 - Caustica is client-side only.
+- Enable **Volumetric Fog** in Video Settings for the Overworld. Both media also work with DLSS disabled.
 - DLSS Ray Reconstruction and Frame Generation require supported NVIDIA
   hardware and drivers.
 - On Linux if Minecraft crashes on startup with stack overflow errors, try adding `-Xss2M` to the Java args to increase the stack size.
@@ -56,6 +58,31 @@ changes while the renderer is being built.
 - When HDR is enabled on Linux, Caustica selects GLFW's native Wayland backend automatically. X11/XWayland surfaces generally do not expose the required HDR10/PQ format.
 - If Minecraft falls back to OpenGL after a crash, re-enable the Vulkan backend
   before using Caustica again.
+
+## Volumetric fog
+
+Air and water share the Overworld sun, moon, sky transmittance and scene geometry. In water,
+light bends on entering the surface. Its focusing follows the same wave field as the water surface.
+A roof can block the light and stained glass can tint it. The renderer integrates single scattering
+along the camera ray up to the first visible surface. Fog in a mirror or behind a second refractive
+interface would require scattering along additional path segments.
+
+| Control | Default | Effect |
+| --- | --- | --- |
+| Fog quality | Medium | Maximum grid sizes are 128×72×40, 192×108×56 and 256×144×72. The grid also scales down with internal resolution. |
+| Air density / distance | 0.012 / 64 blocks | Particle extinction at sea level and the distance over which it fades. |
+| Sun / moon intensity | 1 / 1 | Independent multipliers of each body's physical intensity and atmospheric color. Zero removes its contribution to fog. |
+| Sun / moon tint | White / white | Choose a tint in Video Settings or enter a six-digit sRGB value in `fog.sun.tint` or `fog.moon.tint` in `config/caustica.toml`. |
+| Underwater density / distance | 0.035 / 40 blocks | Suspended particles add scattering to the existing biome-dependent water absorption. Set either medium's density to zero to disable it. |
+| Air / underwater directionality | 0.68 / 0.72 | Higher values concentrate scattering looking towards the light. |
+| Underwater wave focus | 0.75 | Sets the contrast of refracted shafts while Water Waves is enabled. Zero gives a flat-surface response. |
+| Fog temporal smoothing | 0.78 | Weight of previous visibility at 60 Hz. Water uses a shorter history to follow wave motion. Zero requests fresh visibility for every active cell. |
+
+`fog.height-falloff` controls how quickly air clears above sea level. Lower it for denser mountain air.
+For a visual comparison, strafe past a backlit stained-glass window, then cross the surface of a shallow
+pool and look towards the sun with wave focus at zero and at one. Use the same camera, time of day,
+exposure, internal resolution and quality for GPU comparisons. Vulkan captures expose the four fog
+passes as `frame.volumeBounds`, `frame.volumeLighting`, `frame.volumeIntegration` and `frame.volumeResolve`.
 
 ## Compatibility
 
@@ -80,7 +107,7 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
-- [ ] Nether/End sky, weather, volumetric fog/clouds
+- [ ] Nether/End sky, weather, volumetric clouds
 - [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD
 - [ ] ReSTIR

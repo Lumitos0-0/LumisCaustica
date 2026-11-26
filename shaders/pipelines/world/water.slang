@@ -126,28 +126,30 @@ public static const float CAUSTIC_MAX = 6.0;  // focusing clamp: keeps fold-line
 
 // Horizontal landing offset of a refracted sun ray entering the surface at world-stable xz, intersected
 // with the receiver plane h metres below. inc = sunlight travel direction (downward, unit).
-public float2 causticLanding(float2 xz, float t, float3 inc, float h) {
-    float2 g = waterWaveGrad(xz, t);
+public float2 causticLanding(float2 xz, float t, float3 inc, float h, float footprint) {
+    float2 g = waterWaveGrad(xz, t, footprint);
     float3 nw = normalize(float3(-g.x, 1.0, -g.y));
     float3 rdw = refract(inc, nw, 1.0 / WATER_IOR); // air→water: never TIR
     return xz + rdw.xz * (h / max(-rdw.y, 0.05));
 }
 
-public float waterCaustic(float3 exitPos, float3 lightDir, float waterDist) {
+public float waveFocus(float2 base, float t, float3 lightDir, float h, float footprint) {
     // Grazing light: the receiver-plane intersection degenerates and caustics vanish in reality anyway
     // (long slant paths absorb + the pattern smears out) — fade the effect to neutral 1.0.
     float fade = smoothstep(0.06, 0.18, lightDir.y);
     if (fade <= 0.0) return 1.0;
-    float h = max(waterDist * lightDir.y, 0.05); // vertical depth of the receiver below the exit point
-    float t = worldPush.waterParams.w;
     float3 inc = -lightDir;
-    float2 base = exitPos.xz + worldPush.waterAnchor.xy;  // world-stable wave domain (same as applyWaterWaves)
-    float2 p0 = causticLanding(base, t, inc, h);
-    float2 px = causticLanding(base + float2(CAUSTIC_EPS, 0.0), t, inc, h);
-    float2 pz = causticLanding(base + float2(0.0, CAUSTIC_EPS), t, inc, h);
+    float2 p0 = causticLanding(base, t, inc, h, footprint);
+    float2 px = causticLanding(base + float2(CAUSTIC_EPS, 0.0), t, inc, h, footprint);
+    float2 pz = causticLanding(base + float2(0.0, CAUSTIC_EPS), t, inc, h, footprint);
     float det = abs((px.x - p0.x) * (pz.y - p0.y) - (px.y - p0.y) * (pz.x - p0.x));
     // Flat water ⇒ all landings displace identically ⇒ det = eps² ⇒ focus = 1 (energy-neutral); the
     // clamp bounds the fold-line spikes whose energy the surrounding darkening already paid for.
     float focus = (CAUSTIC_EPS * CAUSTIC_EPS) / max(det, 1.0e-5);
     return lerp(1.0, min(focus, CAUSTIC_MAX), fade);
+}
+
+public float waterCaustic(float3 exitPos, float3 lightDir, float waterDist) {
+    return waveFocus(exitPos.xz + worldPush.waterAnchor.xy, worldPush.waterParams.w,
+            lightDir, max(waterDist * lightDir.y, 0.05), 0.0);
 }

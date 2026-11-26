@@ -149,6 +149,8 @@ public final class RtPipeline {
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_OUTPUT).binding(WORLD_OUTPUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+            binds.get(WORLD_FOG_TARGET).binding(WORLD_FOG_TARGET).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             int atlasStages = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR
                     | (hasAhit ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR : 0);
             binds.get(WORLD_BLOCK_ALBEDO).binding(WORLD_BLOCK_ALBEDO)
@@ -394,12 +396,20 @@ public final class RtPipeline {
 
     /** Write the storage image into every ring slot (set once at init / on resize, when idle). */
     public void setStorageImage(long imageView) {
+        writeStorageImage(WORLD_OUTPUT, imageView);
+    }
+
+    public void setFogTarget(long imageView) {
+        writeStorageImage(WORLD_FOG_TARGET, imageView);
+    }
+
+    private void writeStorageImage(int binding, long imageView) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
             imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(RING, stack);
             for (int i = 0; i < RING; i++) {
-                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_OUTPUT)
+                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(binding)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(imgInfo);
             }
             VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
@@ -411,16 +421,7 @@ public final class RtPipeline {
         if (slot < 0 || slot >= WORLD_GUIDE_COUNT) {
             throw new IllegalArgumentException("Guide slot out of range: " + slot);
         }
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
-            imgInfo.get(0).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(RING, stack);
-            for (int i = 0; i < RING; i++) {
-                write.get(i).sType$Default().dstSet(descriptorSets[i]).dstBinding(WORLD_G_NORMAL + slot)
-                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(imgInfo);
-            }
-            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
-        }
+        writeStorageImage(WORLD_G_NORMAL + slot, imageView);
     }
 
     /** Bind the block albedo atlas into every ring slot. */

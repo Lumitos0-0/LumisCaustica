@@ -68,6 +68,10 @@ public final class RtFrameStats {
                     // Wavefront trace and downstream debug stages.
                     "frame.tracePrimary",
                     "frame.traceIndirect",
+                    "frame.volumeBounds",
+                    "frame.volumeLighting",
+                    "frame.volumeIntegration",
+                    "frame.volumeResolve",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
