@@ -88,6 +88,14 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    public uint64_t fogBufferAddr;    // 0 when the air volume is inactive
+    public float4   fogOptions;       // extinction at sea level, range, anisotropy, height falloff
+    public float4   fogNearOrigin;    // rebased grid origin and world-space sample spacing
+    public float4   fogFarOrigin;
+    public int4     fogNearGrid;
+    public int4     fogFarGrid;
+    public int4     fogGrid;          // froxel columns and radial slices
+    public float    fogAltitudeOffset; // rebased Y to altitude above sea level
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

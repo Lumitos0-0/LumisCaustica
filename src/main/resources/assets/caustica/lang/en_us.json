@@ -27,6 +27,17 @@
 	"caustica.options.rt.glow": "Entity Glow Outline",
 	"caustica.options.rt.glow.tooltip": "Draw the vanilla Glowing-effect outline (through walls) around glowing entities.",
 
+	"caustica.options.rt.fog": "Volumetric Fog",
+	"caustica.options.rt.fog.tooltip": "Enable experimental ray-traced air fog in the Overworld.",
+	"caustica.options.rt.fogDensity": "Fog Density",
+	"caustica.options.rt.fogDensity.tooltip": "Set light extinction per block at sea level.",
+	"caustica.options.rt.fogRange": "Fog Distance",
+	"caustica.options.rt.fogRange.tooltip": "Set the distance in blocks at which fog fades out.",
+	"caustica.options.rt.fogQuality": "Fog Quality",
+	"caustica.options.rt.fogQuality.tooltip": "Increase froxel resolution at the cost of GPU time.",
+	"caustica.options.rt.fogQuality.0": "Low",
+	"caustica.options.rt.fogQuality.1": "Medium",
+	"caustica.options.rt.fogQuality.2": "High",
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 

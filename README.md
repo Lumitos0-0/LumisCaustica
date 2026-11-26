@@ -25,6 +25,7 @@ changes while the renderer is being built.
 - Dynamic entity rendering in the ray-traced scene
 - LabPBR-style material support
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations
+- Experimental Overworld froxel fog with ray-traced colored shadows
 
 ## Requirements
 
@@ -46,6 +47,7 @@ changes while the renderer is being built.
 ## Usage Notes
 
 - Caustica is client-side only.
+- Enable Volumetric Fog in Video Settings to test Overworld air fog. Density, distance, and quality are adjustable in-game. The `[fog]` config also exposes anisotropy and height falloff.
 - DLSS Ray Reconstruction and Frame Generation require supported NVIDIA
   hardware and drivers.
 - On Linux if Minecraft crashes on startup with stack overflow errors, try adding `-Xss2M` to the Java args to increase the stack size.
@@ -80,7 +82,7 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
-- [ ] Nether/End sky, weather, volumetric fog/clouds
+- [ ] Nether/End sky, weather, underwater volumetrics, volumetric clouds
 - [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD
 - [ ] ReSTIR

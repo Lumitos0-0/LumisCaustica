@@ -22,11 +22,13 @@ import segment;
 import water;
 import trace;
 import guides;
+import froxel_fog;
 
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
-                                out uint nextRecord) {
+                                out uint nextRecord,
+                                out float firstHitDistance) {
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -37,6 +39,7 @@ public PathSegment tracePrimary(PathSegment seg,
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
     nextRecord = PATH_NO_NEXT;
+    firstHitDistance = worldPush.fogOptions.y;
 
     {
         int bounce = seg.bounce;
@@ -62,6 +65,7 @@ public PathSegment tracePrimary(PathSegment seg,
 
         float3 n = payloadNormal();
         float3 hitPos = ro + rd * payload.hitT;
+        firstHitDistance = length(hitPos - worldPush.camOffset);
         uint material = payloadMaterial();
         if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) {
             float rough = material == MATERIAL_PARTICLE
@@ -244,8 +248,13 @@ void main() {
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
     uint nextRecord;
+    float firstHitDistance;
     PathSegment terminal = tracePrimary(
-            current, queue, splitRecord, nextRecord);
+            current, queue, splitRecord, nextRecord, firstHitDistance);
+    if (worldPush.fogBufferAddr != 0u) {
+        DevicePtr<float> fogDepth = DevicePtr<float>(fogDepthAddress(worldPush));
+        fogDepth[pixelIndex] = firstHitDistance;
+    }
     queue[pixelIndex] = packPathSegment(terminal, nextRecord);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);

@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Fog.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -95,6 +95,9 @@ public final class CausticaConfig {
         FILE.setComment("lights",
                 " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
+        FILE.setComment("fog",
+                " Experimental Overworld air fog. Density is extinction per block at sea level.\n"
+                        + " quality is 0 (Low), 1 (Medium), or 2 (High).");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
@@ -545,6 +548,24 @@ public final class CausticaConfig {
                     finiteFloat("caustica.rt.jitterSignY", "composite.jitter-sign-y", -1.0f);
 
             private Composite() {
+            }
+        }
+
+        public static final class Fog {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.fog.enabled", "fog.enabled", false);
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.fog.density", "fog.density", 0.012f, 0.0f, 0.06f);
+            public static final FloatSetting RANGE =
+                    clampedFloat("caustica.rt.fog.range", "fog.range", 64f, 16f, 88f);
+            public static final FloatSetting ANISOTROPY =
+                    clampedFloat("caustica.rt.fog.anisotropy", "fog.anisotropy", 0.68f, 0f, 0.85f);
+            public static final FloatSetting HEIGHT_FALLOFF =
+                    clampedFloat("caustica.rt.fog.heightFalloff", "fog.height-falloff", 0.012f, 0f, 0.1f);
+            public static final IntSetting QUALITY =
+                    clampedInt("caustica.rt.fog.quality", "fog.quality", 1, 0, 2);
+
+            private Fog() {
             }
         }
 
